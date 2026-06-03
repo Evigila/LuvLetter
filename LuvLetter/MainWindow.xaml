@@ -8,6 +8,7 @@
   Title="LuvLetter"
   Width="800"
   Height="450"
+  WindowState="Minimized"
   mc:Ignorable="d"
 >
   <Grid />

@@ -1,6 +1,7 @@
-<Solution>
+﻿<Solution>
   <Folder Name="/解决方案项/">
     <File Path=".gitignore" />
   </Folder>
+  <Project Path="LuvLetter.Core/LuvLetter.Core.vcxproj" />
   <Project Path="LuvLetter/LuvLetter.csproj" />
 </Solution>

@@ -1,12 +1,20 @@
 ﻿using System.Windows;
+using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 namespace LuvLetter;
 
-internal class Program
+internal static class Program
 {
     private static IHost host = null!;
+
+    [DllImport("LuvLetter.Core.dll", EntryPoint = "StartOverlay", ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
+    private static extern int StartOverlay();
+
+    [DllImport("LuvLetter.Core.dll", EntryPoint = "StopOverlay", ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
+    private static extern void StopOverlay();
 
     [STAThread]
     public static void Main(string[] args)
@@ -29,8 +37,39 @@ internal class Program
             .Build();
 
         var app = Fetch<App>();
+        var mainWindow = Fetch<MainWindow>();
+        var overlayStarted = 0;
+
+        void StartOverlayAfterRender(object? sender, EventArgs e)
+        {
+            mainWindow.ContentRendered -= StartOverlayAfterRender;
+
+            _ = Task.Run(() =>
+            {
+                var startResult = StartOverlay();
+                if (startResult >= 0)
+                {
+                    Interlocked.Exchange(ref overlayStarted, 1);
+                    return;
+                }
+
+                app.Dispatcher.BeginInvoke(() =>
+                    MessageBox.Show($"Failed to start native overlay. HRESULT: 0x{startResult:X8}", "Error"));
+            });
+        }
+
+        mainWindow.ContentRendered += StartOverlayAfterRender;
+
+        app.Exit += (_, _) =>
+        {
+            if (Interlocked.CompareExchange(ref overlayStarted, 0, 0) == 1)
+            {
+                StopOverlay();
+            }
+        };
+
         app.InitializeComponent();
-        app.Run(Fetch<MainWindow>());
+        app.Run(mainWindow);
     }
 
     public static T Fetch<T>()
