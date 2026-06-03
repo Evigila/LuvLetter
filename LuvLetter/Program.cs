@@ -1,6 +1,6 @@
-﻿using System.Windows;
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using System.Threading.Tasks;
+using System.Windows;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
@@ -10,10 +10,20 @@ internal static class Program
 {
     private static IHost host = null!;
 
-    [DllImport("LuvLetter.Core.dll", EntryPoint = "StartOverlay", ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
+    [DllImport(
+        "LuvLetter.Core.dll",
+        EntryPoint = "StartOverlay",
+        ExactSpelling = true,
+        CallingConvention = CallingConvention.StdCall
+    )]
     private static extern int StartOverlay();
 
-    [DllImport("LuvLetter.Core.dll", EntryPoint = "StopOverlay", ExactSpelling = true, CallingConvention = CallingConvention.StdCall)]
+    [DllImport(
+        "LuvLetter.Core.dll",
+        EntryPoint = "StopOverlay",
+        ExactSpelling = true,
+        CallingConvention = CallingConvention.StdCall
+    )]
     private static extern void StopOverlay();
 
     [STAThread]
@@ -22,7 +32,7 @@ internal static class Program
         using var mutex = new Mutex(true, "app.LuvLetter.Mooreforin", out bool isNewInstance);
         if (!isNewInstance)
         {
-            MessageBox.Show("Program already running.", "Alert");
+            System.Windows.MessageBox.Show("Program already running.", "Alert");
             return;
         }
 
@@ -54,7 +64,11 @@ internal static class Program
                 }
 
                 app.Dispatcher.BeginInvoke(() =>
-                    MessageBox.Show($"Failed to start native overlay. HRESULT: 0x{startResult:X8}", "Error"));
+                    System.Windows.MessageBox.Show(
+                        $"Failed to start native overlay. HRESULT: 0x{startResult:X8}",
+                        "Error"
+                    )
+                );
             });
         }
 
