@@ -1,9 +1,10 @@
-﻿<Application x:Class="LuvLetter.App"
-             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:local="clr-namespace:LuvLetter"
-             StartupUri="MainWindow.xaml">
-    <Application.Resources>
-         
-    </Application.Resources>
+﻿<Application
+  x:Class="LuvLetter.App"
+  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  xmlns:local="clr-namespace:LuvLetter"
+>
+  <Application.Resources>
+    <Style x:Key="Test" />
+  </Application.Resources>
 </Application>
