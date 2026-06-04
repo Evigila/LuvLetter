@@ -2,17 +2,20 @@
 
 #include <Windows.h>
 #include <d2d1.h>
-#include <dwrite.h>
+#include <wincodec.h>
 #include <wrl/client.h>
 
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
+#include <vector>
 
 class OverlayHost
 {
 public:
 	static OverlayHost& Instance();
 
-	HRESULT Start();
+	HRESULT Start(const uint8_t* logoData, size_t logoSize);
 	void Stop();
 
 private:
@@ -24,10 +27,13 @@ private:
 	HRESULT Run();
 	HRESULT CreateDeviceIndependentResources();
 	HRESULT CreateDeviceResources();
+	HRESULT CreateLogoBitmap();
 	void DiscardDeviceResources();
 	HRESULT CreateOverlayWindow();
 	void Render();
-	void UpdateWindowPosition() const;
+	void RecalculateWindowBounds();
+	void MoveWindowTo(int x, int y) const;
+	void AdvanceAnimation();
 	LRESULT HandleMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 
 	static DWORD WINAPI ThreadEntry(LPVOID parameter);
@@ -40,9 +46,15 @@ private:
 	std::atomic<bool> running_ = false;
 
 	HWND hwnd_ = nullptr;
+	std::vector<uint8_t> logoBytes_;
 	Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory_;
-	Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;
-	Microsoft::WRL::ComPtr<IDWriteTextFormat> textFormat_;
+	Microsoft::WRL::ComPtr<IWICImagingFactory> wicFactory_;
 	Microsoft::WRL::ComPtr<ID2D1HwndRenderTarget> renderTarget_;
-	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush_;
+	Microsoft::WRL::ComPtr<ID2D1Bitmap> logoBitmap_;
+	int startX_ = 0;
+	int startY_ = 0;
+	int targetX_ = 0;
+	int targetY_ = 0;
+	ULONGLONG animationStartTick_ = 0;
+	bool animationCompleted_ = false;
 };

@@ -1,4 +1,5 @@
-﻿using System.Runtime.InteropServices;
+using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows;
 using Microsoft.Extensions.DependencyInjection;
@@ -16,7 +17,7 @@ internal static class Program
         ExactSpelling = true,
         CallingConvention = CallingConvention.StdCall
     )]
-    private static extern int StartOverlay();
+    private static extern int StartOverlay(byte[] logoData, int logoSize);
 
     [DllImport(
         "LuvLetter.Core.dll",
@@ -47,6 +48,7 @@ internal static class Program
             .Build();
 
         var app = Fetch<App>();
+        var overlayLogoBytes = LoadOverlayLogoBytes();
         var mainWindow = Fetch<MainWindow>();
         var overlayStarted = 0;
 
@@ -56,7 +58,7 @@ internal static class Program
 
             _ = Task.Run(() =>
             {
-                var startResult = StartOverlay();
+                var startResult = StartOverlay(overlayLogoBytes, overlayLogoBytes.Length);
                 if (startResult >= 0)
                 {
                     Interlocked.Exchange(ref overlayStarted, 1);
@@ -84,6 +86,18 @@ internal static class Program
 
         app.InitializeComponent();
         app.Run(mainWindow);
+    }
+
+    private static byte[] LoadOverlayLogoBytes()
+    {
+        var resourceUri = new Uri("pack://application:,,,/LuvLetter;component/favicon.ico");
+        using var iconStream =
+            System.Windows.Application.GetResourceStream(resourceUri)?.Stream
+            ?? throw new FileNotFoundException("找不到 favicon.ico");
+
+        using var memoryStream = new MemoryStream();
+        iconStream.CopyTo(memoryStream);
+        return memoryStream.ToArray();
     }
 
     public static T Fetch<T>()

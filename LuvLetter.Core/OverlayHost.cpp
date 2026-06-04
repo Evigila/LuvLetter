@@ -1,16 +1,19 @@
 #include "OverlayHost.h"
 
-#include <string_view>
+#include <cmath>
 
 #pragma comment(lib, "d2d1.lib")
-#pragma comment(lib, "dwrite.lib")
+#pragma comment(lib, "windowscodecs.lib")
 
 namespace
 {
 	constexpr wchar_t WindowClassName[] = L"LuvLetter.Core.OverlayWindow";
-	constexpr wchar_t OverlayText[] = L"Hello World";
-	constexpr int OverlayWidth = 200;
-	constexpr int OverlayHeight = 100;
+	constexpr int OverlayWidth = 50;
+	constexpr int OverlayHeight = 50;
+	constexpr int OverlayMargin = 20;
+	constexpr float LogoDrawSize = 28.0f;
+	constexpr UINT_PTR AnimationTimerId = 1;
+	constexpr DWORD AnimationDurationMs = 180;
 }
 
 OverlayHost& OverlayHost::Instance()
@@ -19,7 +22,7 @@ OverlayHost& OverlayHost::Instance()
 	return instance;
 }
 
-HRESULT OverlayHost::Start()
+HRESULT OverlayHost::Start(const uint8_t* logoData, size_t logoSize)
 {
 	if (running_)
 	{
@@ -30,6 +33,15 @@ HRESULT OverlayHost::Start()
 	{
 		return S_FALSE;
 	}
+
+	if (logoData == nullptr || logoSize == 0)
+	{
+		return E_INVALIDARG;
+	}
+
+	logoBytes_.assign(logoData, logoData + logoSize);
+	logoBitmap_.Reset();
+	animationCompleted_ = false;
 
 	startedEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
 	if (startedEvent_ == nullptr)
@@ -121,11 +133,14 @@ HRESULT OverlayHost::Run()
 		DispatchMessageW(&message);
 	}
 
-	DestroyWindow(hwnd_);
-	hwnd_ = nullptr;
+	if (hwnd_ != nullptr)
+	{
+		DestroyWindow(hwnd_);
+		hwnd_ = nullptr;
+	}
+
 	DiscardDeviceResources();
-	textFormat_.Reset();
-	dwriteFactory_.Reset();
+	wicFactory_.Reset();
 	d2dFactory_.Reset();
 	running_ = false;
 
@@ -148,36 +163,133 @@ HRESULT OverlayHost::CreateDeviceIndependentResources()
 		}
 	}
 
-	if (!dwriteFactory_)
+	if (!wicFactory_)
 	{
-		auto hr = DWriteCreateFactory(
-			DWRITE_FACTORY_TYPE_SHARED,
-			__uuidof(IDWriteFactory),
-			reinterpret_cast<IUnknown**>(dwriteFactory_.GetAddressOf()));
+		auto hr = CoCreateInstance(
+			CLSID_WICImagingFactory,
+			nullptr,
+			CLSCTX_INPROC_SERVER,
+			IID_PPV_ARGS(wicFactory_.GetAddressOf()));
 		if (FAILED(hr))
 		{
 			return hr;
 		}
 	}
 
-	if (!textFormat_)
+	return S_OK;
+}
+
+HRESULT OverlayHost::CreateLogoBitmap()
+{
+	if (logoBitmap_)
 	{
-		auto hr = dwriteFactory_->CreateTextFormat(
-			L"Segoe UI",
-			nullptr,
-			DWRITE_FONT_WEIGHT_REGULAR,
-			DWRITE_FONT_STYLE_NORMAL,
-			DWRITE_FONT_STRETCH_NORMAL,
-			20.0f,
-			L"",
-			textFormat_.GetAddressOf());
+		return S_OK;
+	}
+
+	if (logoBytes_.empty())
+	{
+		return E_INVALIDARG;
+	}
+
+	if (!renderTarget_)
+	{
+		return E_UNEXPECTED;
+	}
+
+	auto hr = CreateDeviceIndependentResources();
+	if (FAILED(hr))
+	{
+		return hr;
+	}
+
+	Microsoft::WRL::ComPtr<IWICStream> stream;
+	hr = wicFactory_->CreateStream(stream.GetAddressOf());
+	if (FAILED(hr))
+	{
+		return hr;
+	}
+
+	hr = stream->InitializeFromMemory(
+		const_cast<BYTE*>(logoBytes_.data()),
+		static_cast<DWORD>(logoBytes_.size()));
+	if (FAILED(hr))
+	{
+		return hr;
+	}
+
+	Microsoft::WRL::ComPtr<IWICBitmapDecoder> decoder;
+	hr = wicFactory_->CreateDecoderFromStream(
+		stream.Get(),
+		nullptr,
+		WICDecodeMetadataCacheOnLoad,
+		decoder.GetAddressOf());
+	if (FAILED(hr))
+	{
+		return hr;
+	}
+
+	UINT frameCount = 0;
+	hr = decoder->GetFrameCount(&frameCount);
+	if (FAILED(hr) || frameCount == 0)
+	{
+		return FAILED(hr) ? hr : E_FAIL;
+	}
+
+	Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> selectedFrame;
+	UINT selectedArea = 0;
+	for (UINT index = 0; index < frameCount; ++index)
+	{
+		Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> frame;
+		hr = decoder->GetFrame(index, frame.GetAddressOf());
 		if (FAILED(hr))
 		{
 			return hr;
 		}
 
-		textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-		textFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+		UINT width = 0;
+		UINT height = 0;
+		hr = frame->GetSize(&width, &height);
+		if (FAILED(hr))
+		{
+			return hr;
+		}
+
+		const auto area = width * height;
+		if (!selectedFrame || area > selectedArea)
+		{
+			selectedArea = area;
+			selectedFrame = frame;
+		}
+	}
+
+	if (!selectedFrame)
+	{
+		return E_FAIL;
+	}
+
+	Microsoft::WRL::ComPtr<IWICFormatConverter> converter;
+	hr = wicFactory_->CreateFormatConverter(converter.GetAddressOf());
+	if (FAILED(hr))
+	{
+		return hr;
+	}
+
+	hr = converter->Initialize(
+		selectedFrame.Get(),
+		GUID_WICPixelFormat32bppPBGRA,
+		WICBitmapDitherTypeNone,
+		nullptr,
+		0.0,
+		WICBitmapPaletteTypeCustom);
+	if (FAILED(hr))
+	{
+		return hr;
+	}
+
+	hr = renderTarget_->CreateBitmapFromWicBitmap(converter.Get(), logoBitmap_.GetAddressOf());
+	if (FAILED(hr))
+	{
+		return hr;
 	}
 
 	return S_OK;
@@ -207,10 +319,11 @@ HRESULT OverlayHost::CreateDeviceResources()
 		{
 			return hr;
 		}
+	}
 
-		hr = renderTarget_->CreateSolidColorBrush(
-			D2D1::ColorF(D2D1::ColorF::White),
-			textBrush_.GetAddressOf());
+	if (!logoBitmap_)
+	{
+		hr = CreateLogoBitmap();
 		if (FAILED(hr))
 		{
 			return hr;
@@ -222,8 +335,71 @@ HRESULT OverlayHost::CreateDeviceResources()
 
 void OverlayHost::DiscardDeviceResources()
 {
-	textBrush_.Reset();
+	logoBitmap_.Reset();
 	renderTarget_.Reset();
+}
+
+void OverlayHost::RecalculateWindowBounds()
+{
+	POINT anchorPoint{ 0, GetSystemMetrics(SM_CYSCREEN) - 1 };
+	const auto monitor = MonitorFromPoint(anchorPoint, MONITOR_DEFAULTTOPRIMARY);
+
+	MONITORINFO monitorInfo{};
+	monitorInfo.cbSize = sizeof(monitorInfo);
+	if (!GetMonitorInfoW(monitor, &monitorInfo))
+	{
+		startX_ = -OverlayWidth;
+		startY_ = -OverlayHeight;
+		targetX_ = OverlayMargin;
+		targetY_ = OverlayMargin;
+		return;
+	}
+
+	startX_ = monitorInfo.rcMonitor.left - OverlayWidth;
+	startY_ = monitorInfo.rcWork.bottom - OverlayMargin - OverlayHeight;
+	targetX_ = monitorInfo.rcWork.left + OverlayMargin;
+	targetY_ = startY_;
+}
+
+void OverlayHost::MoveWindowTo(int x, int y) const
+{
+	if (hwnd_ == nullptr)
+	{
+		return;
+	}
+
+	SetWindowPos(
+		hwnd_,
+		HWND_TOPMOST,
+		x,
+		y,
+		OverlayWidth,
+		OverlayHeight,
+		SWP_NOACTIVATE);
+}
+
+void OverlayHost::AdvanceAnimation()
+{
+	if (animationCompleted_ || hwnd_ == nullptr)
+	{
+		return;
+	}
+
+	const auto elapsed = GetTickCount64() - animationStartTick_;
+	const auto clampedElapsed = elapsed > AnimationDurationMs ? AnimationDurationMs : elapsed;
+	const double progress = static_cast<double>(clampedElapsed) / static_cast<double>(AnimationDurationMs);
+	const double easedProgress = progress * (2.0 - progress);
+	const auto x = static_cast<int>(std::lround(
+		static_cast<double>(startX_) + (static_cast<double>(targetX_ - startX_) * easedProgress)));
+
+	MoveWindowTo(x, targetY_);
+
+	if (elapsed >= AnimationDurationMs)
+	{
+		animationCompleted_ = true;
+		KillTimer(hwnd_, AnimationTimerId);
+		MoveWindowTo(targetX_, targetY_);
+	}
 }
 
 HRESULT OverlayHost::CreateOverlayWindow()
@@ -233,6 +409,18 @@ HRESULT OverlayHost::CreateOverlayWindow()
 	{
 		return hr;
 	}
+
+	RecalculateWindowBounds();
+
+	const auto cleanupAndReturn = [&](HRESULT error) {
+		if (hwnd_ != nullptr)
+		{
+			DestroyWindow(hwnd_);
+			hwnd_ = nullptr;
+		}
+
+		return error;
+	};
 
 	WNDCLASSEXW windowClass{};
 	windowClass.cbSize = sizeof(windowClass);
@@ -251,12 +439,12 @@ HRESULT OverlayHost::CreateOverlayWindow()
 	}
 
 	hwnd_ = CreateWindowExW(
-		WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+		WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
 		WindowClassName,
 		L"LuvLetter Overlay",
 		WS_POPUP,
-		0,
-		0,
+		startX_,
+		startY_,
 		OverlayWidth,
 		OverlayHeight,
 		nullptr,
@@ -269,9 +457,17 @@ HRESULT OverlayHost::CreateOverlayWindow()
 		return HRESULT_FROM_WIN32(GetLastError());
 	}
 
-	UpdateWindowPosition();
+	animationStartTick_ = GetTickCount64();
+	animationCompleted_ = false;
+
 	ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 	UpdateWindow(hwnd_);
+
+	if (SetTimer(hwnd_, AnimationTimerId, 16, nullptr) == 0)
+	{
+		return cleanupAndReturn(HRESULT_FROM_WIN32(GetLastError()));
+	}
+
 	InvalidateRect(hwnd_, nullptr, FALSE);
 
 	return S_OK;
@@ -286,18 +482,17 @@ void OverlayHost::Render()
 	}
 
 	renderTarget_->BeginDraw();
-	renderTarget_->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 1.0f));
+	renderTarget_->Clear(D2D1::ColorF(0.38f, 0.38f, 0.38f, 1.0f));
 
-	const auto size = renderTarget_->GetSize();
-	const auto layoutRect = D2D1::RectF(16.0f, 0.0f, size.width - 16.0f, size.height);
-	renderTarget_->DrawTextW(
-		OverlayText,
-		static_cast<UINT32>(std::size(OverlayText) - 1),
-		textFormat_.Get(),
-		layoutRect,
-		textBrush_.Get(),
-		D2D1_DRAW_TEXT_OPTIONS_NONE,
-		DWRITE_MEASURING_MODE_NATURAL);
+	const auto bitmapSize = renderTarget_->GetSize();
+	const float left = (bitmapSize.width - LogoDrawSize) * 0.5f;
+	const float top = (bitmapSize.height - LogoDrawSize) * 0.5f;
+	const auto destination = D2D1::RectF(left, top, left + LogoDrawSize, top + LogoDrawSize);
+	renderTarget_->DrawBitmap(
+		logoBitmap_.Get(),
+		destination,
+		1.0f,
+		D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
 
 	const auto endDrawResult = renderTarget_->EndDraw();
 	if (endDrawResult == D2DERR_RECREATE_TARGET)
@@ -306,34 +501,14 @@ void OverlayHost::Render()
 	}
 }
 
-void OverlayHost::UpdateWindowPosition() const
-{
-	POINT anchorPoint{ 0, GetSystemMetrics(SM_CYSCREEN) - 1 };
-	const auto monitor = MonitorFromPoint(anchorPoint, MONITOR_DEFAULTTOPRIMARY);
-
-	MONITORINFO monitorInfo{};
-	monitorInfo.cbSize = sizeof(monitorInfo);
-	GetMonitorInfoW(monitor, &monitorInfo);
-
-	const auto x = monitorInfo.rcWork.left;
-	const auto y = monitorInfo.rcWork.bottom - OverlayHeight;
-
-	SetWindowPos(
-		hwnd_,
-		HWND_TOPMOST,
-		x,
-		y,
-		OverlayWidth,
-		OverlayHeight,
-		SWP_NOACTIVATE | SWP_SHOWWINDOW);
-}
-
 LRESULT OverlayHost::HandleMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
 	switch (message)
 	{
 	case WM_ERASEBKGND:
 		return 1;
+	case WM_NCHITTEST:
+		return HTTRANSPARENT;
 	case WM_PAINT:
 	{
 		PAINTSTRUCT paintStruct{};
@@ -342,9 +517,21 @@ LRESULT OverlayHost::HandleMessage(HWND hwnd, UINT message, WPARAM wParam, LPARA
 		EndPaint(hwnd, &paintStruct);
 		return 0;
 	}
+	case WM_TIMER:
+		if (wParam == AnimationTimerId)
+		{
+			AdvanceAnimation();
+			return 0;
+		}
+
+		break;
 	case WM_DISPLAYCHANGE:
-		UpdateWindowPosition();
-		InvalidateRect(hwnd, nullptr, FALSE);
+		if (animationCompleted_)
+		{
+			RecalculateWindowBounds();
+			MoveWindowTo(targetX_, targetY_);
+		}
+
 		return 0;
 	case WM_SIZE:
 		if (renderTarget_)
@@ -359,11 +546,14 @@ LRESULT OverlayHost::HandleMessage(HWND hwnd, UINT message, WPARAM wParam, LPARA
 		DestroyWindow(hwnd);
 		return 0;
 	case WM_DESTROY:
+		KillTimer(hwnd, AnimationTimerId);
 		PostQuitMessage(0);
 		return 0;
 	default:
 		return DefWindowProcW(hwnd, message, wParam, lParam);
 	}
+
+	return DefWindowProcW(hwnd, message, wParam, lParam);
 }
 
 LRESULT CALLBACK OverlayHost::WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
