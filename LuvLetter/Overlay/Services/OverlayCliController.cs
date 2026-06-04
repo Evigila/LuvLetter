@@ -3,22 +3,17 @@ using LuvLetter.Commands;
 
 namespace LuvLetter.Overlay.Services;
 
-public sealed class OverlayCliController
+public sealed class OverlayCliController(
+    INativeOverlayService nativeOverlayService,
+    CommandDispatcher commandDispatcher
+)
 {
-    private readonly INativeOverlayService nativeOverlayService;
-    private readonly CommandDispatcher commandDispatcher;
+    private readonly INativeOverlayService nativeOverlayService = nativeOverlayService;
+    private readonly CommandDispatcher commandDispatcher = commandDispatcher;
     private readonly StringBuilder inputBuffer = new();
 
     private int isOpen;
     private string outputText = string.Empty;
-
-    public OverlayCliController(
-        INativeOverlayService nativeOverlayService,
-        CommandDispatcher commandDispatcher)
-    {
-        this.nativeOverlayService = nativeOverlayService;
-        this.commandDispatcher = commandDispatcher;
-    }
 
     public bool IsOpen => Volatile.Read(ref isOpen) == 1;
 
@@ -90,7 +85,9 @@ public sealed class OverlayCliController
 
     public void ApplyStateToOverlay()
     {
-        nativeOverlayService.SetVisualMode(IsOpen ? OverlayVisualMode.CommandLine : OverlayVisualMode.Badge);
+        nativeOverlayService.SetVisualMode(
+            IsOpen ? OverlayVisualMode.CommandLine : OverlayVisualMode.Badge
+        );
         nativeOverlayService.UpdateInputText(inputBuffer.ToString());
         nativeOverlayService.UpdateOutputText(outputText);
     }

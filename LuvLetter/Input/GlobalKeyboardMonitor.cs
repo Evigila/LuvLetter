@@ -5,7 +5,7 @@ namespace LuvLetter.Input;
 
 // 全局键盘监听：
 // 安装 Win32 低级键盘钩子。在 CLI 打开后，接管输入、删除、提交、关闭等行为。把结果转交给 OverlayCliController，再由它同步到原生叠加层。
-// 识别热键 Alt + Backspace。
+// 识别默热键 Alt + Backspace。
 public sealed class GlobalKeyboardMonitor : IDisposable
 {
     // WH_KEYBOARD_LL：低级键盘钩子，能捕获全局范围内的键盘输入。

@@ -2,21 +2,15 @@ using LuvLetter.Input;
 
 namespace LuvLetter.Overlay.Services;
 
-public sealed class OverlayApplicationController
+public sealed class OverlayApplicationController(
+    INativeOverlayService nativeOverlayService,
+    OverlayCliController cliController,
+    GlobalKeyboardMonitor keyboardMonitor
+)
 {
-    private readonly INativeOverlayService nativeOverlayService;
-    private readonly OverlayCliController cliController;
-    private readonly GlobalKeyboardMonitor keyboardMonitor;
-
-    public OverlayApplicationController(
-        INativeOverlayService nativeOverlayService,
-        OverlayCliController cliController,
-        GlobalKeyboardMonitor keyboardMonitor)
-    {
-        this.nativeOverlayService = nativeOverlayService;
-        this.cliController = cliController;
-        this.keyboardMonitor = keyboardMonitor;
-    }
+    private readonly INativeOverlayService nativeOverlayService = nativeOverlayService;
+    private readonly OverlayCliController cliController = cliController;
+    private readonly GlobalKeyboardMonitor keyboardMonitor = keyboardMonitor;
 
     public void Attach(App app, MainWindow mainWindow)
     {
@@ -52,10 +46,7 @@ public sealed class OverlayApplicationController
         catch (Exception exception)
         {
             _ = System.Windows.Application.Current.Dispatcher.BeginInvoke(() =>
-                System.Windows.MessageBox.Show(
-                    exception.Message,
-                    "Error"
-                )
+                System.Windows.MessageBox.Show(exception.Message, "Error")
             );
         }
     }

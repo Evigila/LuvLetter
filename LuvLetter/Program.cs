@@ -34,9 +34,7 @@ internal static class Program
                         IOverlayConfigurationService,
                         OverlayConfigurationService
                     >();
-                    services.AddSingleton<ICommandParser, DefaultCommandParser>();
-                    services.AddSingleton<ICommandHandler, DefaultCommandHandler>();
-                    services.AddSingleton<CommandDispatcher>();
+                    services.AddCommandModule();
                     services.AddSingleton<INativeOverlayService, NativeOverlayService>();
                     services.AddSingleton<OverlayCliController>();
                     services.AddSingleton<GlobalKeyboardMonitor>();

@@ -1,24 +1,24 @@
 namespace LuvLetter.Commands;
 
-public sealed class CommandDispatcher
+public sealed class CommandDispatcher(
+    ICommandParserService parserService,
+    ICommandExecutor commandExecutor
+)
 {
-    private readonly ICommandParser parser;
-    private readonly ICommandHandler handler;
+    private readonly ICommandParserService parserService = parserService;
+    private readonly ICommandExecutor commandExecutor = commandExecutor;
 
-    public CommandDispatcher(ICommandParser parser, ICommandHandler handler)
+    public Task<CommandExecutionResult> DispatchAsync(
+        string input,
+        CancellationToken cancellationToken = default
+    )
     {
-        this.parser = parser;
-        this.handler = handler;
-    }
-
-    public Task<CommandExecutionResult> DispatchAsync(string input, CancellationToken cancellationToken = default)
-    {
-        var command = parser.Parse(input);
-        if (command.IsEmpty)
+        var commandRequest = parserService.Parse(input);
+        if (commandRequest.IsEmpty)
         {
             return Task.FromResult(CommandExecutionResult.Empty);
         }
 
-        return handler.HandleAsync(command, cancellationToken);
+        return commandExecutor.ExecuteAsync(commandRequest, cancellationToken);
     }
 }
