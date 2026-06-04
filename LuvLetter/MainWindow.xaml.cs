@@ -1,30 +1,27 @@
-﻿using System.Drawing;
-using System.IO;
 using System.Windows;
 using System.Windows.Forms;
+using LuvLetter.Assets;
 
 namespace LuvLetter;
 
 public partial class MainWindow : Window
 {
+    private readonly IAppAssetProvider assetProvider;
     private NotifyIcon notifyIcon = null!;
 
-    public MainWindow()
+    public MainWindow(IAppAssetProvider assetProvider)
     {
+        this.assetProvider = assetProvider;
+
         InitializeComponent();
         InitializeTrayIcon();
     }
 
     private void InitializeTrayIcon()
     {
-        var resourceUri = new Uri("pack://application:,,,/LuvLetter;component/favicon.ico");
-        using var iconStream =
-            System.Windows.Application.GetResourceStream(resourceUri)?.Stream
-            ?? throw new FileNotFoundException("找不到 favicon.ico");
-
         notifyIcon = new NotifyIcon
         {
-            Icon = new Icon(iconStream),
+            Icon = assetProvider.LoadTrayIcon(),
             Visible = true,
             Text = "LuvLetter",
         };
@@ -32,9 +29,9 @@ public partial class MainWindow : Window
         notifyIcon.DoubleClick += (s, args) => ShowWindow();
 
         notifyIcon.ContextMenuStrip = new ContextMenuStrip();
-        notifyIcon.ContextMenuStrip.Items.Add("显示", null, (s, e) => ShowWindow());
+        notifyIcon.ContextMenuStrip.Items.Add("Show", null, (s, e) => ShowWindow());
         notifyIcon.ContextMenuStrip.Items.Add(
-            "退出",
+            "Exit",
             null,
             (s, e) =>
             {
@@ -50,16 +47,16 @@ public partial class MainWindow : Window
 
         if (WindowState == WindowState.Minimized)
         {
-            this.Hide();
-            this.ShowInTaskbar = false;
+            Hide();
+            ShowInTaskbar = false;
         }
     }
 
     private void ShowWindow()
     {
-        this.Show();
-        this.WindowState = WindowState.Normal;
-        this.ShowInTaskbar = true;
-        this.Activate();
+        Show();
+        WindowState = WindowState.Normal;
+        ShowInTaskbar = true;
+        Activate();
     }
 }

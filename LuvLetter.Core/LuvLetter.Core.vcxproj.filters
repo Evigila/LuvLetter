@@ -1,26 +1,110 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup>
-	<Filter Include="Source Files">
-	  <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
-	  <Extensions>cpp;c;cc;cxx;c++;def;odl;idl;hpj;bat;asm;asmx</Extensions>
-	</Filter>
-	<Filter Include="Header Files">
-	  <UniqueIdentifier>{93995380-89BD-4B04-88EB-625FBE52EBFB}</UniqueIdentifier>
-	  <Extensions>h;hh;hpp;hxx;hm;inl;inc;ipp;xsd</Extensions>
-	</Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{93995380-89BD-4B04-88EB-625FBE52EBFB}</UniqueIdentifier>
+      <Extensions>h;hh;hpp;hxx;hm;inl;inc;ipp;xsd</Extensions>
+    </Filter>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;c++;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="Header Files\api">
+      <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F640001}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\host">
+      <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F640002}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\interop">
+      <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F640003}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\layout">
+      <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F640004}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\render">
+      <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F640005}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\state">
+      <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F640006}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\api">
+      <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F640007}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\host">
+      <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F640008}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\interop">
+      <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F640009}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\layout">
+      <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F64000A}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\render">
+      <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F64000B}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\state">
+      <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F64000C}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
-	<ClInclude Include="OverlayHost.h">
-	  <Filter>Header Files</Filter>
-	</ClInclude>
+    <ClInclude Include="api\OverlayApi.h">
+      <Filter>Header Files\api</Filter>
+    </ClInclude>
+    <ClInclude Include="host\OverlayHost.h">
+      <Filter>Header Files\host</Filter>
+    </ClInclude>
+    <ClInclude Include="interop\OverlayEventBridge.h">
+      <Filter>Header Files\interop</Filter>
+    </ClInclude>
+    <ClInclude Include="interop\OverlayRequest.h">
+      <Filter>Header Files\interop</Filter>
+    </ClInclude>
+    <ClInclude Include="interop\OverlayRequestDispatcher.h">
+      <Filter>Header Files\interop</Filter>
+    </ClInclude>
+    <ClInclude Include="layout\LayoutEngine.h">
+      <Filter>Header Files\layout</Filter>
+    </ClInclude>
+    <ClInclude Include="layout\LayoutSnapshot.h">
+      <Filter>Header Files\layout</Filter>
+    </ClInclude>
+    <ClInclude Include="render\AnimationSystem.h">
+      <Filter>Header Files\render</Filter>
+    </ClInclude>
+    <ClInclude Include="render\OverlayRenderer.h">
+      <Filter>Header Files\render</Filter>
+    </ClInclude>
+    <ClInclude Include="state\OverlayState.h">
+      <Filter>Header Files\state</Filter>
+    </ClInclude>
+    <ClInclude Include="state\OverlayStateStore.h">
+      <Filter>Header Files\state</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
-	<ClCompile Include="OverlayHost.cpp">
-	  <Filter>Source Files</Filter>
-	</ClCompile>
-	<ClCompile Include="exports.cpp">
-	  <Filter>Source Files</Filter>
-	</ClCompile>
+    <ClCompile Include="api\OverlayExports.cpp">
+      <Filter>Source Files\api</Filter>
+    </ClCompile>
+    <ClCompile Include="host\OverlayHost.cpp">
+      <Filter>Source Files\host</Filter>
+    </ClCompile>
+    <ClCompile Include="interop\OverlayEventBridge.cpp">
+      <Filter>Source Files\interop</Filter>
+    </ClCompile>
+    <ClCompile Include="interop\OverlayRequestDispatcher.cpp">
+      <Filter>Source Files\interop</Filter>
+    </ClCompile>
+    <ClCompile Include="layout\LayoutEngine.cpp">
+      <Filter>Source Files\layout</Filter>
+    </ClCompile>
+    <ClCompile Include="render\AnimationSystem.cpp">
+      <Filter>Source Files\render</Filter>
+    </ClCompile>
+    <ClCompile Include="render\OverlayRenderer.cpp">
+      <Filter>Source Files\render</Filter>
+    </ClCompile>
+    <ClCompile Include="state\OverlayStateStore.cpp">
+      <Filter>Source Files\state</Filter>
+    </ClCompile>
   </ItemGroup>
 </Project>
