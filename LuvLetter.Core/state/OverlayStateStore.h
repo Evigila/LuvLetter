@@ -17,6 +17,9 @@ public:
 	void UpdateInputText(std::wstring_view text);
 	void UpdateOutputText(std::wstring_view text);
 	void SetVisualMode(LuvLetterOverlayVisualMode visualMode);
+	void SetBadgeActive(bool isActive);
+	void SetInputCursorVisible(bool isVisible);
+	void SetOutputNavigation(bool canPageUp, bool canPageDown);
 
 	const OverlayState& Snapshot() const;
 

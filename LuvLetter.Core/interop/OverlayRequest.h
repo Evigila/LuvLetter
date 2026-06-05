@@ -31,6 +31,12 @@ struct OverlayOutputTextUpdateRequest
 	std::wstring text;
 };
 
+struct OverlayOutputNavigationUpdateRequest
+{
+	bool canPageUp = false;
+	bool canPageDown = false;
+};
+
 struct OverlayVisualModeUpdateRequest
 {
 	LuvLetterOverlayVisualMode visualMode = LuvLetterOverlayVisualMode_Badge;
@@ -42,4 +48,5 @@ using OverlayRequest = std::variant<
 	OverlayTextUpdateRequest,
 	OverlayInputTextUpdateRequest,
 	OverlayOutputTextUpdateRequest,
+	OverlayOutputNavigationUpdateRequest,
 	OverlayVisualModeUpdateRequest>;

@@ -16,10 +16,16 @@ namespace
 		config.contentPaddingTop = 8.0f;
 		config.contentPaddingRight = 8.0f;
 		config.contentPaddingBottom = 8.0f;
-		config.logoWidth = 28.0f;
-		config.logoHeight = 28.0f;
+		config.logoWidth = 0.0f;
+		config.logoHeight = 0.0f;
 		config.logoOffsetX = 0.0f;
 		config.logoOffsetY = 0.0f;
+		config.courtesyZoneOffsetX = 0.0f;
+		config.courtesyZoneOffsetY = 0.0f;
+		config.courtesyZoneWidth = 0.0f;
+		config.courtesyZoneHeight = 0.0f;
+		config.badgeInactiveDelayMs = 5000;
+		config.badgeInactiveOpacity = 0.5f;
 		config.commandOutputHeight = 120.0f;
 		config.textReservedHeight = 0.0f;
 		config.elementGap = 8.0f;
@@ -35,6 +41,10 @@ void OverlayStateStore::Initialize(const LuvLetterOverlayStartOptions& options)
 	state_.outputText.clear();
 	state_.visualMode = LuvLetterOverlayVisualMode_Badge;
 	state_.layoutConfig = SanitizeLayoutConfig(options.layoutConfig);
+	state_.badgeIsActive = true;
+	state_.inputCursorVisible = false;
+	state_.outputCanPageUp = false;
+	state_.outputCanPageDown = false;
 }
 
 void OverlayStateStore::Reset()
@@ -67,6 +77,22 @@ void OverlayStateStore::SetVisualMode(LuvLetterOverlayVisualMode visualMode)
 	state_.visualMode = visualMode;
 }
 
+void OverlayStateStore::SetBadgeActive(bool isActive)
+{
+	state_.badgeIsActive = isActive;
+}
+
+void OverlayStateStore::SetInputCursorVisible(bool isVisible)
+{
+	state_.inputCursorVisible = isVisible;
+}
+
+void OverlayStateStore::SetOutputNavigation(bool canPageUp, bool canPageDown)
+{
+	state_.outputCanPageUp = canPageUp;
+	state_.outputCanPageDown = canPageDown;
+}
+
 const OverlayState& OverlayStateStore::Snapshot() const
 {
 	return state_;
@@ -91,10 +117,27 @@ LuvLetterOverlayLayoutConfig OverlayStateStore::SanitizeLayoutConfig(const LuvLe
 		layoutConfig.contentPaddingRight >= 0.0f ? layoutConfig.contentPaddingRight : sanitized.contentPaddingRight;
 	sanitized.contentPaddingBottom =
 		layoutConfig.contentPaddingBottom >= 0.0f ? layoutConfig.contentPaddingBottom : sanitized.contentPaddingBottom;
-	sanitized.logoWidth = layoutConfig.logoWidth > 0.0f ? layoutConfig.logoWidth : sanitized.logoWidth;
-	sanitized.logoHeight = layoutConfig.logoHeight > 0.0f ? layoutConfig.logoHeight : sanitized.logoHeight;
+	sanitized.logoWidth =
+		layoutConfig.logoWidth > 0.0f ? layoutConfig.logoWidth : static_cast<float>(sanitized.overlayWidth);
+	sanitized.logoHeight =
+		layoutConfig.logoHeight > 0.0f ? layoutConfig.logoHeight : static_cast<float>(sanitized.overlayHeight);
 	sanitized.logoOffsetX = layoutConfig.logoOffsetX;
 	sanitized.logoOffsetY = layoutConfig.logoOffsetY;
+	sanitized.courtesyZoneOffsetX = layoutConfig.courtesyZoneOffsetX;
+	sanitized.courtesyZoneOffsetY = layoutConfig.courtesyZoneOffsetY;
+	sanitized.courtesyZoneWidth =
+		layoutConfig.courtesyZoneWidth > 0.0f
+			? layoutConfig.courtesyZoneWidth
+			: static_cast<float>(sanitized.overlayWidth);
+	sanitized.courtesyZoneHeight =
+		layoutConfig.courtesyZoneHeight > 0.0f
+			? layoutConfig.courtesyZoneHeight
+			: static_cast<float>(sanitized.overlayHeight);
+	sanitized.badgeInactiveDelayMs =
+		layoutConfig.badgeInactiveDelayMs > 0 ? layoutConfig.badgeInactiveDelayMs : sanitized.badgeInactiveDelayMs;
+	sanitized.badgeInactiveOpacity = layoutConfig.badgeInactiveOpacity >= 0.0f
+		? (std::min)(1.0f, layoutConfig.badgeInactiveOpacity)
+		: sanitized.badgeInactiveOpacity;
 	sanitized.commandOutputHeight =
 		std::max(0.0f, layoutConfig.commandOutputHeight);
 	sanitized.textReservedHeight = std::max(0.0f, layoutConfig.textReservedHeight);

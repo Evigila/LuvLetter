@@ -38,6 +38,12 @@ extern "C"
 		float logoHeight;
 		float logoOffsetX;
 		float logoOffsetY;
+		float courtesyZoneOffsetX;
+		float courtesyZoneOffsetY;
+		float courtesyZoneWidth;
+		float courtesyZoneHeight;
+		uint32_t badgeInactiveDelayMs;
+		float badgeInactiveOpacity;
 		float commandOutputHeight;
 		float textReservedHeight;
 		float elementGap;

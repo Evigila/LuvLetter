@@ -4,7 +4,7 @@ namespace LuvLetter.Commands;
 
 public static class CommandServiceCollectionExtensions
 {
-    public static IServiceCollection AddCommandModule(this IServiceCollection services)
+    public static IServiceCollection AddCommandServices(this IServiceCollection services)
     {
         services.AddSingleton<ICommandParserService, CommandParserService>();
         services.AddSingleton<ICommandRegistry, CommandRegistry>();

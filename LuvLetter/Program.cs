@@ -1,4 +1,3 @@
-using System.Windows;
 using LuvLetter.Assets;
 using LuvLetter.Commands;
 using LuvLetter.Configuration;
@@ -34,7 +33,7 @@ internal static class Program
                         IOverlayConfigurationService,
                         OverlayConfigurationService
                     >();
-                    services.AddCommandModule();
+                    services.AddCommandServices();
                     services.AddSingleton<INativeOverlayService, NativeOverlayService>();
                     services.AddSingleton<OverlayCliController>();
                     services.AddSingleton<GlobalKeyboardMonitor>();

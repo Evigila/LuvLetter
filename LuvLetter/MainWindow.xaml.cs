@@ -1,5 +1,4 @@
 using System.Windows;
-using System.Windows.Forms;
 using LuvLetter.Assets;
 
 namespace LuvLetter;

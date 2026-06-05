@@ -10,6 +10,11 @@ namespace
 		return (std::max)(0.0f, value);
 	}
 
+	LONG RoundToLong(float value)
+	{
+		return static_cast<LONG>(std::lround(value));
+	}
+
 	D2D1_RECT_F CreateRect(float left, float top, float right, float bottom)
 	{
 		return D2D1::RectF(left, top, (std::max)(left, right), (std::max)(top, bottom));
@@ -38,6 +43,12 @@ OverlayLayoutSnapshot LayoutEngine::Compute(
 		badgeTop,
 		visibleLeft + badgeWidth,
 		badgeTop + badgeHeight,
+	};
+	snapshot.badgeCourtesyZoneRect = {
+		snapshot.badgeVisibleWindowRect.left + RoundToLong(config.courtesyZoneOffsetX),
+		snapshot.badgeVisibleWindowRect.top + RoundToLong(config.courtesyZoneOffsetY),
+		snapshot.badgeVisibleWindowRect.left + RoundToLong(config.courtesyZoneOffsetX + config.courtesyZoneWidth),
+		snapshot.badgeVisibleWindowRect.top + RoundToLong(config.courtesyZoneOffsetY + config.courtesyZoneHeight),
 	};
 
 	snapshot.badgeHiddenWindowRect = {
@@ -72,12 +83,8 @@ OverlayLayoutSnapshot LayoutEngine::Compute(
 
 	if (state.visualMode == LuvLetterOverlayVisualMode_Badge)
 	{
-		const auto contentRight = (std::max)(contentPaddingLeft, currentWidth - contentPaddingRight);
-		const auto contentBottom = (std::max)(contentPaddingTop, currentHeight - contentPaddingBottom);
-		const auto availableWidth = (std::max)(0.0f, contentRight - contentPaddingLeft);
-		const auto availableHeight = (std::max)(0.0f, contentBottom - contentPaddingTop);
-		const auto logoHalfWidth = (std::min)(config.logoWidth * 0.5f, availableWidth * 0.5f);
-		const auto logoHalfHeight = (std::min)(config.logoHeight * 0.5f, availableHeight * 0.5f);
+		const auto logoHalfWidth = (std::min)(config.logoWidth * 0.5f, currentWidth * 0.5f);
+		const auto logoHalfHeight = (std::min)(config.logoHeight * 0.5f, currentHeight * 0.5f);
 		const auto logoCenterX = (currentWidth * 0.5f) + config.logoOffsetX;
 		const auto logoCenterY = (currentHeight * 0.5f) + config.logoOffsetY;
 		snapshot.logoRect = CreateRect(
@@ -93,14 +100,8 @@ OverlayLayoutSnapshot LayoutEngine::Compute(
 	snapshot.inputBarRect = CreateRect(0.0f, inputBarTop, currentWidth, currentHeight);
 
 	const auto badgePanelWidth = (std::min)(currentWidth, static_cast<float>(badgeWidth));
-	const auto badgeContentLeft = contentPaddingLeft;
-	const auto badgeContentTop = inputBarTop + contentPaddingTop;
-	const auto badgeContentRight = (std::max)(badgeContentLeft, badgePanelWidth - contentPaddingRight);
-	const auto badgeContentBottom = (std::max)(badgeContentTop, currentHeight - contentPaddingBottom);
-	const auto badgeAvailableWidth = (std::max)(0.0f, badgeContentRight - badgeContentLeft);
-	const auto badgeAvailableHeight = (std::max)(0.0f, badgeContentBottom - badgeContentTop);
-	const auto logoHalfWidth = (std::min)(config.logoWidth * 0.5f, badgeAvailableWidth * 0.5f);
-	const auto logoHalfHeight = (std::min)(config.logoHeight * 0.5f, badgeAvailableHeight * 0.5f);
+	const auto logoHalfWidth = (std::min)(config.logoWidth * 0.5f, badgePanelWidth * 0.5f);
+	const auto logoHalfHeight = (std::min)(config.logoHeight * 0.5f, inputBarHeight * 0.5f);
 	const auto logoCenterX = (badgePanelWidth * 0.5f) + config.logoOffsetX;
 	const auto logoCenterY = ((inputBarTop + currentHeight) * 0.5f) + config.logoOffsetY;
 	snapshot.logoRect = CreateRect(
@@ -121,11 +122,26 @@ OverlayLayoutSnapshot LayoutEngine::Compute(
 	const auto outputBottom = (std::max)(0.0f, inputBarTop - commandGap);
 	if (outputBottom > 0.0f)
 	{
+		constexpr float OutputIndicatorGutterWidth = 18.0f;
+		constexpr float OutputIndicatorHeight = 10.0f;
+		const auto indicatorRight = (std::max)(contentPaddingLeft, currentWidth - contentPaddingRight);
+		const auto indicatorLeft = (std::max)(contentPaddingLeft, indicatorRight - OutputIndicatorGutterWidth);
+		const auto outputTextRight = (std::max)(contentPaddingLeft, indicatorLeft - 6.0f);
 		snapshot.outputPanelRect = CreateRect(0.0f, 0.0f, currentWidth, outputBottom);
 		snapshot.outputTextRect = CreateRect(
 			contentPaddingLeft,
 			contentPaddingTop,
-			(std::max)(contentPaddingLeft, currentWidth - contentPaddingRight),
+			outputTextRight,
+			(std::max)(contentPaddingTop, outputBottom - contentPaddingBottom));
+		snapshot.outputScrollUpRect = CreateRect(
+			indicatorLeft,
+			contentPaddingTop,
+			indicatorRight,
+			contentPaddingTop + OutputIndicatorHeight);
+		snapshot.outputScrollDownRect = CreateRect(
+			indicatorLeft,
+			(std::max)(contentPaddingTop, outputBottom - contentPaddingBottom - OutputIndicatorHeight),
+			indicatorRight,
 			(std::max)(contentPaddingTop, outputBottom - contentPaddingBottom));
 		snapshot.hasOutputArea = true;
 	}

@@ -25,6 +25,12 @@ internal struct NativeOverlayLayoutConfig
     public float LogoHeight;
     public float LogoOffsetX;
     public float LogoOffsetY;
+    public float CourtesyZoneOffsetX;
+    public float CourtesyZoneOffsetY;
+    public float CourtesyZoneWidth;
+    public float CourtesyZoneHeight;
+    public uint BadgeInactiveDelayMs;
+    public float BadgeInactiveOpacity;
     public float CommandOutputHeight;
     public float TextReservedHeight;
     public float ElementGap;

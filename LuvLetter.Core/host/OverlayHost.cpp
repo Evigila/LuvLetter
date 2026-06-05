@@ -2,6 +2,8 @@
 
 #include "interop/OverlayRequest.h"
 
+#include <algorithm>
+#include <cmath>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -14,6 +16,11 @@ namespace
 {
 	constexpr wchar_t WindowClassName[] = L"LuvLetter.Core.OverlayWindow";
 	constexpr UINT_PTR AnimationTimerId = 1;
+	constexpr UINT_PTR BehaviorTimerId = 2;
+	constexpr UINT_PTR BadgeInactiveTimerId = 3;
+	constexpr UINT_PTR InputCursorTimerId = 4;
+	constexpr UINT BehaviorPollIntervalMs = 50;
+	constexpr UINT InputCursorBlinkIntervalMs = 530;
 
 	std::wstring CopyTextValue(const wchar_t* text, int32_t textLength)
 	{
@@ -156,6 +163,16 @@ HRESULT OverlayHost::UpdateOutputText(const wchar_t* text, int32_t textLength)
 	return S_OK;
 }
 
+HRESULT OverlayHost::UpdateOutputNavigation(bool canPageUp, bool canPageDown)
+{
+	if (!requestDispatcher_.Enqueue(OverlayOutputNavigationUpdateRequest{ canPageUp, canPageDown }))
+	{
+		return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
+	}
+
+	return S_OK;
+}
+
 HRESULT OverlayHost::SetVisualMode(LuvLetterOverlayVisualMode visualMode)
 {
 	if (visualMode != LuvLetterOverlayVisualMode_Badge &&
@@ -242,6 +259,7 @@ HRESULT OverlayHost::Run()
 	stateStore_.Reset();
 	animationTargets_.clear();
 	finalVisualModeAfterAnimation_.reset();
+	badgeCourtesyHidden_ = false;
 	running_ = false;
 
 	if (needsUninitialize)
@@ -289,7 +307,7 @@ HRESULT OverlayHost::CreateOverlayWindow()
 		layoutSnapshot_.badgeHiddenWindowRect.bottom - layoutSnapshot_.badgeHiddenWindowRect.top;
 
 	hwnd_ = CreateWindowExW(
-		WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
+		WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_LAYERED,
 		WindowClassName,
 		L"LuvLetter Overlay",
 		WS_POPUP,
@@ -308,6 +326,7 @@ HRESULT OverlayHost::CreateOverlayWindow()
 	}
 
 	lastAppliedWindowRect_ = layoutSnapshot_.badgeHiddenWindowRect;
+	UpdateWindowOpacity();
 	requestDispatcher_.BindWindow(hwnd_);
 	ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 	UpdateWindow(hwnd_);
@@ -337,6 +356,11 @@ void OverlayHost::RefreshLayout(bool playEntranceAnimation)
 
 	if (playEntranceAnimation)
 	{
+		badgeCourtesyHidden_ = false;
+		StopInputCursorBlink();
+		stateStore_.SetInputCursorVisible(false);
+		StartBehaviorMonitoring();
+		RestartBadgeInactivityTimer();
 		StartAnimationSequence(
 			layoutSnapshot_.badgeHiddenWindowRect,
 			{ layoutSnapshot_.badgeVisibleWindowRect },
@@ -350,10 +374,32 @@ void OverlayHost::RefreshLayout(bool playEntranceAnimation)
 
 	const auto targetRect = stateStore_.Snapshot().visualMode == LuvLetterOverlayVisualMode_CommandLine
 		? layoutSnapshot_.commandVisibleWindowRect
-		: layoutSnapshot_.badgeVisibleWindowRect;
+		: (badgeCourtesyHidden_ ? layoutSnapshot_.badgeHiddenWindowRect : layoutSnapshot_.badgeVisibleWindowRect);
 	animationSystem_.Start(targetRect, targetRect, GetTickCount64(), 0);
 	ApplyWindowRect(targetRect);
 	UpdateLayoutSnapshotForRect(targetRect);
+	UpdateWindowOpacity();
+
+	if (stateStore_.Snapshot().visualMode == LuvLetterOverlayVisualMode_Badge)
+	{
+		StopInputCursorBlink();
+		stateStore_.SetInputCursorVisible(false);
+		StartBehaviorMonitoring();
+		if (stateStore_.Snapshot().badgeIsActive)
+		{
+			RestartBadgeInactivityTimer();
+		}
+		else
+		{
+			CancelBadgeInactivityTimer();
+		}
+	}
+	else
+	{
+		StopBehaviorMonitoring();
+		CancelBadgeInactivityTimer();
+		StartInputCursorBlink();
+	}
 }
 
 void OverlayHost::TransitionToVisualMode(LuvLetterOverlayVisualMode visualMode)
@@ -372,7 +418,13 @@ void OverlayHost::TransitionToVisualMode(LuvLetterOverlayVisualMode visualMode)
 
 	if (visualMode == LuvLetterOverlayVisualMode_CommandLine)
 	{
+		StopBehaviorMonitoring();
+		CancelBadgeInactivityTimer();
+		badgeCourtesyHidden_ = false;
+		stateStore_.SetBadgeActive(true);
 		stateStore_.SetVisualMode(LuvLetterOverlayVisualMode_CommandLine);
+		StartInputCursorBlink();
+		UpdateWindowOpacity();
 		UpdateLayoutSnapshotForRect(currentWindowRect);
 		StartAnimationSequence(
 			currentWindowRect,
@@ -381,10 +433,158 @@ void OverlayHost::TransitionToVisualMode(LuvLetterOverlayVisualMode visualMode)
 		return;
 	}
 
+	badgeCourtesyHidden_ = false;
+	StopInputCursorBlink();
 	StartAnimationSequence(
 		currentWindowRect,
 		{ layoutSnapshot_.commandBarWindowRect, layoutSnapshot_.badgeVisibleWindowRect },
 		LuvLetterOverlayVisualMode_Badge);
+}
+
+void OverlayHost::StartBehaviorMonitoring()
+{
+	if (hwnd_ == nullptr)
+	{
+		return;
+	}
+
+	SetTimer(hwnd_, BehaviorTimerId, BehaviorPollIntervalMs, nullptr);
+}
+
+void OverlayHost::StopBehaviorMonitoring()
+{
+	if (hwnd_ != nullptr)
+	{
+		KillTimer(hwnd_, BehaviorTimerId);
+	}
+}
+
+void OverlayHost::RestartBadgeInactivityTimer()
+{
+	if (hwnd_ == nullptr || stateStore_.Snapshot().visualMode != LuvLetterOverlayVisualMode_Badge)
+	{
+		return;
+	}
+
+	KillTimer(hwnd_, BadgeInactiveTimerId);
+	SetTimer(hwnd_, BadgeInactiveTimerId, stateStore_.Snapshot().layoutConfig.badgeInactiveDelayMs, nullptr);
+}
+
+void OverlayHost::CancelBadgeInactivityTimer()
+{
+	if (hwnd_ != nullptr)
+	{
+		KillTimer(hwnd_, BadgeInactiveTimerId);
+	}
+}
+
+void OverlayHost::StartInputCursorBlink()
+{
+	if (hwnd_ == nullptr || stateStore_.Snapshot().visualMode != LuvLetterOverlayVisualMode_CommandLine)
+	{
+		return;
+	}
+
+	stateStore_.SetInputCursorVisible(true);
+	SetTimer(hwnd_, InputCursorTimerId, InputCursorBlinkIntervalMs, nullptr);
+	InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void OverlayHost::StopInputCursorBlink()
+{
+	if (hwnd_ != nullptr)
+	{
+		KillTimer(hwnd_, InputCursorTimerId);
+	}
+
+	stateStore_.SetInputCursorVisible(false);
+	if (hwnd_ != nullptr)
+	{
+		InvalidateRect(hwnd_, nullptr, FALSE);
+	}
+}
+
+void OverlayHost::SetBadgeActiveState(bool isActive, bool restartTimer)
+{
+	stateStore_.SetBadgeActive(isActive);
+	UpdateWindowOpacity();
+
+	if (stateStore_.Snapshot().visualMode != LuvLetterOverlayVisualMode_Badge)
+	{
+		CancelBadgeInactivityTimer();
+		return;
+	}
+
+	if (isActive && restartTimer)
+	{
+		RestartBadgeInactivityTimer();
+		return;
+	}
+
+	if (!isActive)
+	{
+		CancelBadgeInactivityTimer();
+	}
+}
+
+void OverlayHost::UpdateWindowOpacity() const
+{
+	if (hwnd_ == nullptr)
+	{
+		return;
+	}
+
+	const auto& state = stateStore_.Snapshot();
+	const auto alpha = state.visualMode == LuvLetterOverlayVisualMode_Badge && !state.badgeIsActive
+		? ComputeBadgeInactiveAlpha()
+		: static_cast<BYTE>(255);
+	SetLayeredWindowAttributes(hwnd_, 0, alpha, LWA_ALPHA);
+}
+
+void OverlayHost::EvaluateBadgeBehavior()
+{
+	if (hwnd_ == nullptr || stateStore_.Snapshot().visualMode != LuvLetterOverlayVisualMode_Badge)
+	{
+		return;
+	}
+
+	if (animationSystem_.IsActive())
+	{
+		return;
+	}
+
+	const auto cursorInsideCourtesyZone = IsCursorInsideBadgeCourtesyZone();
+	if (cursorInsideCourtesyZone && !badgeCourtesyHidden_)
+	{
+		badgeCourtesyHidden_ = true;
+		SetBadgeActiveState(true, true);
+		StartAnimationSequence(GetCurrentWindowRect(), { layoutSnapshot_.badgeHiddenWindowRect }, std::nullopt);
+		return;
+	}
+
+	if (!cursorInsideCourtesyZone && badgeCourtesyHidden_)
+	{
+		badgeCourtesyHidden_ = false;
+		SetBadgeActiveState(true, true);
+		StartAnimationSequence(GetCurrentWindowRect(), { layoutSnapshot_.badgeVisibleWindowRect }, std::nullopt);
+	}
+}
+
+bool OverlayHost::IsCursorInsideBadgeCourtesyZone() const
+{
+	POINT cursorPoint{};
+	if (GetCursorPos(&cursorPoint) == 0)
+	{
+		return false;
+	}
+
+	return PtInRect(&layoutSnapshot_.badgeCourtesyZoneRect, cursorPoint) != FALSE;
+}
+
+BYTE OverlayHost::ComputeBadgeInactiveAlpha() const
+{
+	const auto opacity = (std::clamp)(stateStore_.Snapshot().layoutConfig.badgeInactiveOpacity, 0.0f, 1.0f);
+	return static_cast<BYTE>(std::lround(opacity * 255.0f));
 }
 
 void OverlayHost::ApplyWindowRect(const RECT& windowRect) const
@@ -434,6 +634,18 @@ void OverlayHost::AdvanceAnimation()
 	{
 		stateStore_.SetVisualMode(*finalVisualModeAfterAnimation_);
 		finalVisualModeAfterAnimation_.reset();
+		if (stateStore_.Snapshot().visualMode == LuvLetterOverlayVisualMode_Badge)
+		{
+			StopInputCursorBlink();
+			SetBadgeActiveState(true, true);
+			StartBehaviorMonitoring();
+		}
+		else
+		{
+			StartInputCursorBlink();
+		}
+
+		UpdateWindowOpacity();
 		UpdateLayoutSnapshotForRect(animationStep.windowRect);
 		InvalidateRect(hwnd_, nullptr, FALSE);
 	}
@@ -477,11 +689,20 @@ void OverlayHost::HandleQueuedRequests()
 				else if constexpr (std::is_same_v<RequestType, OverlayInputTextUpdateRequest>)
 				{
 					stateStore_.UpdateInputText(typedRequest.text);
+					if (stateStore_.Snapshot().visualMode == LuvLetterOverlayVisualMode_CommandLine)
+					{
+						StartInputCursorBlink();
+					}
 					shouldRedraw = true;
 				}
 				else if constexpr (std::is_same_v<RequestType, OverlayOutputTextUpdateRequest>)
 				{
 					stateStore_.UpdateOutputText(typedRequest.text);
+					shouldRedraw = true;
+				}
+				else if constexpr (std::is_same_v<RequestType, OverlayOutputNavigationUpdateRequest>)
+				{
+					stateStore_.SetOutputNavigation(typedRequest.canPageUp, typedRequest.canPageDown);
 					shouldRedraw = true;
 				}
 				else if constexpr (std::is_same_v<RequestType, OverlayVisualModeUpdateRequest>)
@@ -541,6 +762,18 @@ void OverlayHost::BeginNextAnimationPhase(const RECT& fromRect)
 		{
 			stateStore_.SetVisualMode(*finalVisualModeAfterAnimation_);
 			finalVisualModeAfterAnimation_.reset();
+			if (stateStore_.Snapshot().visualMode == LuvLetterOverlayVisualMode_Badge)
+			{
+				StopInputCursorBlink();
+				SetBadgeActiveState(true, true);
+				StartBehaviorMonitoring();
+			}
+			else
+			{
+				StartInputCursorBlink();
+			}
+
+			UpdateWindowOpacity();
 			UpdateLayoutSnapshotForRect(fromRect);
 		}
 
@@ -610,6 +843,23 @@ LRESULT OverlayHost::HandleMessage(HWND hwnd, UINT message, WPARAM wParam, LPARA
 			AdvanceAnimation();
 			return 0;
 		}
+		if (wParam == BehaviorTimerId)
+		{
+			EvaluateBadgeBehavior();
+			return 0;
+		}
+		if (wParam == BadgeInactiveTimerId)
+		{
+			KillTimer(hwnd, BadgeInactiveTimerId);
+			SetBadgeActiveState(false, false);
+			return 0;
+		}
+		if (wParam == InputCursorTimerId)
+		{
+			stateStore_.SetInputCursorVisible(!stateStore_.Snapshot().inputCursorVisible);
+			InvalidateRect(hwnd, nullptr, FALSE);
+			return 0;
+		}
 
 		break;
 	case WM_DISPLAYCHANGE:
@@ -625,8 +875,12 @@ LRESULT OverlayHost::HandleMessage(HWND hwnd, UINT message, WPARAM wParam, LPARA
 		return 0;
 	case WM_DESTROY:
 		KillTimer(hwnd, AnimationTimerId);
+		KillTimer(hwnd, BehaviorTimerId);
+		KillTimer(hwnd, BadgeInactiveTimerId);
+		KillTimer(hwnd, InputCursorTimerId);
 		animationTargets_.clear();
 		finalVisualModeAfterAnimation_.reset();
+		badgeCourtesyHidden_ = false;
 		requestDispatcher_.UnbindWindow();
 		hwnd_ = nullptr;
 		PostQuitMessage(0);

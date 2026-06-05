@@ -75,6 +75,13 @@ extern "C" __declspec(dllexport) int LUVLETTER_OVERLAY_CALL UpdateOverlayOutputT
 	return OverlayHost::Instance().UpdateOutputText(text, textLength);
 }
 
+extern "C" __declspec(dllexport) int LUVLETTER_OVERLAY_CALL UpdateOverlayOutputNavigation(
+	int32_t canPageUp,
+	int32_t canPageDown)
+{
+	return OverlayHost::Instance().UpdateOutputNavigation(canPageUp != 0, canPageDown != 0);
+}
+
 extern "C" __declspec(dllexport) int LUVLETTER_OVERLAY_CALL SetOverlayVisualMode(int32_t visualMode)
 {
 	return OverlayHost::Instance().SetVisualMode(static_cast<LuvLetterOverlayVisualMode>(visualMode));

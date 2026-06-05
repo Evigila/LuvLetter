@@ -1,5 +1,3 @@
-using LuvLetter.Overlay;
-
 namespace LuvLetter.Overlay.Services;
 
 public interface INativeOverlayService
@@ -10,5 +8,6 @@ public interface INativeOverlayService
     void SetVisualMode(OverlayVisualMode visualMode);
     void UpdateInputText(string text);
     void UpdateOutputText(string text);
+    void UpdateOutputNavigation(bool canPageUp, bool canPageDown);
     void UpdateLogo(byte[] logoBytes);
 }

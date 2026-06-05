@@ -1,12 +1,12 @@
-using System.Drawing;
 using System.IO;
-using System.Windows;
 
 namespace LuvLetter.Assets;
 
 public sealed class AppAssetProvider : IAppAssetProvider
 {
-    private static readonly Uri FaviconUri = new("pack://application:,,,/LuvLetter;component/favicon.ico");
+    private static readonly Uri FaviconUri = new(
+        "pack://application:,,,/LuvLetter;component/favicon.ico"
+    );
 
     public byte[] LoadOverlayLogoBytes()
     {

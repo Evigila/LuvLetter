@@ -126,6 +126,22 @@ public sealed class NativeOverlayService : INativeOverlayService
         }
     }
 
+    public void UpdateOutputNavigation(bool canPageUp, bool canPageDown)
+    {
+        if (!IsStarted)
+        {
+            return;
+        }
+
+        var result = NativeOverlayApi.UpdateOverlayOutputNavigation(canPageUp, canPageDown);
+        if (result < 0)
+        {
+            throw new InvalidOperationException(
+                $"Failed to update overlay output navigation. HRESULT: 0x{result:X8}"
+            );
+        }
+    }
+
     public void UpdateLogo(byte[] logoBytes)
     {
         if (!IsStarted)
@@ -206,6 +222,12 @@ public sealed class NativeOverlayService : INativeOverlayService
             LogoHeight = layout.LogoHeight,
             LogoOffsetX = layout.LogoOffsetX,
             LogoOffsetY = layout.LogoOffsetY,
+            CourtesyZoneOffsetX = layout.CourtesyZoneOffsetX,
+            CourtesyZoneOffsetY = layout.CourtesyZoneOffsetY,
+            CourtesyZoneWidth = layout.CourtesyZoneWidth,
+            CourtesyZoneHeight = layout.CourtesyZoneHeight,
+            BadgeInactiveDelayMs = layout.BadgeInactiveDelayMs,
+            BadgeInactiveOpacity = layout.BadgeInactiveOpacity,
             CommandOutputHeight = layout.CommandOutputHeight,
             TextReservedHeight = layout.TextReservedHeight,
             ElementGap = layout.ElementGap,

@@ -31,6 +31,7 @@ private:
 	Microsoft::WRL::ComPtr<IDWriteTextFormat> outputTextFormat_;
 	Microsoft::WRL::ComPtr<ID2D1HwndRenderTarget> renderTarget_;
 	Microsoft::WRL::ComPtr<ID2D1Bitmap> logoBitmap_;
+	Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> inputBarGradientBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> outputPanelBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> separatorBrush_;

@@ -30,6 +30,7 @@ public:
 	HRESULT UpdateText(const wchar_t* text, int32_t textLength);
 	HRESULT UpdateInputText(const wchar_t* text, int32_t textLength);
 	HRESULT UpdateOutputText(const wchar_t* text, int32_t textLength);
+	HRESULT UpdateOutputNavigation(bool canPageUp, bool canPageDown);
 	HRESULT SetVisualMode(LuvLetterOverlayVisualMode visualMode);
 	void SetEventCallback(LuvLetterOverlayEventCallback callback, void* context);
 
@@ -44,6 +45,17 @@ private:
 	bool TryGetAnchorMonitorInfo(MONITORINFO& monitorInfo) const;
 	void RefreshLayout(bool playEntranceAnimation);
 	void TransitionToVisualMode(LuvLetterOverlayVisualMode visualMode);
+	void StartBehaviorMonitoring();
+	void StopBehaviorMonitoring();
+	void RestartBadgeInactivityTimer();
+	void CancelBadgeInactivityTimer();
+	void StartInputCursorBlink();
+	void StopInputCursorBlink();
+	void SetBadgeActiveState(bool isActive, bool restartTimer);
+	void UpdateWindowOpacity() const;
+	void EvaluateBadgeBehavior();
+	bool IsCursorInsideBadgeCourtesyZone() const;
+	BYTE ComputeBadgeInactiveAlpha() const;
 	void ApplyWindowRect(const RECT& windowRect) const;
 	void AdvanceAnimation();
 	void HandleQueuedRequests();
@@ -76,4 +88,5 @@ private:
 	mutable RECT lastAppliedWindowRect_{};
 	std::deque<RECT> animationTargets_{};
 	std::optional<LuvLetterOverlayVisualMode> finalVisualModeAfterAnimation_{};
+	bool badgeCourtesyHidden_ = false;
 };

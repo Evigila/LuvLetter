@@ -59,6 +59,17 @@ internal static class NativeOverlayApi
 
     [DllImport(
         "LuvLetter.Core.dll",
+        EntryPoint = "UpdateOverlayOutputNavigation",
+        ExactSpelling = true,
+        CallingConvention = CallingConvention.StdCall
+    )]
+    internal static extern int UpdateOverlayOutputNavigation(
+        [MarshalAs(UnmanagedType.Bool)] bool canPageUp,
+        [MarshalAs(UnmanagedType.Bool)] bool canPageDown
+    );
+
+    [DllImport(
+        "LuvLetter.Core.dll",
         EntryPoint = "SetOverlayVisualMode",
         ExactSpelling = true,
         CallingConvention = CallingConvention.StdCall
