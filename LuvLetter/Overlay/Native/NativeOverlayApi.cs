@@ -50,6 +50,27 @@ internal static class NativeOverlayApi
 
     [DllImport(
         "LuvLetter.Core.dll",
+        EntryPoint = "UpdateOverlayInputPromptText",
+        ExactSpelling = true,
+        CallingConvention = CallingConvention.StdCall,
+        CharSet = CharSet.Unicode
+    )]
+    internal static extern int UpdateOverlayInputPromptText(string? text, int textLength);
+
+    [DllImport(
+        "LuvLetter.Core.dll",
+        EntryPoint = "UpdateOverlayInputSelection",
+        ExactSpelling = true,
+        CallingConvention = CallingConvention.StdCall
+    )]
+    internal static extern int UpdateOverlayInputSelection(
+        int selectionStart,
+        int selectionLength,
+        int caretIndex
+    );
+
+    [DllImport(
+        "LuvLetter.Core.dll",
         EntryPoint = "UpdateOverlayOutputText",
         ExactSpelling = true,
         CallingConvention = CallingConvention.StdCall,

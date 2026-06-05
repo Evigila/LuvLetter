@@ -1,4 +1,3 @@
-using System.Text;
 using LuvLetter.Commands;
 using LuvLetter.Configuration;
 
@@ -10,18 +9,31 @@ public enum OverlayCliState
     CommandLine = 1,
 }
 
+public sealed record OverlayCliInputState(
+    string PromptText,
+    string Text,
+    int SelectionStart,
+    int SelectionLength,
+    int CaretIndex
+);
+
 public sealed class OverlayCliController
 {
     private const float ApproxOutputLineHeight = 22.0f;
+    private const string DefaultPromptText = "EN";
 
     private readonly INativeOverlayService nativeOverlayService;
     private readonly CommandDispatcher commandDispatcher;
     private readonly IOverlayConfigurationService configurationService;
-    private readonly StringBuilder inputBuffer = new();
     private readonly List<string> outputLines = [];
     private readonly List<string> commandHistory = [];
 
     private OverlayCliState currentState = OverlayCliState.Badge;
+    private string currentPromptText = DefaultPromptText;
+    private string currentInputText = string.Empty;
+    private int currentSelectionStart;
+    private int currentSelectionLength;
+    private int currentCaretIndex;
     private int historyIndex;
     private int outputPageStartLine;
     private string historyDraft = string.Empty;
@@ -40,9 +52,19 @@ public sealed class OverlayCliController
         configurationService.LayoutChanged += (_, _) => SyncOutputToOverlay();
     }
 
+    public event EventHandler? StateChanged;
+
     public OverlayCliState CurrentState => currentState;
 
     public bool IsOpen => currentState == OverlayCliState.CommandLine;
+
+    public OverlayCliInputState CurrentInputState => CreateInputState(
+        currentPromptText,
+        currentInputText,
+        currentSelectionStart,
+        currentSelectionLength,
+        currentCaretIndex
+    );
 
     public void Toggle()
     {
@@ -59,55 +81,67 @@ public sealed class OverlayCliController
         TransitionToState(OverlayCliState.Badge);
     }
 
-    public void AppendText(string text)
+    public void UpdateInputPromptText(string promptText)
     {
-        if (!IsOpen || string.IsNullOrEmpty(text))
+        var nextPromptText = NormalizePromptText(promptText);
+        if (string.Equals(currentPromptText, nextPromptText, StringComparison.Ordinal))
         {
             return;
         }
 
-        BeginManualInputEdit();
-        inputBuffer.Append(text);
+        currentPromptText = nextPromptText;
         SyncInputToOverlay();
     }
 
-    public void Backspace()
+    public void UpdateInputState(string text, int selectionStart, int selectionLength, int caretIndex)
     {
-        if (!IsOpen || inputBuffer.Length == 0)
+        var nextState = CreateInputState(
+            currentPromptText,
+            text,
+            selectionStart,
+            selectionLength,
+            caretIndex
+        );
+        if (CurrentInputState == nextState)
         {
             return;
         }
 
-        BeginManualInputEdit();
-        inputBuffer.Length -= 1;
+        var textChanged = !string.Equals(currentInputText, nextState.Text, StringComparison.Ordinal);
+        SetInputState(nextState);
+        if (textChanged)
+        {
+            BeginManualInputEdit();
+        }
+
         SyncInputToOverlay();
     }
 
-    public void RecallPreviousCommand()
+    public OverlayCliInputState RecallPreviousCommand()
     {
         if (!IsOpen || commandHistory.Count == 0)
         {
-            return;
+            return CurrentInputState;
         }
 
         if (historyIndex == commandHistory.Count)
         {
-            historyDraft = inputBuffer.ToString();
+            historyDraft = currentInputText;
         }
 
         historyIndex = Math.Max(0, historyIndex - 1);
-        ReplaceInput(commandHistory[historyIndex]);
+        return ReplaceInput(commandHistory[historyIndex]);
     }
 
-    public void RecallNextCommand()
+    public OverlayCliInputState RecallNextCommand()
     {
         if (!IsOpen || commandHistory.Count == 0 || historyIndex >= commandHistory.Count)
         {
-            return;
+            return CurrentInputState;
         }
 
         historyIndex += 1;
-        ReplaceInput(historyIndex == commandHistory.Count ? historyDraft : commandHistory[historyIndex]);
+        return ReplaceInput(historyIndex == commandHistory.Count ? historyDraft : commandHistory[historyIndex]);
     }
 
     public void PageOutputUp()
@@ -132,17 +166,17 @@ public sealed class OverlayCliController
         SyncOutputToOverlay();
     }
 
-    public async Task SubmitAsync(CancellationToken cancellationToken = default)
+    public async Task<OverlayCliInputState> SubmitAsync(CancellationToken cancellationToken = default)
     {
         if (!IsOpen)
         {
-            return;
+            return CurrentInputState;
         }
 
-        var commandText = inputBuffer.ToString().Trim();
+        var commandText = currentInputText.Trim();
         if (string.IsNullOrWhiteSpace(commandText))
         {
-            return;
+            return CurrentInputState;
         }
 
         commandHistory.Add(commandText);
@@ -150,23 +184,22 @@ public sealed class OverlayCliController
         historyDraft = string.Empty;
 
         var result = await commandDispatcher.DispatchAsync(commandText, cancellationToken);
-        var outputBuilder = new StringBuilder();
-        outputBuilder.Append("> ").Append(commandText);
+        var outputLinesBuilder = new System.Text.StringBuilder();
+        outputLinesBuilder.Append("> ").Append(commandText);
         if (!string.IsNullOrWhiteSpace(result.OutputText))
         {
-            outputBuilder.AppendLine();
-            outputBuilder.Append(result.OutputText);
+            outputLinesBuilder.AppendLine();
+            outputLinesBuilder.Append(result.OutputText);
         }
 
-        AppendOutputEntry(outputBuilder.ToString());
-
-        inputBuffer.Clear();
+        AppendOutputEntry(outputLinesBuilder.ToString());
+        ReplaceInput(string.Empty);
         historyIndex = commandHistory.Count;
         historyDraft = string.Empty;
         SnapOutputViewportToBottom();
 
-        SyncInputToOverlay();
         SyncOutputToOverlay();
+        return CurrentInputState;
     }
 
     public void ApplyStateToOverlay()
@@ -185,13 +218,14 @@ public sealed class OverlayCliController
         }
 
         currentState = nextState;
+        historyIndex = commandHistory.Count;
         if (currentState == OverlayCliState.CommandLine)
         {
-            historyIndex = commandHistory.Count;
-            historyDraft = inputBuffer.ToString();
+            historyDraft = currentInputText;
         }
 
         ApplyStateToOverlay();
+        StateChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private static OverlayVisualMode MapVisualMode(OverlayCliState state)
@@ -203,21 +237,22 @@ public sealed class OverlayCliController
 
     private void BeginManualInputEdit()
     {
-        if (historyIndex == commandHistory.Count)
-        {
-            historyDraft = inputBuffer.ToString();
-            return;
-        }
-
-        historyDraft = inputBuffer.ToString();
+        historyDraft = currentInputText;
         historyIndex = commandHistory.Count;
     }
 
-    private void ReplaceInput(string text)
+    private OverlayCliInputState ReplaceInput(string text)
     {
-        inputBuffer.Clear();
-        inputBuffer.Append(text);
+        var nextState = CreateInputState(
+            currentPromptText,
+            text,
+            text.Length,
+            0,
+            text.Length
+        );
+        SetInputState(nextState);
         SyncInputToOverlay();
+        return CurrentInputState;
     }
 
     private void AppendOutputEntry(string text)
@@ -245,7 +280,13 @@ public sealed class OverlayCliController
 
     private void SyncInputToOverlay()
     {
-        nativeOverlayService.UpdateInputText(inputBuffer.ToString());
+        nativeOverlayService.UpdateInputPromptText(currentPromptText);
+        nativeOverlayService.UpdateInputText(currentInputText);
+        nativeOverlayService.UpdateInputSelection(
+            currentSelectionStart,
+            currentSelectionLength,
+            currentCaretIndex
+        );
     }
 
     private void SyncOutputToOverlay()
@@ -254,9 +295,7 @@ public sealed class OverlayCliController
         var maxPageStart = GetMaxOutputPageStartLine(pageSize);
         outputPageStartLine = Math.Clamp(outputPageStartLine, 0, maxPageStart);
 
-        var visibleLines = outputLines
-            .Skip(outputPageStartLine)
-            .Take(pageSize);
+        var visibleLines = outputLines.Skip(outputPageStartLine).Take(pageSize);
         var visibleText = string.Join(Environment.NewLine, visibleLines);
         var canPageUp = outputPageStartLine > 0;
         var canPageDown = outputPageStartLine + pageSize < outputLines.Count;
@@ -283,6 +322,47 @@ public sealed class OverlayCliController
     private int GetMaxOutputPageStartLine(int pageSize)
     {
         return Math.Max(0, outputLines.Count - pageSize);
+    }
+
+    private void SetInputState(OverlayCliInputState inputState)
+    {
+        currentPromptText = inputState.PromptText;
+        currentInputText = inputState.Text;
+        currentSelectionStart = inputState.SelectionStart;
+        currentSelectionLength = inputState.SelectionLength;
+        currentCaretIndex = inputState.CaretIndex;
+    }
+
+    private static OverlayCliInputState CreateInputState(
+        string promptText,
+        string? text,
+        int selectionStart,
+        int selectionLength,
+        int caretIndex
+    )
+    {
+        text ??= string.Empty;
+        selectionStart = Math.Clamp(selectionStart, 0, text.Length);
+        selectionLength = Math.Clamp(selectionLength, 0, text.Length - selectionStart);
+        caretIndex = Math.Clamp(caretIndex, 0, text.Length);
+
+        return new OverlayCliInputState(
+            NormalizePromptText(promptText),
+            text,
+            selectionStart,
+            selectionLength,
+            caretIndex
+        );
+    }
+
+    private static string NormalizePromptText(string? promptText)
+    {
+        if (string.IsNullOrWhiteSpace(promptText))
+        {
+            return DefaultPromptText;
+        }
+
+        return promptText.Trim().ToUpperInvariant();
     }
 
     private static IEnumerable<string> SplitLines(string text)

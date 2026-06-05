@@ -62,9 +62,19 @@ void OverlayStateStore::UpdateLogo(const uint8_t* logoData, size_t logoSize)
 	state_.logoBytes.assign(logoData, logoData + logoSize);
 }
 
+void OverlayStateStore::UpdateInputPromptText(std::wstring_view text)
+{
+	state_.inputPromptText.assign(text.begin(), text.end());
+	if (state_.inputPromptText.empty())
+	{
+		state_.inputPromptText = L"EN";
+	}
+}
+
 void OverlayStateStore::UpdateInputText(std::wstring_view text)
 {
 	state_.inputText.assign(text.begin(), text.end());
+	ClampInputSelection();
 }
 
 void OverlayStateStore::UpdateOutputText(std::wstring_view text)
@@ -87,6 +97,14 @@ void OverlayStateStore::SetInputCursorVisible(bool isVisible)
 	state_.inputCursorVisible = isVisible;
 }
 
+void OverlayStateStore::SetInputSelection(int32_t selectionStart, int32_t selectionLength, int32_t caretIndex)
+{
+	state_.inputSelectionStart = selectionStart;
+	state_.inputSelectionLength = selectionLength;
+	state_.inputCaretIndex = caretIndex;
+	ClampInputSelection();
+}
+
 void OverlayStateStore::SetOutputNavigation(bool canPageUp, bool canPageDown)
 {
 	state_.outputCanPageUp = canPageUp;
@@ -96,6 +114,14 @@ void OverlayStateStore::SetOutputNavigation(bool canPageUp, bool canPageDown)
 const OverlayState& OverlayStateStore::Snapshot() const
 {
 	return state_;
+}
+
+void OverlayStateStore::ClampInputSelection()
+{
+	const auto textLength = static_cast<int32_t>(state_.inputText.size());
+	state_.inputSelectionStart = (std::clamp)(state_.inputSelectionStart, 0, textLength);
+	state_.inputSelectionLength = (std::clamp)(state_.inputSelectionLength, 0, textLength - state_.inputSelectionStart);
+	state_.inputCaretIndex = (std::clamp)(state_.inputCaretIndex, 0, textLength);
 }
 
 LuvLetterOverlayLayoutConfig OverlayStateStore::SanitizeLayoutConfig(const LuvLetterOverlayLayoutConfig& layoutConfig)

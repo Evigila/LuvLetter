@@ -26,6 +26,18 @@ struct OverlayInputTextUpdateRequest
 	std::wstring text;
 };
 
+struct OverlayInputPromptTextUpdateRequest
+{
+	std::wstring text;
+};
+
+struct OverlayInputSelectionUpdateRequest
+{
+	int32_t selectionStart = 0;
+	int32_t selectionLength = 0;
+	int32_t caretIndex = 0;
+};
+
 struct OverlayOutputTextUpdateRequest
 {
 	std::wstring text;
@@ -47,6 +59,8 @@ using OverlayRequest = std::variant<
 	OverlayLogoUpdateRequest,
 	OverlayTextUpdateRequest,
 	OverlayInputTextUpdateRequest,
+	OverlayInputPromptTextUpdateRequest,
+	OverlayInputSelectionUpdateRequest,
 	OverlayOutputTextUpdateRequest,
 	OverlayOutputNavigationUpdateRequest,
 	OverlayVisualModeUpdateRequest>;

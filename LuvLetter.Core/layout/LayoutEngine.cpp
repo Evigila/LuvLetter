@@ -110,8 +110,9 @@ OverlayLayoutSnapshot LayoutEngine::Compute(
 		logoCenterX + logoHalfWidth,
 		logoCenterY + logoHalfHeight);
 
+	constexpr float PromptWidth = 28.0f;
 	const auto promptLeft = (std::min)(currentWidth, badgePanelWidth + commandGap);
-	const auto promptRight = (std::min)(currentWidth, promptLeft + 18.0f);
+	const auto promptRight = (std::min)(currentWidth, promptLeft + PromptWidth);
 	snapshot.inputPromptRect = CreateRect(promptLeft, inputBarTop, promptRight, currentHeight);
 	snapshot.inputTextRect = CreateRect(
 		(std::min)(currentWidth, promptRight + 6.0f),

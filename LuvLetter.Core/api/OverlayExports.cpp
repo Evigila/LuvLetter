@@ -63,6 +63,26 @@ extern "C" __declspec(dllexport) int LUVLETTER_OVERLAY_CALL UpdateOverlayInputTe
 	return OverlayHost::Instance().UpdateInputText(text, textLength);
 }
 
+extern "C" __declspec(dllexport) int LUVLETTER_OVERLAY_CALL UpdateOverlayInputPromptText(
+	const wchar_t* text,
+	int32_t textLength)
+{
+	if (text == nullptr && textLength > 0)
+	{
+		return E_INVALIDARG;
+	}
+
+	return OverlayHost::Instance().UpdateInputPromptText(text, textLength);
+}
+
+extern "C" __declspec(dllexport) int LUVLETTER_OVERLAY_CALL UpdateOverlayInputSelection(
+	int32_t selectionStart,
+	int32_t selectionLength,
+	int32_t caretIndex)
+{
+	return OverlayHost::Instance().UpdateInputSelection(selectionStart, selectionLength, caretIndex);
+}
+
 extern "C" __declspec(dllexport) int LUVLETTER_OVERLAY_CALL UpdateOverlayOutputText(
 	const wchar_t* text,
 	int32_t textLength)

@@ -5,20 +5,24 @@ namespace LuvLetter.Overlay.Services;
 public sealed class OverlayApplicationController(
     INativeOverlayService nativeOverlayService,
     OverlayCliController cliController,
-    GlobalKeyboardMonitor keyboardMonitor
+    GlobalKeyboardMonitor keyboardMonitor,
+    OverlayCliInputHost cliInputHost
 )
 {
     private readonly INativeOverlayService nativeOverlayService = nativeOverlayService;
     private readonly OverlayCliController cliController = cliController;
     private readonly GlobalKeyboardMonitor keyboardMonitor = keyboardMonitor;
+    private readonly OverlayCliInputHost cliInputHost = cliInputHost;
 
     public void Attach(App app, MainWindow mainWindow)
     {
+        cliInputHost.Start();
         keyboardMonitor.Start();
         mainWindow.ContentRendered += StartOverlayAfterRender;
 
         app.Exit += (_, _) =>
         {
+            cliInputHost.Stop();
             keyboardMonitor.Stop();
             nativeOverlayService.Stop();
         };

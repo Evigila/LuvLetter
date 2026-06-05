@@ -36,7 +36,9 @@ internal static class Program
                     services.AddCommandServices();
                     services.AddSingleton<INativeOverlayService, NativeOverlayService>();
                     services.AddSingleton<OverlayCliController>();
+                    services.AddSingleton<OverlayInputMethodService>();
                     services.AddSingleton<GlobalKeyboardMonitor>();
+                    services.AddSingleton<OverlayCliInputHost>();
                     services.AddSingleton<OverlayApplicationController>();
                 }
             )

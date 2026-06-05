@@ -139,11 +139,34 @@ HRESULT OverlayHost::UpdateText(const wchar_t* text, int32_t textLength)
 	return UpdateOutputText(text, textLength);
 }
 
+HRESULT OverlayHost::UpdateInputPromptText(const wchar_t* text, int32_t textLength)
+{
+	OverlayInputPromptTextUpdateRequest request{};
+	request.text = CopyTextValue(text, textLength);
+	if (!requestDispatcher_.Enqueue(std::move(request)))
+	{
+		return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
+	}
+
+	return S_OK;
+}
+
 HRESULT OverlayHost::UpdateInputText(const wchar_t* text, int32_t textLength)
 {
 	OverlayInputTextUpdateRequest request{};
 	request.text = CopyTextValue(text, textLength);
 	if (!requestDispatcher_.Enqueue(std::move(request)))
+	{
+		return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
+	}
+
+	return S_OK;
+}
+
+HRESULT OverlayHost::UpdateInputSelection(int32_t selectionStart, int32_t selectionLength, int32_t caretIndex)
+{
+	if (!requestDispatcher_.Enqueue(
+			OverlayInputSelectionUpdateRequest{ selectionStart, selectionLength, caretIndex }))
 	{
 		return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
 	}
@@ -538,7 +561,7 @@ void OverlayHost::UpdateWindowOpacity() const
 	const auto alpha = state.visualMode == LuvLetterOverlayVisualMode_Badge && !state.badgeIsActive
 		? ComputeBadgeInactiveAlpha()
 		: static_cast<BYTE>(255);
-	SetLayeredWindowAttributes(hwnd_, 0, alpha, LWA_ALPHA);
+	SetLayeredWindowAttributes(hwnd_, RGB(0, 0, 0), alpha, LWA_ALPHA | LWA_COLORKEY);
 }
 
 void OverlayHost::EvaluateBadgeBehavior()
@@ -689,6 +712,23 @@ void OverlayHost::HandleQueuedRequests()
 				else if constexpr (std::is_same_v<RequestType, OverlayInputTextUpdateRequest>)
 				{
 					stateStore_.UpdateInputText(typedRequest.text);
+					if (stateStore_.Snapshot().visualMode == LuvLetterOverlayVisualMode_CommandLine)
+					{
+						StartInputCursorBlink();
+					}
+					shouldRedraw = true;
+				}
+				else if constexpr (std::is_same_v<RequestType, OverlayInputPromptTextUpdateRequest>)
+				{
+					stateStore_.UpdateInputPromptText(typedRequest.text);
+					shouldRedraw = true;
+				}
+				else if constexpr (std::is_same_v<RequestType, OverlayInputSelectionUpdateRequest>)
+				{
+					stateStore_.SetInputSelection(
+						typedRequest.selectionStart,
+						typedRequest.selectionLength,
+						typedRequest.caretIndex);
 					if (stateStore_.Snapshot().visualMode == LuvLetterOverlayVisualMode_CommandLine)
 					{
 						StartInputCursorBlink();

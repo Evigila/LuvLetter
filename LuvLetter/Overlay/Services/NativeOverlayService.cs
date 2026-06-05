@@ -111,6 +111,43 @@ public sealed class NativeOverlayService : INativeOverlayService
         }
     }
 
+    public void UpdateInputPromptText(string text)
+    {
+        if (!IsStarted)
+        {
+            return;
+        }
+
+        text ??= string.Empty;
+        var result = NativeOverlayApi.UpdateOverlayInputPromptText(text, text.Length);
+        if (result < 0)
+        {
+            throw new InvalidOperationException(
+                $"Failed to update overlay input prompt text. HRESULT: 0x{result:X8}"
+            );
+        }
+    }
+
+    public void UpdateInputSelection(int selectionStart, int selectionLength, int caretIndex)
+    {
+        if (!IsStarted)
+        {
+            return;
+        }
+
+        var result = NativeOverlayApi.UpdateOverlayInputSelection(
+            selectionStart,
+            selectionLength,
+            caretIndex
+        );
+        if (result < 0)
+        {
+            throw new InvalidOperationException(
+                $"Failed to update overlay input selection. HRESULT: 0x{result:X8}"
+            );
+        }
+    }
+
     public void UpdateOutputText(string text)
     {
         if (!IsStarted)

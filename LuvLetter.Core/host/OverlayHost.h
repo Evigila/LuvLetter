@@ -28,7 +28,9 @@ public:
 	HRESULT UpdateLayout(const LuvLetterOverlayLayoutConfig& layoutConfig);
 	HRESULT UpdateLogo(const uint8_t* logoData, size_t logoSize);
 	HRESULT UpdateText(const wchar_t* text, int32_t textLength);
+	HRESULT UpdateInputPromptText(const wchar_t* text, int32_t textLength);
 	HRESULT UpdateInputText(const wchar_t* text, int32_t textLength);
+	HRESULT UpdateInputSelection(int32_t selectionStart, int32_t selectionLength, int32_t caretIndex);
 	HRESULT UpdateOutputText(const wchar_t* text, int32_t textLength);
 	HRESULT UpdateOutputNavigation(bool canPageUp, bool canPageDown);
 	HRESULT SetVisualMode(LuvLetterOverlayVisualMode visualMode);

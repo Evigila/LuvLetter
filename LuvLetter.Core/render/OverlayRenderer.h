@@ -33,6 +33,8 @@ private:
 	Microsoft::WRL::ComPtr<ID2D1Bitmap> logoBitmap_;
 	Microsoft::WRL::ComPtr<ID2D1LinearGradientBrush> inputBarGradientBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush_;
+	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> placeholderBrush_;
+	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> selectionBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> outputPanelBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> separatorBrush_;
 	std::vector<uint8_t> cachedLogoBytes_;
