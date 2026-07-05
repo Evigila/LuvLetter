@@ -1,0 +1,72 @@
+<Window
+  x:Class="LuvLetter.MainWindow"
+  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  Title="LuvLetter"
+  Width="460"
+  Height="240"
+  MinWidth="420"
+  MinHeight="220"
+  WindowStartupLocation="CenterScreen"
+>
+  <Grid Margin="24">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="20" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="16" />
+      <RowDefinition Height="Auto" />
+      <RowDefinition Height="*" />
+      <RowDefinition Height="Auto" />
+    </Grid.RowDefinitions>
+
+    <StackPanel Grid.Row="0">
+      <TextBlock
+        FontSize="22"
+        FontWeight="SemiBold"
+        Text="LuvLetter" />
+      <TextBlock
+        Margin="0,4,0,0"
+        Foreground="#666666"
+        Text="Control Center" />
+    </StackPanel>
+
+    <TextBlock
+      Grid.Row="2"
+      Margin="0,0,0,6"
+      FontWeight="SemiBold"
+      Text="Activation hotkey" />
+
+    <TextBox
+      x:Name="HotkeyTextBox"
+      Grid.Row="4"
+      Height="36"
+      Padding="10,6"
+      VerticalContentAlignment="Center"
+      FontSize="15"
+      IsReadOnly="True"
+      PreviewKeyDown="HotkeyTextBox_OnPreviewKeyDown" />
+
+    <StackPanel
+      Grid.Row="6"
+      HorizontalAlignment="Right"
+      Orientation="Horizontal">
+      <TextBlock
+        x:Name="StatusTextBlock"
+        Width="220"
+        Margin="0,0,16,0"
+        VerticalAlignment="Center"
+        Foreground="#666666"
+        TextAlignment="Right" />
+      <Button
+        Width="88"
+        Margin="0,0,8,0"
+        Click="ResetButton_OnClick"
+        Content="Reset" />
+      <Button
+        Width="88"
+        Click="ApplyButton_OnClick"
+        Content="Apply" />
+    </StackPanel>
+  </Grid>
+</Window>

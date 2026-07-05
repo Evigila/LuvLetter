@@ -1,0 +1,26 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <StartupObject>LuvLetter.Program</StartupObject>
+    <PlatformTarget>x64</PlatformTarget>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\LuvLetter.Core\LuvLetter.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <NativeProject Include="..\LuvLetter.Native\LuvLetter.Native.vcxproj" />
+  </ItemGroup>
+
+  <Target
+    Name="BuildNativeRenderer"
+    BeforeTargets="Build"
+    Condition="'$(SkipNativeBuild)' != 'true' and '$(BuildingSolutionFile)' != 'true'">
+    <MSBuild Projects="@(NativeProject)" Targets="Build" Properties="Configuration=$(Configuration);Platform=x64" />
+  </Target>
+</Project>
