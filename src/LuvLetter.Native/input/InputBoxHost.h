@@ -1,5 +1,7 @@
 #pragma once
 
+#include "api/InputBoxApi.h"
+
 #include <Windows.h>
 #include <d2d1.h>
 #include <dwrite.h>
@@ -12,13 +14,14 @@ class InputBoxHost
 public:
 	static InputBoxHost& Instance();
 
+	HRESULT ApplyConfig(const LuvLetterInputBoxConfig& config);
 	HRESULT Show();
 	HRESULT Hide();
 	HRESULT Toggle();
 	void Shutdown();
 
 private:
-	InputBoxHost() = default;
+	InputBoxHost();
 	~InputBoxHost() = default;
 	InputBoxHost(const InputBoxHost&) = delete;
 	InputBoxHost& operator=(const InputBoxHost&) = delete;
@@ -35,6 +38,7 @@ private:
 	void Resize(UINT width, UINT height);
 	void UpdateWindowPosition() const;
 	LRESULT HandleMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
+	static LuvLetterInputBoxConfig SanitizeConfig(const LuvLetterInputBoxConfig& config);
 
 	static DWORD WINAPI ThreadEntry(LPVOID parameter);
 	static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -47,6 +51,7 @@ private:
 	bool visible_ = false;
 	bool caretVisible_ = true;
 	std::wstring text_;
+	LuvLetterInputBoxConfig config_{};
 
 	Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory_;
 	Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;
@@ -55,4 +60,5 @@ private:
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> fillBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> borderBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush_;
+	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> caretBrush_;
 };

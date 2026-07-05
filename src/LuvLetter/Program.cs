@@ -1,5 +1,5 @@
 using System.Windows;
-using LuvLetter.Core.Hotkeys;
+using LuvLetter.Core.Configuration;
 using LuvLetter.Core.Native;
 using LuvLetter.Hotkeys;
 
@@ -10,7 +10,7 @@ internal static class Program
     [STAThread]
     public static void Main()
     {
-        using var mutex = new Mutex(true, "app.LuvLetter.Mooreforin", out var isNewInstance);
+        using var mutex = new Mutex(true, "app.LuvLetter.AcksheedSys", out var isNewInstance);
         if (!isNewInstance)
         {
             MessageBox.Show("LuvLetter is already running.", "LuvLetter");
@@ -18,16 +18,17 @@ internal static class Program
         }
 
         var app = new App();
-        var hotkeyStore = new HotkeyConfigurationStore();
+        var configurationStore = new LuvLetterConfigurationStore();
         using var inputBoxService = new InputBoxService();
+        inputBoxService.ApplyConfiguration(configurationStore.Current.InputBox);
         using var hotkeyService = new GlobalHotkeyService(inputBoxService);
-        var mainWindow = new MainWindow(hotkeyStore, hotkeyService);
+        var mainWindow = new MainWindow(configurationStore, hotkeyService, inputBoxService);
 
         app.Exit += (_, _) => inputBoxService.Hide();
 
         try
         {
-            hotkeyService.Start(hotkeyStore.Current);
+            hotkeyService.Start(configurationStore.Current.InputBox.Hotkeys.Activation);
         }
         catch (Exception exception)
         {

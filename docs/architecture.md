@@ -15,9 +15,24 @@ The codebase is intentionally minimal while the new foundation is being built.
 ## Runtime
 
 - The default activation hotkey is `Alt+F1`.
-- The WPF control center can record and apply a replacement hotkey.
+- The WPF control center can record and apply input box configuration.
 - The native input box is shown by the registered hotkey and takes focus so
   typed content is handled by the native window.
+
+## Configuration
+
+Configuration is stored in `%AppData%\LuvLetter\settings.json` through
+`LuvLetterConfigurationStore`.
+
+The current input box configuration groups are:
+
+- `InputBox.Hotkeys`: activation, submit, cancel, and backspace hotkeys.
+- `InputBox.Placement`: position mode, offsets, bottom margin, and custom
+  coordinates.
+- `InputBox.Colors`: border, background, text, and caret colors using
+  `#RRGGBB` or `#AARRGGBB`.
+- `InputBox.Size`: box width, box height, corner radius, border thickness,
+  font size, and horizontal text padding.
 
 ## Native Input Box Module
 

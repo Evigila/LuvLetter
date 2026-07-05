@@ -12,8 +12,6 @@
 namespace
 {
 	constexpr wchar_t WindowClassName[] = L"LuvLetter.Native.InputBox";
-	constexpr int InputBoxWidth = 640;
-	constexpr int InputBoxHeight = 56;
 	constexpr UINT InputBoxCommandMessage = WM_APP + 1;
 	constexpr UINT_PTR CaretTimerId = 1;
 	constexpr UINT CaretBlinkMs = 530;
@@ -56,14 +54,49 @@ namespace
 		HWND hwnd,
 		WindowCompositionAttributeData* data);
 
-	D2D1_RECT_F CreateInputRect()
+	LuvLetterInputBoxConfig CreateDefaultConfig()
 	{
-		return D2D1::RectF(1.0f, 1.0f, InputBoxWidth - 1.0f, InputBoxHeight - 1.0f);
+		LuvLetterInputBoxConfig config{};
+		config.width = 640;
+		config.height = 56;
+		config.cornerRadius = 8.0f;
+		config.borderThickness = 2.0f;
+		config.fontSize = 20.0f;
+		config.horizontalPadding = 18.0f;
+		config.positionMode = 0;
+		config.bottomMargin = 120;
+		config.borderColor = 0xFFFFFFFF;
+		config.backgroundColor = 0x66DCDCDC;
+		config.textColor = 0xF2191919;
+		config.caretColor = 0xF2191919;
+		config.submitVirtualKey = VK_RETURN;
+		config.cancelVirtualKey = VK_ESCAPE;
+		config.backspaceVirtualKey = VK_BACK;
+		return config;
 	}
 
-	D2D1_RECT_F CreateTextRect()
+	D2D1_COLOR_F ColorFromArgb(uint32_t argb)
 	{
-		return D2D1::RectF(18.0f, 0.0f, InputBoxWidth - 18.0f, static_cast<float>(InputBoxHeight));
+		return D2D1::ColorF(
+			static_cast<float>((argb >> 16) & 0xFF) / 255.0f,
+			static_cast<float>((argb >> 8) & 0xFF) / 255.0f,
+			static_cast<float>(argb & 0xFF) / 255.0f,
+			static_cast<float>((argb >> 24) & 0xFF) / 255.0f);
+	}
+
+	D2D1_RECT_F CreateInputRect(const LuvLetterInputBoxConfig& config)
+	{
+		return D2D1::RectF(1.0f, 1.0f, config.width - 1.0f, config.height - 1.0f);
+	}
+
+	D2D1_RECT_F CreateTextRect(const LuvLetterInputBoxConfig& config)
+	{
+		const auto padding = (std::max)(0.0f, config.horizontalPadding);
+		return D2D1::RectF(
+			padding,
+			0.0f,
+			static_cast<float>(config.width) - padding,
+			static_cast<float>(config.height));
 	}
 }
 
@@ -71,6 +104,25 @@ InputBoxHost& InputBoxHost::Instance()
 {
 	static InputBoxHost instance;
 	return instance;
+}
+
+InputBoxHost::InputBoxHost()
+	: config_(CreateDefaultConfig())
+{
+}
+
+HRESULT InputBoxHost::ApplyConfig(const LuvLetterInputBoxConfig& config)
+{
+	config_ = SanitizeConfig(config);
+	DiscardResources();
+
+	if (hwnd_ != nullptr)
+	{
+		UpdateWindowPosition();
+		InvalidateRect(hwnd_, nullptr, FALSE);
+	}
+
+	return S_OK;
 }
 
 HRESULT InputBoxHost::Show()
@@ -244,8 +296,8 @@ HRESULT InputBoxHost::CreateInputWindow()
 		WS_POPUP,
 		CW_USEDEFAULT,
 		CW_USEDEFAULT,
-		InputBoxWidth,
-		InputBoxHeight,
+		config_.width,
+		config_.height,
 		nullptr,
 		nullptr,
 		GetModuleHandleW(nullptr),
@@ -323,7 +375,7 @@ HRESULT InputBoxHost::EnsureResources()
 			D2D1::RenderTargetProperties(),
 			D2D1::HwndRenderTargetProperties(
 				hwnd_,
-				D2D1::SizeU(InputBoxWidth, InputBoxHeight),
+				D2D1::SizeU(config_.width, config_.height),
 				D2D1_PRESENT_OPTIONS_IMMEDIATELY),
 			renderTarget_.GetAddressOf());
 		if (FAILED(hr))
@@ -340,7 +392,7 @@ HRESULT InputBoxHost::EnsureResources()
 			DWRITE_FONT_WEIGHT_REGULAR,
 			DWRITE_FONT_STYLE_NORMAL,
 			DWRITE_FONT_STRETCH_NORMAL,
-			20.0f,
+			config_.fontSize,
 			L"",
 			textFormat_.GetAddressOf());
 		if (FAILED(hr))
@@ -356,7 +408,7 @@ HRESULT InputBoxHost::EnsureResources()
 	if (!fillBrush_)
 	{
 		auto hr = renderTarget_->CreateSolidColorBrush(
-			D2D1::ColorF(0.86f, 0.86f, 0.86f, 0.32f),
+			ColorFromArgb(config_.backgroundColor),
 			fillBrush_.GetAddressOf());
 		if (FAILED(hr))
 		{
@@ -367,7 +419,7 @@ HRESULT InputBoxHost::EnsureResources()
 	if (!borderBrush_)
 	{
 		auto hr = renderTarget_->CreateSolidColorBrush(
-			D2D1::ColorF(1.0f, 1.0f, 1.0f, 0.96f),
+			ColorFromArgb(config_.borderColor),
 			borderBrush_.GetAddressOf());
 		if (FAILED(hr))
 		{
@@ -378,8 +430,19 @@ HRESULT InputBoxHost::EnsureResources()
 	if (!textBrush_)
 	{
 		auto hr = renderTarget_->CreateSolidColorBrush(
-			D2D1::ColorF(0.10f, 0.10f, 0.10f, 0.95f),
+			ColorFromArgb(config_.textColor),
 			textBrush_.GetAddressOf());
+		if (FAILED(hr))
+		{
+			return hr;
+		}
+	}
+
+	if (!caretBrush_)
+	{
+		auto hr = renderTarget_->CreateSolidColorBrush(
+			ColorFromArgb(config_.caretColor),
+			caretBrush_.GetAddressOf());
 		if (FAILED(hr))
 		{
 			return hr;
@@ -394,6 +457,7 @@ void InputBoxHost::DiscardResources()
 	textBrush_.Reset();
 	borderBrush_.Reset();
 	fillBrush_.Reset();
+	caretBrush_.Reset();
 	textFormat_.Reset();
 	renderTarget_.Reset();
 	dwriteFactory_.Reset();
@@ -439,18 +503,37 @@ void InputBoxHost::UpdateWindowPosition() const
 
 	const auto workWidth = monitorInfo.rcWork.right - monitorInfo.rcWork.left;
 	const auto workHeight = monitorInfo.rcWork.bottom - monitorInfo.rcWork.top;
-	const auto x = monitorInfo.rcWork.left +
-		((std::max)(0L, workWidth - static_cast<LONG>(InputBoxWidth)) / 2);
-	const auto bottomMargin = (std::max)(48L, workHeight / 8);
-	const auto y = monitorInfo.rcWork.bottom - static_cast<LONG>(InputBoxHeight) - bottomMargin;
+	LONG x = monitorInfo.rcWork.left +
+		((std::max)(0L, workWidth - static_cast<LONG>(config_.width)) / 2);
+	LONG y = monitorInfo.rcWork.bottom - static_cast<LONG>(config_.height) - config_.bottomMargin;
+
+	switch (config_.positionMode)
+	{
+	case 1:
+		y = monitorInfo.rcWork.top +
+			((std::max)(0L, workHeight - static_cast<LONG>(config_.height)) / 2);
+		break;
+	case 2:
+		y = monitorInfo.rcWork.top + config_.bottomMargin;
+		break;
+	case 3:
+		x = monitorInfo.rcWork.left + config_.customX;
+		y = monitorInfo.rcWork.top + config_.customY;
+		break;
+	default:
+		break;
+	}
+
+	x += config_.offsetX;
+	y += config_.offsetY;
 
 	SetWindowPos(
 		hwnd_,
 		HWND_TOPMOST,
 		x,
 		y,
-		InputBoxWidth,
-		InputBoxHeight,
+		config_.width,
+		config_.height,
 		SWP_SHOWWINDOW);
 }
 
@@ -464,11 +547,14 @@ void InputBoxHost::Render()
 	renderTarget_->BeginDraw();
 	renderTarget_->Clear(D2D1::ColorF(0.0f, 0.0f, 0.0f, 0.0f));
 
-	const auto roundedRect = D2D1::RoundedRect(CreateInputRect(), 8.0f, 8.0f);
+	const auto roundedRect = D2D1::RoundedRect(
+		CreateInputRect(config_),
+		config_.cornerRadius,
+		config_.cornerRadius);
 	renderTarget_->FillRoundedRectangle(roundedRect, fillBrush_.Get());
-	renderTarget_->DrawRoundedRectangle(roundedRect, borderBrush_.Get(), 2.0f);
+	renderTarget_->DrawRoundedRectangle(roundedRect, borderBrush_.Get(), config_.borderThickness);
 
-	const auto textRect = CreateTextRect();
+	const auto textRect = CreateTextRect(config_);
 	if (!text_.empty())
 	{
 		renderTarget_->DrawTextW(
@@ -511,8 +597,12 @@ void InputBoxHost::Render()
 		}
 
 		renderTarget_->FillRectangle(
-			D2D1::RectF(caretX, 14.0f, caretX + 1.5f, InputBoxHeight - 14.0f),
-			textBrush_.Get());
+			D2D1::RectF(
+				caretX,
+				14.0f,
+				caretX + 1.5f,
+				static_cast<float>(config_.height) - 14.0f),
+			caretBrush_.Get());
 	}
 
 	const auto endDrawResult = renderTarget_->EndDraw();
@@ -528,6 +618,35 @@ void InputBoxHost::Resize(UINT width, UINT height)
 	{
 		renderTarget_->Resize(D2D1::SizeU(width, height));
 	}
+}
+
+LuvLetterInputBoxConfig InputBoxHost::SanitizeConfig(const LuvLetterInputBoxConfig& config)
+{
+	auto sanitized = CreateDefaultConfig();
+	sanitized.width = (std::max)(1, config.width);
+	sanitized.height = (std::max)(1, config.height);
+	sanitized.cornerRadius = (std::max)(0.0f, config.cornerRadius);
+	sanitized.borderThickness = (std::max)(0.0f, config.borderThickness);
+	sanitized.fontSize = (std::max)(1.0f, config.fontSize);
+	sanitized.horizontalPadding = (std::max)(0.0f, config.horizontalPadding);
+	sanitized.positionMode =
+		config.positionMode >= 0 && config.positionMode <= 3 ? config.positionMode : sanitized.positionMode;
+	sanitized.offsetX = config.offsetX;
+	sanitized.offsetY = config.offsetY;
+	sanitized.bottomMargin = (std::max)(0, config.bottomMargin);
+	sanitized.customX = config.customX;
+	sanitized.customY = config.customY;
+	sanitized.borderColor = config.borderColor;
+	sanitized.backgroundColor = config.backgroundColor;
+	sanitized.textColor = config.textColor;
+	sanitized.caretColor = config.caretColor;
+	sanitized.submitVirtualKey =
+		config.submitVirtualKey > 0 ? config.submitVirtualKey : sanitized.submitVirtualKey;
+	sanitized.cancelVirtualKey =
+		config.cancelVirtualKey > 0 ? config.cancelVirtualKey : sanitized.cancelVirtualKey;
+	sanitized.backspaceVirtualKey =
+		config.backspaceVirtualKey > 0 ? config.backspaceVirtualKey : sanitized.backspaceVirtualKey;
+	return sanitized;
 }
 
 LRESULT InputBoxHost::HandleMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
@@ -589,25 +708,35 @@ LRESULT InputBoxHost::HandleMessage(HWND hwnd, UINT message, WPARAM wParam, LPAR
 		}
 		break;
 	case WM_KEYDOWN:
-		if (wParam == VK_ESCAPE)
+		if (wParam == static_cast<WPARAM>(config_.cancelVirtualKey))
 		{
 			HideWindow();
 			return 0;
 		}
-		break;
-	case WM_CHAR:
-		if (wParam == L'\b')
+		if (wParam == static_cast<WPARAM>(config_.submitVirtualKey))
+		{
+			HideWindow();
+			return 0;
+		}
+		if (wParam == static_cast<WPARAM>(config_.backspaceVirtualKey))
 		{
 			if (!text_.empty())
 			{
 				text_.pop_back();
 			}
+
+			caretVisible_ = true;
+			InvalidateRect(hwnd, nullptr, FALSE);
+			return 0;
 		}
-		else if (wParam == L'\r')
+
+		break;
+	case WM_CHAR:
+		if (wParam == L'\b' || wParam == L'\r')
 		{
-			HideWindow();
+			return 0;
 		}
-		else if (wParam >= 0x20)
+		if (wParam >= 0x20)
 		{
 			text_.push_back(static_cast<wchar_t>(wParam));
 		}

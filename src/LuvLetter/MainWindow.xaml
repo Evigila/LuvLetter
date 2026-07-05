@@ -3,70 +3,144 @@
   xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
   xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
   Title="LuvLetter"
-  Width="460"
-  Height="240"
-  MinWidth="420"
-  MinHeight="220"
+  Width="620"
+  Height="620"
+  MinWidth="560"
+  MinHeight="520"
   WindowStartupLocation="CenterScreen"
 >
-  <Grid Margin="24">
-    <Grid.RowDefinitions>
-      <RowDefinition Height="Auto" />
-      <RowDefinition Height="20" />
-      <RowDefinition Height="Auto" />
-      <RowDefinition Height="16" />
-      <RowDefinition Height="Auto" />
-      <RowDefinition Height="*" />
-      <RowDefinition Height="Auto" />
-    </Grid.RowDefinitions>
-
-    <StackPanel Grid.Row="0">
-      <TextBlock
-        FontSize="22"
-        FontWeight="SemiBold"
-        Text="LuvLetter" />
-      <TextBlock
-        Margin="0,4,0,0"
-        Foreground="#666666"
-        Text="Control Center" />
+  <DockPanel Margin="24">
+    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,20">
+      <TextBlock FontSize="22" FontWeight="SemiBold" Text="LuvLetter" />
+      <TextBlock Margin="0,4,0,0" Foreground="#666666" Text="Input box configuration" />
     </StackPanel>
 
-    <TextBlock
-      Grid.Row="2"
-      Margin="0,0,0,6"
-      FontWeight="SemiBold"
-      Text="Activation hotkey" />
-
-    <TextBox
-      x:Name="HotkeyTextBox"
-      Grid.Row="4"
-      Height="36"
-      Padding="10,6"
-      VerticalContentAlignment="Center"
-      FontSize="15"
-      IsReadOnly="True"
-      PreviewKeyDown="HotkeyTextBox_OnPreviewKeyDown" />
-
-    <StackPanel
-      Grid.Row="6"
-      HorizontalAlignment="Right"
-      Orientation="Horizontal">
+    <StackPanel DockPanel.Dock="Bottom" HorizontalAlignment="Right" Orientation="Horizontal" Margin="0,18,0,0">
       <TextBlock
         x:Name="StatusTextBlock"
-        Width="220"
+        Width="300"
         Margin="0,0,16,0"
         VerticalAlignment="Center"
         Foreground="#666666"
         TextAlignment="Right" />
-      <Button
-        Width="88"
-        Margin="0,0,8,0"
-        Click="ResetButton_OnClick"
-        Content="Reset" />
-      <Button
-        Width="88"
-        Click="ApplyButton_OnClick"
-        Content="Apply" />
+      <Button Width="88" Margin="0,0,8,0" Click="ResetButton_OnClick" Content="Reset" />
+      <Button Width="88" Click="ApplyButton_OnClick" Content="Apply" />
     </StackPanel>
-  </Grid>
+
+    <ScrollViewer VerticalScrollBarVisibility="Auto">
+      <StackPanel>
+        <TextBlock FontWeight="SemiBold" Text="Hotkeys" />
+        <UniformGrid Columns="2" Margin="0,8,0,20">
+          <StackPanel Margin="0,0,12,10">
+            <TextBlock Text="Activation" />
+            <TextBox
+              x:Name="ActivationHotkeyTextBox"
+              Height="32"
+              IsReadOnly="True"
+              PreviewKeyDown="HotkeyTextBox_OnPreviewKeyDown" />
+          </StackPanel>
+          <StackPanel Margin="0,0,0,10">
+            <TextBlock Text="Submit" />
+            <TextBox
+              x:Name="SubmitHotkeyTextBox"
+              Height="32"
+              IsReadOnly="True"
+              PreviewKeyDown="HotkeyTextBox_OnPreviewKeyDown" />
+          </StackPanel>
+          <StackPanel Margin="0,0,12,0">
+            <TextBlock Text="Cancel" />
+            <TextBox
+              x:Name="CancelHotkeyTextBox"
+              Height="32"
+              IsReadOnly="True"
+              PreviewKeyDown="HotkeyTextBox_OnPreviewKeyDown" />
+          </StackPanel>
+          <StackPanel>
+            <TextBlock Text="Backspace" />
+            <TextBox
+              x:Name="BackspaceHotkeyTextBox"
+              Height="32"
+              IsReadOnly="True"
+              PreviewKeyDown="HotkeyTextBox_OnPreviewKeyDown" />
+          </StackPanel>
+        </UniformGrid>
+
+        <TextBlock FontWeight="SemiBold" Text="Position" />
+        <UniformGrid Columns="3" Margin="0,8,0,20">
+          <StackPanel Margin="0,0,12,10">
+            <TextBlock Text="Mode" />
+            <ComboBox x:Name="PositionModeComboBox" Height="32" />
+          </StackPanel>
+          <StackPanel Margin="0,0,12,10">
+            <TextBlock Text="Offset X" />
+            <TextBox x:Name="OffsetXTextBox" Height="32" />
+          </StackPanel>
+          <StackPanel Margin="0,0,0,10">
+            <TextBlock Text="Offset Y" />
+            <TextBox x:Name="OffsetYTextBox" Height="32" />
+          </StackPanel>
+          <StackPanel Margin="0,0,12,0">
+            <TextBlock Text="Bottom margin" />
+            <TextBox x:Name="BottomMarginTextBox" Height="32" />
+          </StackPanel>
+          <StackPanel Margin="0,0,12,0">
+            <TextBlock Text="Custom X" />
+            <TextBox x:Name="CustomXTextBox" Height="32" />
+          </StackPanel>
+          <StackPanel>
+            <TextBlock Text="Custom Y" />
+            <TextBox x:Name="CustomYTextBox" Height="32" />
+          </StackPanel>
+        </UniformGrid>
+
+        <TextBlock FontWeight="SemiBold" Text="Colors" />
+        <UniformGrid Columns="2" Margin="0,8,0,20">
+          <StackPanel Margin="0,0,12,10">
+            <TextBlock Text="Border ARGB" />
+            <TextBox x:Name="BorderColorTextBox" Height="32" />
+          </StackPanel>
+          <StackPanel Margin="0,0,0,10">
+            <TextBlock Text="Background ARGB" />
+            <TextBox x:Name="BackgroundColorTextBox" Height="32" />
+          </StackPanel>
+          <StackPanel Margin="0,0,12,0">
+            <TextBlock Text="Text ARGB" />
+            <TextBox x:Name="TextColorTextBox" Height="32" />
+          </StackPanel>
+          <StackPanel>
+            <TextBlock Text="Caret ARGB" />
+            <TextBox x:Name="CaretColorTextBox" Height="32" />
+          </StackPanel>
+        </UniformGrid>
+
+        <TextBlock FontWeight="SemiBold" Text="Size" />
+        <UniformGrid Columns="3" Margin="0,8,0,0">
+          <StackPanel Margin="0,0,12,10">
+            <TextBlock Text="Width" />
+            <TextBox x:Name="WidthTextBox" Height="32" />
+          </StackPanel>
+          <StackPanel Margin="0,0,12,10">
+            <TextBlock Text="Height" />
+            <TextBox x:Name="HeightTextBox" Height="32" />
+          </StackPanel>
+          <StackPanel Margin="0,0,0,10">
+            <TextBlock Text="Font size" />
+            <TextBox x:Name="FontSizeTextBox" Height="32" />
+          </StackPanel>
+          <StackPanel Margin="0,0,12,0">
+            <TextBlock Text="Corner radius" />
+            <TextBox x:Name="CornerRadiusTextBox" Height="32" />
+          </StackPanel>
+          <StackPanel Margin="0,0,12,0">
+            <TextBlock Text="Border thickness" />
+            <TextBox x:Name="BorderThicknessTextBox" Height="32" />
+          </StackPanel>
+          <StackPanel>
+            <TextBlock Text="Horizontal padding" />
+            <TextBox x:Name="HorizontalPaddingTextBox" Height="32" />
+          </StackPanel>
+        </UniformGrid>
+      </StackPanel>
+    </ScrollViewer>
+  </DockPanel>
 </Window>

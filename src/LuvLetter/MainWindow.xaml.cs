@@ -1,26 +1,34 @@
+using System.Globalization;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
+using LuvLetter.Core.Configuration;
 using LuvLetter.Core.Hotkeys;
+using LuvLetter.Core.Native;
 using LuvLetter.Hotkeys;
 
 namespace LuvLetter;
 
 public partial class MainWindow : Window
 {
-    private readonly HotkeyConfigurationStore hotkeyStore;
+    private readonly LuvLetterConfigurationStore configurationStore;
     private readonly GlobalHotkeyService hotkeyService;
-    private HotkeyDefinition pendingHotkey;
+    private readonly IInputBoxService inputBoxService;
+    private LuvLetterConfiguration pendingConfiguration;
 
     public MainWindow(
-        HotkeyConfigurationStore hotkeyStore,
-        GlobalHotkeyService hotkeyService)
+        LuvLetterConfigurationStore configurationStore,
+        GlobalHotkeyService hotkeyService,
+        IInputBoxService inputBoxService)
     {
-        this.hotkeyStore = hotkeyStore;
+        this.configurationStore = configurationStore;
         this.hotkeyService = hotkeyService;
-        pendingHotkey = hotkeyStore.Current;
+        this.inputBoxService = inputBoxService;
+        pendingConfiguration = configurationStore.Current;
 
         InitializeComponent();
-        HotkeyTextBox.Text = pendingHotkey.DisplayText;
+        PositionModeComboBox.ItemsSource = Enum.GetValues<InputBoxPositionMode>();
+        ApplyConfigurationToControls(pendingConfiguration);
         SetStatus("Ready");
     }
 
@@ -42,28 +50,195 @@ public partial class MainWindow : Window
             return;
         }
 
-        pendingHotkey = hotkey;
-        HotkeyTextBox.Text = hotkey.DisplayText;
+        var hotkeys = pendingConfiguration.InputBox.Hotkeys;
+        hotkeys = sender switch
+        {
+            TextBox textBox when ReferenceEquals(textBox, ActivationHotkeyTextBox) =>
+                hotkeys with { Activation = hotkey },
+            TextBox textBox when ReferenceEquals(textBox, SubmitHotkeyTextBox) =>
+                hotkeys with { Submit = hotkey },
+            TextBox textBox when ReferenceEquals(textBox, CancelHotkeyTextBox) =>
+                hotkeys with { Cancel = hotkey },
+            TextBox textBox when ReferenceEquals(textBox, BackspaceHotkeyTextBox) =>
+                hotkeys with { Backspace = hotkey },
+            _ => hotkeys,
+        };
+
+        pendingConfiguration = pendingConfiguration with
+        {
+            InputBox = pendingConfiguration.InputBox with { Hotkeys = hotkeys },
+        };
+        ApplyHotkeysToControls(pendingConfiguration.InputBox.Hotkeys);
         SetStatus("Pending");
     }
 
     private void ApplyButton_OnClick(object sender, RoutedEventArgs eventArgs)
     {
-        if (!hotkeyService.TryUpdate(pendingHotkey, out var error))
+        if (!TryReadConfigurationFromControls(out var nextConfiguration, out var error))
+        {
+            SetStatus(error);
+            return;
+        }
+
+        if (!hotkeyService.TryUpdate(nextConfiguration.InputBox.Hotkeys.Activation, out error))
         {
             SetStatus(error ?? "Cannot register hotkey");
             return;
         }
 
-        hotkeyStore.Update(pendingHotkey);
+        inputBoxService.ApplyConfiguration(nextConfiguration.InputBox);
+        configurationStore.Update(nextConfiguration);
+        pendingConfiguration = nextConfiguration;
+        ApplyConfigurationToControls(pendingConfiguration);
         SetStatus("Applied");
     }
 
     private void ResetButton_OnClick(object sender, RoutedEventArgs eventArgs)
     {
-        pendingHotkey = HotkeyDefinition.Default;
-        HotkeyTextBox.Text = pendingHotkey.DisplayText;
+        pendingConfiguration = LuvLetterConfiguration.Default;
+        ApplyConfigurationToControls(pendingConfiguration);
         SetStatus("Pending");
+    }
+
+    private void ApplyConfigurationToControls(LuvLetterConfiguration configuration)
+    {
+        ApplyHotkeysToControls(configuration.InputBox.Hotkeys);
+
+        var placement = configuration.InputBox.Placement;
+        PositionModeComboBox.SelectedItem = placement.Mode;
+        OffsetXTextBox.Text = placement.OffsetX.ToString(CultureInfo.InvariantCulture);
+        OffsetYTextBox.Text = placement.OffsetY.ToString(CultureInfo.InvariantCulture);
+        BottomMarginTextBox.Text = placement.BottomMargin.ToString(CultureInfo.InvariantCulture);
+        CustomXTextBox.Text = placement.CustomX.ToString(CultureInfo.InvariantCulture);
+        CustomYTextBox.Text = placement.CustomY.ToString(CultureInfo.InvariantCulture);
+
+        var colors = configuration.InputBox.Colors;
+        BorderColorTextBox.Text = colors.Border;
+        BackgroundColorTextBox.Text = colors.Background;
+        TextColorTextBox.Text = colors.Text;
+        CaretColorTextBox.Text = colors.Caret;
+
+        var size = configuration.InputBox.Size;
+        WidthTextBox.Text = size.Width.ToString(CultureInfo.InvariantCulture);
+        HeightTextBox.Text = size.Height.ToString(CultureInfo.InvariantCulture);
+        FontSizeTextBox.Text = size.FontSize.ToString(CultureInfo.InvariantCulture);
+        CornerRadiusTextBox.Text = size.CornerRadius.ToString(CultureInfo.InvariantCulture);
+        BorderThicknessTextBox.Text = size.BorderThickness.ToString(CultureInfo.InvariantCulture);
+        HorizontalPaddingTextBox.Text = size.HorizontalPadding.ToString(CultureInfo.InvariantCulture);
+    }
+
+    private void ApplyHotkeysToControls(InputBoxHotkeyOptions hotkeys)
+    {
+        ActivationHotkeyTextBox.Text = hotkeys.Activation.DisplayText;
+        SubmitHotkeyTextBox.Text = hotkeys.Submit.DisplayText;
+        CancelHotkeyTextBox.Text = hotkeys.Cancel.DisplayText;
+        BackspaceHotkeyTextBox.Text = hotkeys.Backspace.DisplayText;
+    }
+
+    private bool TryReadConfigurationFromControls(
+        out LuvLetterConfiguration configuration,
+        out string error)
+    {
+        configuration = pendingConfiguration;
+        error = string.Empty;
+
+        if (
+            !TryReadInt(OffsetXTextBox, "Offset X", out var offsetX, out error)
+            || !TryReadInt(OffsetYTextBox, "Offset Y", out var offsetY, out error)
+            || !TryReadInt(BottomMarginTextBox, "Bottom margin", out var bottomMargin, out error)
+            || !TryReadInt(CustomXTextBox, "Custom X", out var customX, out error)
+            || !TryReadInt(CustomYTextBox, "Custom Y", out var customY, out error)
+            || !TryReadInt(WidthTextBox, "Width", out var width, out error)
+            || !TryReadInt(HeightTextBox, "Height", out var height, out error)
+            || !TryReadFloat(FontSizeTextBox, "Font size", out var fontSize, out error)
+            || !TryReadFloat(CornerRadiusTextBox, "Corner radius", out var cornerRadius, out error)
+            || !TryReadFloat(BorderThicknessTextBox, "Border thickness", out var borderThickness, out error)
+            || !TryReadFloat(HorizontalPaddingTextBox, "Horizontal padding", out var horizontalPadding, out error))
+        {
+            return false;
+        }
+
+        if (
+            !IsColorText(BorderColorTextBox.Text)
+            || !IsColorText(BackgroundColorTextBox.Text)
+            || !IsColorText(TextColorTextBox.Text)
+            || !IsColorText(CaretColorTextBox.Text))
+        {
+            error = "Colors must be #RRGGBB or #AARRGGBB";
+            return false;
+        }
+
+        configuration = pendingConfiguration with
+        {
+            InputBox = pendingConfiguration.InputBox with
+            {
+                Placement = new InputBoxPlacementOptions
+                {
+                    Mode = PositionModeComboBox.SelectedItem is InputBoxPositionMode mode
+                        ? mode
+                        : InputBoxPositionMode.CenterBottom,
+                    OffsetX = offsetX,
+                    OffsetY = offsetY,
+                    BottomMargin = bottomMargin,
+                    CustomX = customX,
+                    CustomY = customY,
+                },
+                Colors = new InputBoxColorOptions
+                {
+                    Border = BorderColorTextBox.Text.Trim(),
+                    Background = BackgroundColorTextBox.Text.Trim(),
+                    Text = TextColorTextBox.Text.Trim(),
+                    Caret = CaretColorTextBox.Text.Trim(),
+                },
+                Size = new InputBoxSizeOptions
+                {
+                    Width = width,
+                    Height = height,
+                    FontSize = fontSize,
+                    CornerRadius = cornerRadius,
+                    BorderThickness = borderThickness,
+                    HorizontalPadding = horizontalPadding,
+                },
+            },
+        };
+
+        return true;
+    }
+
+    private static bool TryReadInt(TextBox textBox, string label, out int value, out string error)
+    {
+        if (int.TryParse(textBox.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
+        {
+            error = string.Empty;
+            return true;
+        }
+
+        error = $"{label} must be an integer";
+        return false;
+    }
+
+    private static bool TryReadFloat(TextBox textBox, string label, out float value, out string error)
+    {
+        if (float.TryParse(textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+        {
+            error = string.Empty;
+            return true;
+        }
+
+        error = $"{label} must be a number";
+        return false;
+    }
+
+    private static bool IsColorText(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        var hex = text.Trim().TrimStart('#');
+        return hex.Length is 6 or 8
+            && uint.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out _);
     }
 
     private static bool TryCreateHotkey(
@@ -83,12 +258,6 @@ public partial class MainWindow : Window
         }
 
         var modifiers = GetCurrentModifiers();
-        if (modifiers == HotkeyModifierKeys.None)
-        {
-            error = "Use at least one modifier";
-            return false;
-        }
-
         var virtualKey = KeyInterop.VirtualKeyFromKey(key);
         if (virtualKey == 0)
         {
