@@ -1,11 +1,12 @@
 using System.Globalization;
 using System.Windows;
-using System.Windows.Controls;
 using System.Windows.Input;
 using LuvLetter.Core.Configuration;
 using LuvLetter.Core.Hotkeys;
 using LuvLetter.Core.Native;
 using LuvLetter.Hotkeys;
+using WpfKeyEventArgs = System.Windows.Input.KeyEventArgs;
+using WpfTextBox = System.Windows.Controls.TextBox;
 
 namespace LuvLetter;
 
@@ -19,7 +20,8 @@ public partial class MainWindow : Window
     public MainWindow(
         LuvLetterConfigurationStore configurationStore,
         GlobalHotkeyService hotkeyService,
-        IInputBoxService inputBoxService)
+        IInputBoxService inputBoxService
+    )
     {
         this.configurationStore = configurationStore;
         this.hotkeyService = hotkeyService;
@@ -40,7 +42,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void HotkeyTextBox_OnPreviewKeyDown(object sender, KeyEventArgs eventArgs)
+    private void HotkeyTextBox_OnPreviewKeyDown(object sender, WpfKeyEventArgs eventArgs)
     {
         eventArgs.Handled = true;
 
@@ -53,20 +55,32 @@ public partial class MainWindow : Window
         var hotkeys = pendingConfiguration.InputBox.Hotkeys;
         hotkeys = sender switch
         {
-            TextBox textBox when ReferenceEquals(textBox, ActivationHotkeyTextBox) =>
+            WpfTextBox textBox when ReferenceEquals(textBox, ActivationHotkeyTextBox) =>
                 hotkey.Modifiers == HotkeyModifierKeys.None
                     ? hotkeys
-                    : hotkeys with { Activation = hotkey },
-            TextBox textBox when ReferenceEquals(textBox, SubmitHotkeyTextBox) =>
-                hotkeys with { Submit = hotkey },
-            TextBox textBox when ReferenceEquals(textBox, CancelHotkeyTextBox) =>
-                hotkeys with { Cancel = hotkey },
-            TextBox textBox when ReferenceEquals(textBox, BackspaceHotkeyTextBox) =>
-                hotkeys with { Backspace = hotkey },
+                    : hotkeys with
+                    {
+                        Activation = hotkey,
+                    },
+            WpfTextBox textBox when ReferenceEquals(textBox, SubmitHotkeyTextBox) => hotkeys with
+            {
+                Submit = hotkey,
+            },
+            WpfTextBox textBox when ReferenceEquals(textBox, CancelHotkeyTextBox) => hotkeys with
+            {
+                Cancel = hotkey,
+            },
+            WpfTextBox textBox when ReferenceEquals(textBox, BackspaceHotkeyTextBox) => hotkeys with
+            {
+                Backspace = hotkey,
+            },
             _ => hotkeys,
         };
 
-        if (ReferenceEquals(sender, ActivationHotkeyTextBox) && hotkey.Modifiers == HotkeyModifierKeys.None)
+        if (
+            ReferenceEquals(sender, ActivationHotkeyTextBox)
+            && hotkey.Modifiers == HotkeyModifierKeys.None
+        )
         {
             SetStatus("Activation hotkey must include Alt, Ctrl, Shift, or Win");
             return;
@@ -132,7 +146,9 @@ public partial class MainWindow : Window
         FontSizeTextBox.Text = size.FontSize.ToString(CultureInfo.InvariantCulture);
         CornerRadiusTextBox.Text = size.CornerRadius.ToString(CultureInfo.InvariantCulture);
         BorderThicknessTextBox.Text = size.BorderThickness.ToString(CultureInfo.InvariantCulture);
-        HorizontalPaddingTextBox.Text = size.HorizontalPadding.ToString(CultureInfo.InvariantCulture);
+        HorizontalPaddingTextBox.Text = size.HorizontalPadding.ToString(
+            CultureInfo.InvariantCulture
+        );
     }
 
     private void ApplyHotkeysToControls(InputBoxHotkeyOptions hotkeys)
@@ -145,7 +161,8 @@ public partial class MainWindow : Window
 
     private bool TryReadConfigurationFromControls(
         out LuvLetterConfiguration configuration,
-        out string error)
+        out string error
+    )
     {
         configuration = pendingConfiguration;
         error = string.Empty;
@@ -160,8 +177,19 @@ public partial class MainWindow : Window
             || !TryReadInt(HeightTextBox, "Height", out var height, out error)
             || !TryReadFloat(FontSizeTextBox, "Font size", out var fontSize, out error)
             || !TryReadFloat(CornerRadiusTextBox, "Corner radius", out var cornerRadius, out error)
-            || !TryReadFloat(BorderThicknessTextBox, "Border thickness", out var borderThickness, out error)
-            || !TryReadFloat(HorizontalPaddingTextBox, "Horizontal padding", out var horizontalPadding, out error))
+            || !TryReadFloat(
+                BorderThicknessTextBox,
+                "Border thickness",
+                out var borderThickness,
+                out error
+            )
+            || !TryReadFloat(
+                HorizontalPaddingTextBox,
+                "Horizontal padding",
+                out var horizontalPadding,
+                out error
+            )
+        )
         {
             return false;
         }
@@ -170,7 +198,8 @@ public partial class MainWindow : Window
             !IsColorText(BorderColorTextBox.Text)
             || !IsColorText(BackgroundColorTextBox.Text)
             || !IsColorText(TextColorTextBox.Text)
-            || !IsColorText(CaretColorTextBox.Text))
+            || !IsColorText(CaretColorTextBox.Text)
+        )
         {
             error = "Colors must be #RRGGBB or #AARRGGBB";
             return false;
@@ -213,9 +242,21 @@ public partial class MainWindow : Window
         return true;
     }
 
-    private static bool TryReadInt(TextBox textBox, string label, out int value, out string error)
+    private static bool TryReadInt(
+        WpfTextBox textBox,
+        string label,
+        out int value,
+        out string error
+    )
     {
-        if (int.TryParse(textBox.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out value))
+        if (
+            int.TryParse(
+                textBox.Text,
+                NumberStyles.Integer,
+                CultureInfo.InvariantCulture,
+                out value
+            )
+        )
         {
             error = string.Empty;
             return true;
@@ -225,9 +266,21 @@ public partial class MainWindow : Window
         return false;
     }
 
-    private static bool TryReadFloat(TextBox textBox, string label, out float value, out string error)
+    private static bool TryReadFloat(
+        WpfTextBox textBox,
+        string label,
+        out float value,
+        out string error
+    )
     {
-        if (float.TryParse(textBox.Text, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+        if (
+            float.TryParse(
+                textBox.Text,
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out value
+            )
+        )
         {
             error = string.Empty;
             return true;
@@ -250,9 +303,10 @@ public partial class MainWindow : Window
     }
 
     private static bool TryCreateHotkey(
-        KeyEventArgs eventArgs,
+        WpfKeyEventArgs eventArgs,
         out HotkeyDefinition hotkey,
-        out string error)
+        out string error
+    )
     {
         hotkey = HotkeyDefinition.Default;
         error = string.Empty;
@@ -307,16 +361,16 @@ public partial class MainWindow : Window
 
     private static bool IsModifierKey(Key key)
     {
-        return key is
-            Key.LeftAlt or
-            Key.RightAlt or
-            Key.LeftCtrl or
-            Key.RightCtrl or
-            Key.LeftShift or
-            Key.RightShift or
-            Key.LWin or
-            Key.RWin or
-            Key.System;
+        return key
+            is Key.LeftAlt
+                or Key.RightAlt
+                or Key.LeftCtrl
+                or Key.RightCtrl
+                or Key.LeftShift
+                or Key.RightShift
+                or Key.LWin
+                or Key.RWin
+                or Key.System;
     }
 
     private static string NormalizeKeyName(Key key)

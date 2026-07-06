@@ -64,7 +64,7 @@ namespace
 		config.fontSize = 20.0f;
 		config.horizontalPadding = 18.0f;
 		config.positionMode = 0;
-		config.bottomMargin = 120;
+		config.bottomMargin = 60;
 		config.borderColor = 0xFFFFFFFF;
 		config.backgroundColor = 0x66DCDCDC;
 		config.textColor = 0xF2191919;

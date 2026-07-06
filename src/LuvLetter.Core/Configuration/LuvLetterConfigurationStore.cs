@@ -108,9 +108,30 @@ public sealed class LuvLetterConfigurationStore
             hotkeys = hotkeys with { Activation = HotkeyDefinition.Default };
         }
 
+        var placement = configuration.InputBox.Placement;
+        if (placement is
+            {
+                Mode: InputBoxPositionMode.CenterBottom,
+                OffsetX: 0,
+                OffsetY: 0,
+                BottomMargin: 120,
+                CustomX: 0,
+                CustomY: 0,
+            })
+        {
+            placement = placement with
+            {
+                BottomMargin = LuvLetterConfiguration.Default.InputBox.Placement.BottomMargin,
+            };
+        }
+
         return configuration with
         {
-            InputBox = configuration.InputBox with { Hotkeys = hotkeys },
+            InputBox = configuration.InputBox with
+            {
+                Hotkeys = hotkeys,
+                Placement = placement,
+            },
         };
     }
 }

@@ -8,7 +8,7 @@ public sealed record InputBoxPlacementOptions
 
     public int OffsetY { get; init; }
 
-    public int BottomMargin { get; init; } = 120;
+    public int BottomMargin { get; init; } = 60;
 
     public int CustomX { get; init; }
 

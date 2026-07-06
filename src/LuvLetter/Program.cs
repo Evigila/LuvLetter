@@ -1,7 +1,7 @@
-using System.Windows;
 using LuvLetter.Core.Configuration;
 using LuvLetter.Core.Native;
 using LuvLetter.Hotkeys;
+using LuvLetter.Tray;
 
 namespace LuvLetter;
 
@@ -13,7 +13,7 @@ internal static class Program
         using var mutex = new Mutex(true, "app.LuvLetter.AcksheedSys", out var isNewInstance);
         if (!isNewInstance)
         {
-            MessageBox.Show("LuvLetter is already running.", "LuvLetter");
+            System.Windows.MessageBox.Show("LuvLetter is already running.", "LuvLetter");
             return;
         }
 
@@ -23,6 +23,7 @@ internal static class Program
         inputBoxService.ApplyConfiguration(configurationStore.Current.InputBox);
         using var hotkeyService = new GlobalHotkeyService(inputBoxService);
         var mainWindow = new MainWindow(configurationStore, hotkeyService, inputBoxService);
+        using var trayIconService = new TrayIconService(app, mainWindow);
 
         app.Exit += (_, _) => inputBoxService.Hide();
 
@@ -35,6 +36,8 @@ internal static class Program
             mainWindow.SetStatus(exception.Message);
         }
 
-        app.Run(mainWindow);
+        app.MainWindow = mainWindow;
+        trayIconService.StartMinimized();
+        app.Run();
     }
 }
