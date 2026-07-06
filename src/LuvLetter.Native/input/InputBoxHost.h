@@ -32,6 +32,7 @@ private:
 	HRESULT EnsureResources();
 	void DiscardResources();
 	void EnableBlur() const;
+	void UpdateWindowShape() const;
 	void ShowWindowAndFocus();
 	void HideWindow();
 	void Render();

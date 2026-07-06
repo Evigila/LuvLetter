@@ -152,6 +152,7 @@ HRESULT InputBoxHost::ApplyConfig(const LuvLetterInputBoxConfig& config)
 
 	if (hwnd_ != nullptr)
 	{
+		UpdateWindowShape();
 		UpdateWindowPosition();
 		InvalidateRect(hwnd_, nullptr, FALSE);
 	}
@@ -342,6 +343,7 @@ HRESULT InputBoxHost::CreateInputWindow()
 		return HRESULT_FROM_WIN32(GetLastError());
 	}
 
+	UpdateWindowShape();
 	EnableBlur();
 	return S_OK;
 }
@@ -378,6 +380,39 @@ void InputBoxHost::EnableBlur() const
 	blurBehind.dwFlags = DWM_BB_ENABLE;
 	blurBehind.fEnable = TRUE;
 	DwmEnableBlurBehindWindow(hwnd_, &blurBehind);
+}
+
+void InputBoxHost::UpdateWindowShape() const
+{
+	if (hwnd_ == nullptr)
+	{
+		return;
+	}
+
+	const auto maxRadius = static_cast<float>((std::min)(config_.width, config_.height)) / 2.0f;
+	const auto radius = static_cast<int>(std::round((std::min)(config_.cornerRadius, maxRadius)));
+	if (radius <= 0)
+	{
+		SetWindowRgn(hwnd_, nullptr, TRUE);
+		return;
+	}
+
+	const auto region = CreateRoundRectRgn(
+		0,
+		0,
+		config_.width + 1,
+		config_.height + 1,
+		radius * 2,
+		radius * 2);
+	if (region == nullptr)
+	{
+		return;
+	}
+
+	if (SetWindowRgn(hwnd_, region, TRUE) == 0)
+	{
+		DeleteObject(region);
+	}
 }
 
 HRESULT InputBoxHost::EnsureResources()
