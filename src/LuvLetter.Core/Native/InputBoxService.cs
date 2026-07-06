@@ -15,6 +15,8 @@ public sealed class InputBoxService : IInputBoxService
             BorderThickness = Math.Max(0.0f, configuration.Size.BorderThickness),
             FontSize = Math.Max(1.0f, configuration.Size.FontSize),
             HorizontalPadding = Math.Max(0.0f, configuration.Size.HorizontalPadding),
+            VerticalPadding = Math.Max(0.0f, configuration.Size.VerticalPadding),
+            CaretWidth = Math.Max(0.5f, configuration.Size.CaretWidth),
             PositionMode = (int)configuration.Placement.Mode,
             OffsetX = configuration.Placement.OffsetX,
             OffsetY = configuration.Placement.OffsetY,
@@ -22,9 +24,11 @@ public sealed class InputBoxService : IInputBoxService
             CustomX = configuration.Placement.CustomX,
             CustomY = configuration.Placement.CustomY,
             BorderColor = ParseArgb(configuration.Colors.Border, 0xFFFFFFFF),
-            BackgroundColor = ParseArgb(configuration.Colors.Background, 0x66DCDCDC),
-            TextColor = ParseArgb(configuration.Colors.Text, 0xF2191919),
-            CaretColor = ParseArgb(configuration.Colors.Caret, 0xF2191919),
+            BackgroundColor = ApplyOpacity(
+                ParseArgb(configuration.Colors.Background, 0x38F5F5F5),
+                configuration.Colors.BackgroundOpacity),
+            TextColor = ParseArgb(configuration.Colors.Text, 0xFFFFFFFF),
+            CaretColor = ParseArgb(configuration.Colors.Caret, 0xFFFFFFFF),
             SubmitVirtualKey = configuration.Hotkeys.Submit.VirtualKey,
             CancelVirtualKey = configuration.Hotkeys.Cancel.VirtualKey,
             BackspaceVirtualKey = configuration.Hotkeys.Backspace.VirtualKey,
@@ -76,5 +80,11 @@ public sealed class InputBoxService : IInputBoxService
             out var parsed)
             ? parsed
             : fallback;
+    }
+
+    private static uint ApplyOpacity(uint argb, float opacity)
+    {
+        var alpha = (uint)Math.Round(Math.Clamp(opacity, 0.0f, 1.0f) * 255.0f);
+        return (argb & 0x00FFFFFF) | (alpha << 24);
     }
 }

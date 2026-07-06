@@ -4,9 +4,11 @@ public sealed record InputBoxColorOptions
 {
     public string Border { get; init; } = "#FFFFFFFF";
 
-    public string Background { get; init; } = "#66DCDCDC";
+    public string Background { get; init; } = "#38F5F5F5";
 
-    public string Text { get; init; } = "#F2191919";
+    public float BackgroundOpacity { get; init; } = 0.22f;
 
-    public string Caret { get; init; } = "#F2191919";
+    public string Text { get; init; } = "#FFFFFFFF";
+
+    public string Caret { get; init; } = "#FFFFFFFF";
 }

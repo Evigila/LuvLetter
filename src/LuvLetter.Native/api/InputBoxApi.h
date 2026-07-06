@@ -20,6 +20,8 @@ extern "C"
 		float borderThickness;
 		float fontSize;
 		float horizontalPadding;
+		float verticalPadding;
+		float caretWidth;
 		int32_t positionMode;
 		int32_t offsetX;
 		int32_t offsetY;

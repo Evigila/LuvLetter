@@ -1,13 +1,15 @@
 #include "input/InputBoxHost.h"
 
-#include <dwmapi.h>
+#include <imm.h>
+#include <windowsx.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cwctype>
 
 #pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
-#pragma comment(lib, "dwmapi.lib")
+#pragma comment(lib, "imm32.lib")
 
 namespace
 {
@@ -15,6 +17,8 @@ namespace
 	constexpr UINT InputBoxCommandMessage = WM_APP + 1;
 	constexpr UINT_PTR CaretTimerId = 1;
 	constexpr UINT CaretBlinkMs = 530;
+	constexpr size_t MaxHistoryItems = 100;
+	constexpr wchar_t PlaceholderText[] = L"Enter command here";
 
 	enum class InputBoxCommand : WPARAM
 	{
@@ -24,51 +28,23 @@ namespace
 		Shutdown = 4,
 	};
 
-	enum WindowCompositionAttribute
-	{
-		WcaAccentPolicy = 19,
-	};
-
-	enum AccentState
-	{
-		AccentDisabled = 0,
-		AccentEnableBlurBehind = 3,
-	};
-
-	struct AccentPolicy
-	{
-		int accentState;
-		int accentFlags;
-		int gradientColor;
-		int animationId;
-	};
-
-	struct WindowCompositionAttributeData
-	{
-		WindowCompositionAttribute attribute;
-		void* data;
-		size_t dataSize;
-	};
-
-	using SetWindowCompositionAttributeProc = BOOL(WINAPI*)(
-		HWND hwnd,
-		WindowCompositionAttributeData* data);
-
 	LuvLetterInputBoxConfig CreateDefaultConfig()
 	{
 		LuvLetterInputBoxConfig config{};
 		config.width = 640;
-		config.height = 56;
+		config.height = 44;
 		config.cornerRadius = 8.0f;
 		config.borderThickness = 2.0f;
 		config.fontSize = 20.0f;
-		config.horizontalPadding = 18.0f;
+		config.horizontalPadding = 10.0f;
+		config.verticalPadding = 6.0f;
+		config.caretWidth = 2.25f;
 		config.positionMode = 0;
 		config.bottomMargin = 60;
 		config.borderColor = 0xFFFFFFFF;
-		config.backgroundColor = 0x66DCDCDC;
-		config.textColor = 0xF2191919;
-		config.caretColor = 0xF2191919;
+		config.backgroundColor = 0x38F5F5F5;
+		config.textColor = 0xFFFFFFFF;
+		config.caretColor = 0xFFFFFFFF;
 		config.submitVirtualKey = VK_RETURN;
 		config.cancelVirtualKey = VK_ESCAPE;
 		config.backspaceVirtualKey = VK_BACK;
@@ -84,6 +60,13 @@ namespace
 			static_cast<float>((argb >> 24) & 0xFF) / 255.0f);
 	}
 
+	D2D1_COLOR_F PlaceholderColorFromArgb(uint32_t argb)
+	{
+		auto color = ColorFromArgb(argb);
+		color.a *= 0.48f;
+		return color;
+	}
+
 	D2D1_RECT_F CreateInputRect(const LuvLetterInputBoxConfig& config)
 	{
 		return D2D1::RectF(1.0f, 1.0f, config.width - 1.0f, config.height - 1.0f);
@@ -91,12 +74,17 @@ namespace
 
 	D2D1_RECT_F CreateTextRect(const LuvLetterInputBoxConfig& config)
 	{
-		const auto padding = (std::max)(0.0f, config.horizontalPadding);
+		const auto horizontalPadding = (std::min)(
+			(std::max)(0.0f, config.horizontalPadding),
+			(std::max)(0.0f, static_cast<float>(config.width) / 2.0f - 1.0f));
+		const auto verticalPadding = (std::min)(
+			(std::max)(0.0f, config.verticalPadding),
+			(std::max)(0.0f, static_cast<float>(config.height) / 2.0f - 1.0f));
 		return D2D1::RectF(
-			padding,
-			0.0f,
-			static_cast<float>(config.width) - padding,
-			static_cast<float>(config.height));
+			horizontalPadding,
+			verticalPadding,
+			static_cast<float>(config.width) - horizontalPadding,
+			static_cast<float>(config.height) - verticalPadding);
 	}
 
 	bool IsKeyDown(int virtualKey)
@@ -154,7 +142,7 @@ HRESULT InputBoxHost::ApplyConfig(const LuvLetterInputBoxConfig& config)
 	{
 		UpdateWindowShape();
 		UpdateWindowPosition();
-		InvalidateRect(hwnd_, nullptr, FALSE);
+		Render();
 	}
 
 	return S_OK;
@@ -297,6 +285,7 @@ HRESULT InputBoxHost::Run()
 	hwnd_ = nullptr;
 	visible_ = false;
 	text_.clear();
+	caretIndex_ = 0;
 
 	if (shouldUninitialize)
 	{
@@ -325,7 +314,7 @@ HRESULT InputBoxHost::CreateInputWindow()
 	}
 
 	hwnd_ = CreateWindowExW(
-		WS_EX_TOPMOST | WS_EX_TOOLWINDOW,
+		WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED,
 		WindowClassName,
 		L"LuvLetter Input",
 		WS_POPUP,
@@ -344,42 +333,7 @@ HRESULT InputBoxHost::CreateInputWindow()
 	}
 
 	UpdateWindowShape();
-	EnableBlur();
 	return S_OK;
-}
-
-void InputBoxHost::EnableBlur() const
-{
-	if (hwnd_ == nullptr)
-	{
-		return;
-	}
-
-	const auto user32 = GetModuleHandleW(L"user32.dll");
-	if (user32 != nullptr)
-	{
-		const auto setWindowCompositionAttribute =
-			reinterpret_cast<SetWindowCompositionAttributeProc>(
-				GetProcAddress(user32, "SetWindowCompositionAttribute"));
-		if (setWindowCompositionAttribute != nullptr)
-		{
-			AccentPolicy accent{};
-			accent.accentState = AccentEnableBlurBehind;
-			accent.gradientColor = 0x66E6E6E6;
-
-			WindowCompositionAttributeData data{};
-			data.attribute = WcaAccentPolicy;
-			data.data = &accent;
-			data.dataSize = sizeof(accent);
-			setWindowCompositionAttribute(hwnd_, &data);
-			return;
-		}
-	}
-
-	DWM_BLURBEHIND blurBehind{};
-	blurBehind.dwFlags = DWM_BB_ENABLE;
-	blurBehind.fEnable = TRUE;
-	DwmEnableBlurBehindWindow(hwnd_, &blurBehind);
 }
 
 void InputBoxHost::UpdateWindowShape() const
@@ -397,13 +351,7 @@ void InputBoxHost::UpdateWindowShape() const
 		return;
 	}
 
-	const auto region = CreateRoundRectRgn(
-		0,
-		0,
-		config_.width + 1,
-		config_.height + 1,
-		radius * 2,
-		radius * 2);
+	const auto region = CreateWindowRegion();
 	if (region == nullptr)
 	{
 		return;
@@ -413,6 +361,25 @@ void InputBoxHost::UpdateWindowShape() const
 	{
 		DeleteObject(region);
 	}
+}
+
+HRGN InputBoxHost::CreateWindowRegion() const
+{
+	const auto maxRadius = static_cast<float>((std::min)(config_.width, config_.height)) / 2.0f;
+	const auto radius = static_cast<int>(std::round((std::min)(config_.cornerRadius, maxRadius)));
+	if (radius <= 0)
+	{
+		return nullptr;
+	}
+
+	const auto diameter = (std::max)(1, radius * 2);
+	return CreateRoundRectRgn(
+		0,
+		0,
+		config_.width,
+		config_.height,
+		diameter,
+		diameter);
 }
 
 HRESULT InputBoxHost::EnsureResources()
@@ -440,12 +407,11 @@ HRESULT InputBoxHost::EnsureResources()
 
 	if (!renderTarget_)
 	{
-		auto hr = d2dFactory_->CreateHwndRenderTarget(
-			D2D1::RenderTargetProperties(),
-			D2D1::HwndRenderTargetProperties(
-				hwnd_,
-				D2D1::SizeU(config_.width, config_.height),
-				D2D1_PRESENT_OPTIONS_IMMEDIATELY),
+		const auto renderTargetProperties = D2D1::RenderTargetProperties(
+			D2D1_RENDER_TARGET_TYPE_DEFAULT,
+			D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_PREMULTIPLIED));
+		auto hr = d2dFactory_->CreateDCRenderTarget(
+			&renderTargetProperties,
 			renderTarget_.GetAddressOf());
 		if (FAILED(hr))
 		{
@@ -474,17 +440,6 @@ HRESULT InputBoxHost::EnsureResources()
 		textFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
 	}
 
-	if (!fillBrush_)
-	{
-		auto hr = renderTarget_->CreateSolidColorBrush(
-			ColorFromArgb(config_.backgroundColor),
-			fillBrush_.GetAddressOf());
-		if (FAILED(hr))
-		{
-			return hr;
-		}
-	}
-
 	if (!borderBrush_)
 	{
 		auto hr = renderTarget_->CreateSolidColorBrush(
@@ -501,6 +456,17 @@ HRESULT InputBoxHost::EnsureResources()
 		auto hr = renderTarget_->CreateSolidColorBrush(
 			ColorFromArgb(config_.textColor),
 			textBrush_.GetAddressOf());
+		if (FAILED(hr))
+		{
+			return hr;
+		}
+	}
+
+	if (!placeholderBrush_)
+	{
+		auto hr = renderTarget_->CreateSolidColorBrush(
+			PlaceholderColorFromArgb(config_.textColor),
+			placeholderBrush_.GetAddressOf());
 		if (FAILED(hr))
 		{
 			return hr;
@@ -525,8 +491,8 @@ void InputBoxHost::DiscardResources()
 {
 	textBrush_.Reset();
 	borderBrush_.Reset();
-	fillBrush_.Reset();
 	caretBrush_.Reset();
+	placeholderBrush_.Reset();
 	textFormat_.Reset();
 	renderTarget_.Reset();
 	dwriteFactory_.Reset();
@@ -540,7 +506,7 @@ void InputBoxHost::ShowWindowAndFocus()
 		return;
 	}
 
-	text_.clear();
+	ResetInput();
 	caretVisible_ = true;
 	visible_ = true;
 	UpdateWindowPosition();
@@ -548,7 +514,7 @@ void InputBoxHost::ShowWindowAndFocus()
 	SetForegroundWindow(hwnd_);
 	SetFocus(hwnd_);
 	SetTimer(hwnd_, CaretTimerId, CaretBlinkMs, nullptr);
-	InvalidateRect(hwnd_, nullptr, FALSE);
+	Render();
 }
 
 void InputBoxHost::HideWindow()
@@ -561,6 +527,310 @@ void InputBoxHost::HideWindow()
 	visible_ = false;
 	KillTimer(hwnd_, CaretTimerId);
 	ShowWindow(hwnd_, SW_HIDE);
+}
+
+void InputBoxHost::ResetInput()
+{
+	text_.clear();
+	caretIndex_ = 0;
+	historyIndex_ = -1;
+	historyDraft_.clear();
+}
+
+void InputBoxHost::SubmitInput()
+{
+	if (!text_.empty())
+	{
+		if (history_.empty() || history_.back() != text_)
+		{
+			history_.push_back(text_);
+			if (history_.size() > MaxHistoryItems)
+			{
+				history_.erase(history_.begin());
+			}
+		}
+	}
+
+	historyIndex_ = -1;
+	historyDraft_.clear();
+	text_.clear();
+	caretIndex_ = 0;
+	InvalidateInput();
+}
+
+void InputBoxHost::InsertText(const std::wstring& value)
+{
+	if (value.empty())
+	{
+		return;
+	}
+
+	text_.insert(caretIndex_, value);
+	caretIndex_ += value.size();
+	historyIndex_ = -1;
+	historyDraft_.clear();
+	InvalidateInput();
+}
+
+void InputBoxHost::InsertCharacter(wchar_t value)
+{
+	text_.insert(caretIndex_, 1, value);
+	++caretIndex_;
+	historyIndex_ = -1;
+	historyDraft_.clear();
+	InvalidateInput();
+}
+
+void InputBoxHost::DeleteBeforeCaret()
+{
+	if (caretIndex_ == 0 || text_.empty())
+	{
+		return;
+	}
+
+	text_.erase(caretIndex_ - 1, 1);
+	--caretIndex_;
+	historyIndex_ = -1;
+	historyDraft_.clear();
+	InvalidateInput();
+}
+
+void InputBoxHost::DeleteAtCaret()
+{
+	if (caretIndex_ >= text_.size())
+	{
+		return;
+	}
+
+	text_.erase(caretIndex_, 1);
+	historyIndex_ = -1;
+	historyDraft_.clear();
+	InvalidateInput();
+}
+
+void InputBoxHost::MoveCaretLeft()
+{
+	if (caretIndex_ == 0)
+	{
+		return;
+	}
+
+	--caretIndex_;
+	InvalidateInput();
+}
+
+void InputBoxHost::MoveCaretRight()
+{
+	if (caretIndex_ >= text_.size())
+	{
+		return;
+	}
+
+	++caretIndex_;
+	InvalidateInput();
+}
+
+void InputBoxHost::MoveCaretToStart()
+{
+	if (caretIndex_ == 0)
+	{
+		return;
+	}
+
+	caretIndex_ = 0;
+	InvalidateInput();
+}
+
+void InputBoxHost::MoveCaretToEnd()
+{
+	if (caretIndex_ == text_.size())
+	{
+		return;
+	}
+
+	caretIndex_ = text_.size();
+	InvalidateInput();
+}
+
+void InputBoxHost::NavigateHistory(int direction)
+{
+	if (history_.empty())
+	{
+		return;
+	}
+
+	if (historyIndex_ < 0)
+	{
+		if (direction > 0)
+		{
+			return;
+		}
+
+		historyDraft_ = text_;
+		historyIndex_ = static_cast<int>(history_.size()) - 1;
+	}
+	else
+	{
+		historyIndex_ += direction;
+	}
+
+	if (historyIndex_ < 0)
+	{
+		historyIndex_ = 0;
+	}
+
+	if (historyIndex_ >= static_cast<int>(history_.size()))
+	{
+		historyIndex_ = -1;
+		text_ = historyDraft_;
+		historyDraft_.clear();
+	}
+	else
+	{
+		text_ = history_[historyIndex_];
+	}
+
+	caretIndex_ = text_.size();
+	InvalidateInput();
+}
+
+void InputBoxHost::PasteFromClipboard()
+{
+	if (hwnd_ == nullptr || !OpenClipboard(hwnd_))
+	{
+		return;
+	}
+
+	std::wstring pastedText;
+	const auto handle = GetClipboardData(CF_UNICODETEXT);
+	if (handle != nullptr)
+	{
+		const auto* data = static_cast<const wchar_t*>(GlobalLock(handle));
+		if (data != nullptr)
+		{
+			for (const auto* current = data; *current != L'\0'; ++current)
+			{
+				if (*current == L'\r' || *current == L'\n' || *current == L'\t')
+				{
+					pastedText.push_back(L' ');
+				}
+				else if (*current >= 0x20)
+				{
+					pastedText.push_back(*current);
+				}
+			}
+
+			GlobalUnlock(handle);
+		}
+	}
+
+	CloseClipboard();
+	InsertText(pastedText);
+}
+
+void InputBoxHost::SetCaretFromPoint(LPARAM lParam)
+{
+	if (text_.empty() || FAILED(EnsureResources()))
+	{
+		caretIndex_ = text_.size();
+		InvalidateInput();
+		return;
+	}
+
+	const auto textRect = CreateTextRect(config_);
+	Microsoft::WRL::ComPtr<IDWriteTextLayout> textLayout;
+	if (FAILED(dwriteFactory_->CreateTextLayout(
+			text_.c_str(),
+			static_cast<UINT32>(text_.size()),
+			textFormat_.Get(),
+			textRect.right - textRect.left,
+			textRect.bottom - textRect.top,
+			textLayout.GetAddressOf())))
+	{
+		return;
+	}
+
+	BOOL isTrailingHit = FALSE;
+	BOOL isInside = FALSE;
+	DWRITE_HIT_TEST_METRICS metrics{};
+	const auto x = static_cast<float>(GET_X_LPARAM(lParam)) - textRect.left;
+	const auto y = static_cast<float>(GET_Y_LPARAM(lParam)) - textRect.top;
+	if (SUCCEEDED(textLayout->HitTestPoint(x, y, &isTrailingHit, &isInside, &metrics)))
+	{
+		caretIndex_ = metrics.textPosition + (isTrailingHit ? metrics.length : 0);
+		caretIndex_ = (std::min)(caretIndex_, text_.size());
+		InvalidateInput();
+	}
+}
+
+void InputBoxHost::InvalidateInput()
+{
+	caretVisible_ = true;
+	if (hwnd_ != nullptr)
+	{
+		UpdateImeCompositionWindow();
+		SetTimer(hwnd_, CaretTimerId, CaretBlinkMs, nullptr);
+		Render();
+	}
+}
+
+void InputBoxHost::UpdateImeCompositionWindow()
+{
+	if (hwnd_ == nullptr || FAILED(EnsureResources()))
+	{
+		return;
+	}
+
+	const auto inputContext = ImmGetContext(hwnd_);
+	if (inputContext == nullptr)
+	{
+		return;
+	}
+
+	const auto textRect = CreateTextRect(config_);
+	COMPOSITIONFORM compositionForm{};
+	compositionForm.dwStyle = CFS_POINT;
+	compositionForm.ptCurrentPos.x = static_cast<LONG>(std::round(GetCaretX(textRect)));
+	compositionForm.ptCurrentPos.y = static_cast<LONG>(
+		std::round((textRect.top + textRect.bottom + config_.fontSize) / 2.0f));
+	ImmSetCompositionWindow(inputContext, &compositionForm);
+	ImmReleaseContext(hwnd_, inputContext);
+}
+
+float InputBoxHost::GetCaretX(const D2D1_RECT_F& textRect)
+{
+	if (text_.empty() || caretIndex_ == 0)
+	{
+		return textRect.left;
+	}
+
+	Microsoft::WRL::ComPtr<IDWriteTextLayout> textLayout;
+	if (FAILED(dwriteFactory_->CreateTextLayout(
+			text_.c_str(),
+			static_cast<UINT32>(text_.size()),
+			textFormat_.Get(),
+			textRect.right - textRect.left,
+			textRect.bottom - textRect.top,
+			textLayout.GetAddressOf())))
+	{
+		return textRect.left;
+	}
+
+	DWRITE_HIT_TEST_METRICS caretMetrics{};
+	float pointX = 0.0f;
+	float pointY = 0.0f;
+	const auto safeCaretIndex = (std::min)(caretIndex_, text_.size());
+	if (SUCCEEDED(textLayout->HitTestTextPosition(
+			static_cast<UINT32>(safeCaretIndex),
+			FALSE,
+			&pointX,
+			&pointY,
+			&caretMetrics)))
+	{
+		return textRect.left + pointX;
+	}
+
+	return textRect.left;
 }
 
 void InputBoxHost::UpdateWindowPosition() const
@@ -608,8 +878,58 @@ void InputBoxHost::UpdateWindowPosition() const
 
 void InputBoxHost::Render()
 {
-	if (FAILED(EnsureResources()))
+	if (hwnd_ == nullptr || FAILED(EnsureResources()))
 	{
+		return;
+	}
+
+	const auto width = (std::max)(1, config_.width);
+	const auto height = (std::max)(1, config_.height);
+	const auto screenDc = GetDC(nullptr);
+	if (screenDc == nullptr)
+	{
+		return;
+	}
+
+	auto memoryDc = CreateCompatibleDC(screenDc);
+	BITMAPINFO bitmapInfo{};
+	bitmapInfo.bmiHeader.biSize = sizeof(bitmapInfo.bmiHeader);
+	bitmapInfo.bmiHeader.biWidth = width;
+	bitmapInfo.bmiHeader.biHeight = -height;
+	bitmapInfo.bmiHeader.biPlanes = 1;
+	bitmapInfo.bmiHeader.biBitCount = 32;
+	bitmapInfo.bmiHeader.biCompression = BI_RGB;
+
+	void* bitmapBits = nullptr;
+	auto bitmap = CreateDIBSection(
+		screenDc,
+		&bitmapInfo,
+		DIB_RGB_COLORS,
+		&bitmapBits,
+		nullptr,
+		0);
+	ReleaseDC(nullptr, screenDc);
+
+	if (memoryDc == nullptr || bitmap == nullptr)
+	{
+		if (bitmap != nullptr)
+		{
+			DeleteObject(bitmap);
+		}
+		if (memoryDc != nullptr)
+		{
+			DeleteDC(memoryDc);
+		}
+		return;
+	}
+
+	const auto previousBitmap = SelectObject(memoryDc, bitmap);
+	RECT bindRect{ 0, 0, width, height };
+	if (FAILED(renderTarget_->BindDC(memoryDc, &bindRect)))
+	{
+		SelectObject(memoryDc, previousBitmap);
+		DeleteObject(bitmap);
+		DeleteDC(memoryDc);
 		return;
 	}
 
@@ -620,57 +940,37 @@ void InputBoxHost::Render()
 		CreateInputRect(config_),
 		config_.cornerRadius,
 		config_.cornerRadius);
-	renderTarget_->FillRoundedRectangle(roundedRect, fillBrush_.Get());
 	renderTarget_->DrawRoundedRectangle(roundedRect, borderBrush_.Get(), config_.borderThickness);
 
 	const auto textRect = CreateTextRect(config_);
-	if (!text_.empty())
-	{
-		renderTarget_->DrawTextW(
-			text_.c_str(),
-			static_cast<UINT32>(text_.size()),
-			textFormat_.Get(),
-			textRect,
-			textBrush_.Get(),
-			D2D1_DRAW_TEXT_OPTIONS_CLIP,
-			DWRITE_MEASURING_MODE_NATURAL);
-	}
+	const auto* displayText = text_.empty() ? PlaceholderText : text_.c_str();
+	const auto displayTextLength = text_.empty()
+		? static_cast<UINT32>((sizeof(PlaceholderText) / sizeof(PlaceholderText[0])) - 1)
+		: static_cast<UINT32>(text_.size());
+	auto* displayBrush = text_.empty() ? placeholderBrush_.Get() : textBrush_.Get();
+	renderTarget_->DrawTextW(
+		displayText,
+		displayTextLength,
+		textFormat_.Get(),
+		textRect,
+		displayBrush,
+		D2D1_DRAW_TEXT_OPTIONS_CLIP,
+		DWRITE_MEASURING_MODE_NATURAL);
 
 	if (caretVisible_)
 	{
-		auto caretX = textRect.left;
-		if (!text_.empty())
-		{
-			Microsoft::WRL::ComPtr<IDWriteTextLayout> textLayout;
-			if (SUCCEEDED(dwriteFactory_->CreateTextLayout(
-					text_.c_str(),
-					static_cast<UINT32>(text_.size()),
-					textFormat_.Get(),
-					textRect.right - textRect.left,
-					textRect.bottom - textRect.top,
-					textLayout.GetAddressOf())))
-			{
-				DWRITE_HIT_TEST_METRICS caretMetrics{};
-				float pointX = 0.0f;
-				float pointY = 0.0f;
-				if (SUCCEEDED(textLayout->HitTestTextPosition(
-						static_cast<UINT32>(text_.size()),
-						FALSE,
-						&pointX,
-						&pointY,
-						&caretMetrics)))
-				{
-					caretX = textRect.left + pointX;
-				}
-			}
-		}
+		const auto caretX = GetCaretX(textRect);
+		const auto textRectHeight = (std::max)(1.0f, textRect.bottom - textRect.top);
+		const auto caretHeight = (std::min)(textRectHeight, (std::max)(1.0f, config_.fontSize * 1.1f));
+		const auto caretTop = textRect.top + (textRectHeight - caretHeight) / 2.0f;
+		const auto caretWidth = (std::max)(0.5f, config_.caretWidth);
 
 		renderTarget_->FillRectangle(
 			D2D1::RectF(
 				caretX,
-				14.0f,
-				caretX + 1.5f,
-				static_cast<float>(config_.height) - 14.0f),
+				caretTop,
+				caretX + caretWidth,
+				caretTop + caretHeight),
 			caretBrush_.Get());
 	}
 
@@ -679,14 +979,34 @@ void InputBoxHost::Render()
 	{
 		DiscardResources();
 	}
+	else if (SUCCEEDED(endDrawResult))
+	{
+		POINT sourcePoint{ 0, 0 };
+		SIZE windowSize{ width, height };
+		BLENDFUNCTION blend{};
+		blend.BlendOp = AC_SRC_OVER;
+		blend.SourceConstantAlpha = 255;
+		blend.AlphaFormat = AC_SRC_ALPHA;
+		UpdateLayeredWindow(
+			hwnd_,
+			nullptr,
+			nullptr,
+			&windowSize,
+			memoryDc,
+			&sourcePoint,
+			0,
+			&blend,
+			ULW_ALPHA);
+	}
+
+	SelectObject(memoryDc, previousBitmap);
+	DeleteObject(bitmap);
+	DeleteDC(memoryDc);
 }
 
 void InputBoxHost::Resize(UINT width, UINT height)
 {
-	if (renderTarget_)
-	{
-		renderTarget_->Resize(D2D1::SizeU(width, height));
-	}
+	Render();
 }
 
 LuvLetterInputBoxConfig InputBoxHost::SanitizeConfig(const LuvLetterInputBoxConfig& config)
@@ -698,6 +1018,8 @@ LuvLetterInputBoxConfig InputBoxHost::SanitizeConfig(const LuvLetterInputBoxConf
 	sanitized.borderThickness = (std::max)(0.0f, config.borderThickness);
 	sanitized.fontSize = (std::max)(1.0f, config.fontSize);
 	sanitized.horizontalPadding = (std::max)(0.0f, config.horizontalPadding);
+	sanitized.verticalPadding = (std::max)(0.0f, config.verticalPadding);
+	sanitized.caretWidth = (std::max)(0.5f, config.caretWidth);
 	sanitized.positionMode =
 		config.positionMode >= 0 && config.positionMode <= 3 ? config.positionMode : sanitized.positionMode;
 	sanitized.offsetX = config.offsetX;
@@ -764,22 +1086,28 @@ LRESULT InputBoxHost::HandleMessage(HWND hwnd, UINT message, WPARAM wParam, LPAR
 	case WM_SETFOCUS:
 		caretVisible_ = true;
 		SetTimer(hwnd, CaretTimerId, CaretBlinkMs, nullptr);
-		InvalidateRect(hwnd, nullptr, FALSE);
+		UpdateImeCompositionWindow();
+		Render();
 		return 0;
 	case WM_KILLFOCUS:
 		caretVisible_ = false;
 		KillTimer(hwnd, CaretTimerId);
-		InvalidateRect(hwnd, nullptr, FALSE);
+		Render();
 		return 0;
 	case WM_TIMER:
 		if (wParam == CaretTimerId)
 		{
 			caretVisible_ = !caretVisible_;
-			InvalidateRect(hwnd, nullptr, FALSE);
+			Render();
 			return 0;
 		}
 		break;
 	case WM_KEYDOWN:
+		if ((wParam == L'V' || wParam == L'v') && IsKeyDown(VK_CONTROL))
+		{
+			PasteFromClipboard();
+			return 0;
+		}
 		if (MatchesHotkey(wParam, config_.cancelVirtualKey, config_.cancelModifiers))
 		{
 			HideWindow();
@@ -787,35 +1115,87 @@ LRESULT InputBoxHost::HandleMessage(HWND hwnd, UINT message, WPARAM wParam, LPAR
 		}
 		if (MatchesHotkey(wParam, config_.submitVirtualKey, config_.submitModifiers))
 		{
-			HideWindow();
+			SubmitInput();
 			return 0;
 		}
 		if (MatchesHotkey(wParam, config_.backspaceVirtualKey, config_.backspaceModifiers))
 		{
-			if (!text_.empty())
-			{
-				text_.pop_back();
-			}
-
-			caretVisible_ = true;
-			InvalidateRect(hwnd, nullptr, FALSE);
+			DeleteBeforeCaret();
 			return 0;
+		}
+		if (GetCurrentHotkeyModifiers() == 0)
+		{
+			switch (wParam)
+			{
+			case VK_DELETE:
+				DeleteAtCaret();
+				return 0;
+			case VK_LEFT:
+				MoveCaretLeft();
+				return 0;
+			case VK_RIGHT:
+				MoveCaretRight();
+				return 0;
+			case VK_HOME:
+				MoveCaretToStart();
+				return 0;
+			case VK_END:
+				MoveCaretToEnd();
+				return 0;
+			case VK_UP:
+				NavigateHistory(-1);
+				return 0;
+			case VK_DOWN:
+				NavigateHistory(1);
+				return 0;
+			default:
+				break;
+			}
 		}
 
 		break;
 	case WM_CHAR:
-		if (wParam == L'\b' || wParam == L'\r')
+		if (wParam == L'\b' || wParam == L'\r' || wParam == L'\n' || wParam == L'\t')
 		{
 			return 0;
 		}
 		if (wParam >= 0x20)
 		{
-			text_.push_back(static_cast<wchar_t>(wParam));
+			InsertCharacter(static_cast<wchar_t>(wParam));
 		}
 
-		caretVisible_ = true;
-		InvalidateRect(hwnd, nullptr, FALSE);
 		return 0;
+	case WM_PASTE:
+		PasteFromClipboard();
+		return 0;
+	case WM_LBUTTONDOWN:
+		SetFocus(hwnd);
+		SetCaretFromPoint(lParam);
+		return 0;
+	case WM_IME_STARTCOMPOSITION:
+		UpdateImeCompositionWindow();
+		break;
+	case WM_IME_COMPOSITION:
+		UpdateImeCompositionWindow();
+		if ((lParam & GCS_RESULTSTR) != 0)
+		{
+			const auto inputContext = ImmGetContext(hwnd);
+			if (inputContext != nullptr)
+			{
+				const auto byteCount = ImmGetCompositionStringW(inputContext, GCS_RESULTSTR, nullptr, 0);
+				if (byteCount > 0)
+				{
+					std::wstring result(static_cast<size_t>(byteCount) / sizeof(wchar_t), L'\0');
+					ImmGetCompositionStringW(inputContext, GCS_RESULTSTR, result.data(), byteCount);
+					InsertText(result);
+				}
+
+				ImmReleaseContext(hwnd, inputContext);
+			}
+
+			return 0;
+		}
+		break;
 	case WM_PAINT:
 	{
 		PAINTSTRUCT paintStruct{};

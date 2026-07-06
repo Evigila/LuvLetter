@@ -11,6 +11,8 @@ internal struct NativeInputBoxConfig
     public float BorderThickness;
     public float FontSize;
     public float HorizontalPadding;
+    public float VerticalPadding;
+    public float CaretWidth;
     public int PositionMode;
     public int OffsetX;
     public int OffsetY;

@@ -137,6 +137,7 @@ public partial class MainWindow : Window
         var colors = configuration.InputBox.Colors;
         BorderColorTextBox.Text = colors.Border;
         BackgroundColorTextBox.Text = colors.Background;
+        BackgroundOpacityTextBox.Text = colors.BackgroundOpacity.ToString(CultureInfo.InvariantCulture);
         TextColorTextBox.Text = colors.Text;
         CaretColorTextBox.Text = colors.Caret;
 
@@ -149,6 +150,8 @@ public partial class MainWindow : Window
         HorizontalPaddingTextBox.Text = size.HorizontalPadding.ToString(
             CultureInfo.InvariantCulture
         );
+        VerticalPaddingTextBox.Text = size.VerticalPadding.ToString(CultureInfo.InvariantCulture);
+        CaretWidthTextBox.Text = size.CaretWidth.ToString(CultureInfo.InvariantCulture);
     }
 
     private void ApplyHotkeysToControls(InputBoxHotkeyOptions hotkeys)
@@ -175,6 +178,12 @@ public partial class MainWindow : Window
             || !TryReadInt(CustomYTextBox, "Custom Y", out var customY, out error)
             || !TryReadInt(WidthTextBox, "Width", out var width, out error)
             || !TryReadInt(HeightTextBox, "Height", out var height, out error)
+            || !TryReadFloat(
+                BackgroundOpacityTextBox,
+                "Background opacity",
+                out var backgroundOpacity,
+                out error
+            )
             || !TryReadFloat(FontSizeTextBox, "Font size", out var fontSize, out error)
             || !TryReadFloat(CornerRadiusTextBox, "Corner radius", out var cornerRadius, out error)
             || !TryReadFloat(
@@ -189,8 +198,21 @@ public partial class MainWindow : Window
                 out var horizontalPadding,
                 out error
             )
+            || !TryReadFloat(
+                VerticalPaddingTextBox,
+                "Vertical padding",
+                out var verticalPadding,
+                out error
+            )
+            || !TryReadFloat(CaretWidthTextBox, "Caret width", out var caretWidth, out error)
         )
         {
+            return false;
+        }
+
+        if (backgroundOpacity is < 0.0f or > 1.0f)
+        {
+            error = "Background opacity must be between 0 and 1";
             return false;
         }
 
@@ -223,7 +245,11 @@ public partial class MainWindow : Window
                 Colors = new InputBoxColorOptions
                 {
                     Border = BorderColorTextBox.Text.Trim(),
-                    Background = BackgroundColorTextBox.Text.Trim(),
+                    Background = ApplyOpacityToColor(
+                        BackgroundColorTextBox.Text.Trim(),
+                        backgroundOpacity
+                    ),
+                    BackgroundOpacity = backgroundOpacity,
                     Text = TextColorTextBox.Text.Trim(),
                     Caret = CaretColorTextBox.Text.Trim(),
                 },
@@ -235,6 +261,8 @@ public partial class MainWindow : Window
                     CornerRadius = cornerRadius,
                     BorderThickness = borderThickness,
                     HorizontalPadding = horizontalPadding,
+                    VerticalPadding = verticalPadding,
+                    CaretWidth = caretWidth,
                 },
             },
         };
@@ -300,6 +328,18 @@ public partial class MainWindow : Window
         var hex = text.Trim().TrimStart('#');
         return hex.Length is 6 or 8
             && uint.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out _);
+    }
+
+    private static string ApplyOpacityToColor(string value, float opacity)
+    {
+        var hex = value.Trim().TrimStart('#');
+        if (hex.Length == 6)
+        {
+            hex = "FF" + hex;
+        }
+
+        var alpha = (int)Math.Round(Math.Clamp(opacity, 0.0f, 1.0f) * 255.0f);
+        return $"#{alpha:X2}{hex[^6..]}";
     }
 
     private static bool TryCreateHotkey(

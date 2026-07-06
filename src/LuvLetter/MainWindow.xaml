@@ -103,11 +103,15 @@
             <TextBlock Text="Background ARGB" />
             <TextBox x:Name="BackgroundColorTextBox" Height="32" />
           </StackPanel>
-          <StackPanel Margin="0,0,12,0">
+          <StackPanel Margin="0,0,12,10">
+            <TextBlock Text="Background opacity" />
+            <TextBox x:Name="BackgroundOpacityTextBox" Height="32" />
+          </StackPanel>
+          <StackPanel Margin="0,0,0,10">
             <TextBlock Text="Text ARGB" />
             <TextBox x:Name="TextColorTextBox" Height="32" />
           </StackPanel>
-          <StackPanel>
+          <StackPanel Margin="0,0,12,0">
             <TextBlock Text="Caret ARGB" />
             <TextBox x:Name="CaretColorTextBox" Height="32" />
           </StackPanel>
@@ -138,6 +142,14 @@
           <StackPanel>
             <TextBlock Text="Horizontal padding" />
             <TextBox x:Name="HorizontalPaddingTextBox" Height="32" />
+          </StackPanel>
+          <StackPanel Margin="0,0,12,0">
+            <TextBlock Text="Vertical padding" />
+            <TextBox x:Name="VerticalPaddingTextBox" Height="32" />
+          </StackPanel>
+          <StackPanel Margin="0,0,12,0">
+            <TextBlock Text="Caret width" />
+            <TextBox x:Name="CaretWidthTextBox" Height="32" />
           </StackPanel>
         </UniformGrid>
       </StackPanel>

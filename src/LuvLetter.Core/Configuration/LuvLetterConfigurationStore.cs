@@ -125,13 +125,92 @@ public sealed class LuvLetterConfigurationStore
             };
         }
 
+        var colors = configuration.InputBox.Colors;
+        if (string.Equals(colors.Text, "#F2191919", StringComparison.OrdinalIgnoreCase))
+        {
+            colors = colors with
+            {
+                Text = LuvLetterConfiguration.Default.InputBox.Colors.Text,
+            };
+        }
+
+        if (string.Equals(colors.Caret, "#F2191919", StringComparison.OrdinalIgnoreCase))
+        {
+            colors = colors with
+            {
+                Caret = LuvLetterConfiguration.Default.InputBox.Colors.Caret,
+            };
+        }
+
+        var backgroundOpacity = Math.Clamp(colors.BackgroundOpacity, 0.0f, 1.0f);
+        if (
+            string.Equals(colors.Background, "#66DCDCDC", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(colors.Background, "#99DCDCDC", StringComparison.OrdinalIgnoreCase)
+        )
+        {
+            backgroundOpacity = LuvLetterConfiguration.Default.InputBox.Colors.BackgroundOpacity;
+            colors = colors with
+            {
+                Background = LuvLetterConfiguration.Default.InputBox.Colors.Background,
+            };
+        }
+
+        colors = colors with
+        {
+            BackgroundOpacity = backgroundOpacity,
+            Background = ApplyOpacityToColor(colors.Background, backgroundOpacity),
+        };
+
+        var size = configuration.InputBox.Size;
+        if (
+            size.Width == 640
+            && size.Height == 56
+            && IsNear(size.CornerRadius, 8.0f)
+            && IsNear(size.BorderThickness, 2.0f)
+            && IsNear(size.FontSize, 20.0f)
+            && (IsNear(size.HorizontalPadding, 18.0f) || IsNear(size.HorizontalPadding, 12.0f))
+        )
+        {
+            size = size with
+            {
+                Height = LuvLetterConfiguration.Default.InputBox.Size.Height,
+                HorizontalPadding = LuvLetterConfiguration.Default.InputBox.Size.HorizontalPadding,
+                VerticalPadding = LuvLetterConfiguration.Default.InputBox.Size.VerticalPadding,
+                CaretWidth = LuvLetterConfiguration.Default.InputBox.Size.CaretWidth,
+            };
+        }
+
         return configuration with
         {
             InputBox = configuration.InputBox with
             {
                 Hotkeys = hotkeys,
                 Placement = placement,
+                Colors = colors,
+                Size = size,
             },
         };
+    }
+
+    private static bool IsNear(float value, float expected)
+    {
+        return Math.Abs(value - expected) < 0.001f;
+    }
+
+    private static string ApplyOpacityToColor(string value, float opacity)
+    {
+        var hex = value.Trim().TrimStart('#');
+        if (hex.Length == 8)
+        {
+            hex = hex[^6..];
+        }
+
+        if (hex.Length != 6)
+        {
+            return LuvLetterConfiguration.Default.InputBox.Colors.Background;
+        }
+
+        var alpha = (int)Math.Round(Math.Clamp(opacity, 0.0f, 1.0f) * 255.0f);
+        return $"#{alpha:X2}{hex}";
     }
 }
