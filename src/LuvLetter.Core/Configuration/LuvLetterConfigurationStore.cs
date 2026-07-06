@@ -15,7 +15,7 @@ public sealed class LuvLetterConfigurationStore
     public LuvLetterConfigurationStore(string settingsPath)
     {
         this.settingsPath = settingsPath;
-        Current = Load();
+        Current = Normalize(Load());
     }
 
     public LuvLetterConfiguration Current { get; private set; }
@@ -24,9 +24,9 @@ public sealed class LuvLetterConfigurationStore
 
     public void Update(LuvLetterConfiguration configuration)
     {
-        Current = configuration;
-        Save(configuration);
-        Changed?.Invoke(this, configuration);
+        Current = Normalize(configuration);
+        Save(Current);
+        Changed?.Invoke(this, Current);
     }
 
     private LuvLetterConfiguration Load()
@@ -98,5 +98,19 @@ public sealed class LuvLetterConfigurationStore
     {
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         return Path.Combine(appData, "LuvLetter", "settings.json");
+    }
+
+    private static LuvLetterConfiguration Normalize(LuvLetterConfiguration configuration)
+    {
+        var hotkeys = configuration.InputBox.Hotkeys;
+        if (hotkeys.Activation.Modifiers == HotkeyModifierKeys.None)
+        {
+            hotkeys = hotkeys with { Activation = HotkeyDefinition.Default };
+        }
+
+        return configuration with
+        {
+            InputBox = configuration.InputBox with { Hotkeys = hotkeys },
+        };
     }
 }

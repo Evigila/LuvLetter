@@ -54,7 +54,9 @@ public partial class MainWindow : Window
         hotkeys = sender switch
         {
             TextBox textBox when ReferenceEquals(textBox, ActivationHotkeyTextBox) =>
-                hotkeys with { Activation = hotkey },
+                hotkey.Modifiers == HotkeyModifierKeys.None
+                    ? hotkeys
+                    : hotkeys with { Activation = hotkey },
             TextBox textBox when ReferenceEquals(textBox, SubmitHotkeyTextBox) =>
                 hotkeys with { Submit = hotkey },
             TextBox textBox when ReferenceEquals(textBox, CancelHotkeyTextBox) =>
@@ -63,6 +65,12 @@ public partial class MainWindow : Window
                 hotkeys with { Backspace = hotkey },
             _ => hotkeys,
         };
+
+        if (ReferenceEquals(sender, ActivationHotkeyTextBox) && hotkey.Modifiers == HotkeyModifierKeys.None)
+        {
+            SetStatus("Activation hotkey must include Alt, Ctrl, Shift, or Win");
+            return;
+        }
 
         pendingConfiguration = pendingConfiguration with
         {

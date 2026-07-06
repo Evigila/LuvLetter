@@ -33,6 +33,9 @@ extern "C"
 		int32_t submitVirtualKey;
 		int32_t cancelVirtualKey;
 		int32_t backspaceVirtualKey;
+		int32_t submitModifiers;
+		int32_t cancelModifiers;
+		int32_t backspaceModifiers;
 	};
 
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ApplyInputBoxConfig(

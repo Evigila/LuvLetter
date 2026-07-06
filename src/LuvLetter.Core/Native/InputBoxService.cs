@@ -28,6 +28,9 @@ public sealed class InputBoxService : IInputBoxService
             SubmitVirtualKey = configuration.Hotkeys.Submit.VirtualKey,
             CancelVirtualKey = configuration.Hotkeys.Cancel.VirtualKey,
             BackspaceVirtualKey = configuration.Hotkeys.Backspace.VirtualKey,
+            SubmitModifiers = (int)configuration.Hotkeys.Submit.Modifiers,
+            CancelModifiers = (int)configuration.Hotkeys.Cancel.Modifiers,
+            BackspaceModifiers = (int)configuration.Hotkeys.Backspace.Modifiers,
         };
 
         NativeInputBoxApi.ThrowIfFailed(NativeInputBoxApi.ApplyInputBoxConfig(in nativeConfig));

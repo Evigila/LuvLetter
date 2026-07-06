@@ -98,6 +98,40 @@ namespace
 			static_cast<float>(config.width) - padding,
 			static_cast<float>(config.height));
 	}
+
+	bool IsKeyDown(int virtualKey)
+	{
+		return (GetKeyState(virtualKey) & 0x8000) != 0;
+	}
+
+	int GetCurrentHotkeyModifiers()
+	{
+		int modifiers = 0;
+		if (IsKeyDown(VK_MENU))
+		{
+			modifiers |= 1;
+		}
+		if (IsKeyDown(VK_CONTROL))
+		{
+			modifiers |= 2;
+		}
+		if (IsKeyDown(VK_SHIFT))
+		{
+			modifiers |= 4;
+		}
+		if (IsKeyDown(VK_LWIN) || IsKeyDown(VK_RWIN))
+		{
+			modifiers |= 8;
+		}
+
+		return modifiers;
+	}
+
+	bool MatchesHotkey(WPARAM wParam, int virtualKey, int modifiers)
+	{
+		return wParam == static_cast<WPARAM>(virtualKey)
+			&& GetCurrentHotkeyModifiers() == modifiers;
+	}
 }
 
 InputBoxHost& InputBoxHost::Instance()
@@ -534,7 +568,7 @@ void InputBoxHost::UpdateWindowPosition() const
 		y,
 		config_.width,
 		config_.height,
-		SWP_SHOWWINDOW);
+		SWP_NOACTIVATE);
 }
 
 void InputBoxHost::Render()
@@ -646,6 +680,9 @@ LuvLetterInputBoxConfig InputBoxHost::SanitizeConfig(const LuvLetterInputBoxConf
 		config.cancelVirtualKey > 0 ? config.cancelVirtualKey : sanitized.cancelVirtualKey;
 	sanitized.backspaceVirtualKey =
 		config.backspaceVirtualKey > 0 ? config.backspaceVirtualKey : sanitized.backspaceVirtualKey;
+	sanitized.submitModifiers = config.submitModifiers;
+	sanitized.cancelModifiers = config.cancelModifiers;
+	sanitized.backspaceModifiers = config.backspaceModifiers;
 	return sanitized;
 }
 
@@ -708,17 +745,17 @@ LRESULT InputBoxHost::HandleMessage(HWND hwnd, UINT message, WPARAM wParam, LPAR
 		}
 		break;
 	case WM_KEYDOWN:
-		if (wParam == static_cast<WPARAM>(config_.cancelVirtualKey))
+		if (MatchesHotkey(wParam, config_.cancelVirtualKey, config_.cancelModifiers))
 		{
 			HideWindow();
 			return 0;
 		}
-		if (wParam == static_cast<WPARAM>(config_.submitVirtualKey))
+		if (MatchesHotkey(wParam, config_.submitVirtualKey, config_.submitModifiers))
 		{
 			HideWindow();
 			return 0;
 		}
-		if (wParam == static_cast<WPARAM>(config_.backspaceVirtualKey))
+		if (MatchesHotkey(wParam, config_.backspaceVirtualKey, config_.backspaceModifiers))
 		{
 			if (!text_.empty())
 			{

@@ -100,6 +100,12 @@ public sealed class GlobalHotkeyService : IDisposable
             return false;
         }
 
+        if (hotkey.Modifiers == HotkeyModifierKeys.None)
+        {
+            error = "Activation hotkey must include Alt, Ctrl, Shift, or Win";
+            return false;
+        }
+
         var modifiers = ToNativeModifiers(hotkey.Modifiers) | ModNoRepeat;
         if (RegisterHotKey(messageSource.Handle, HotkeyId, modifiers, (uint)hotkey.VirtualKey))
         {
@@ -127,7 +133,7 @@ public sealed class GlobalHotkeyService : IDisposable
     {
         if (message == WmHotKey && wParam.ToInt32() == HotkeyId)
         {
-            _ = Task.Run(inputBoxService.Show);
+            _ = Task.Run(inputBoxService.Toggle);
             handled = true;
         }
 

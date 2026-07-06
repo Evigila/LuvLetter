@@ -24,6 +24,9 @@ internal struct NativeInputBoxConfig
     public int SubmitVirtualKey;
     public int CancelVirtualKey;
     public int BackspaceVirtualKey;
+    public int SubmitModifiers;
+    public int CancelModifiers;
+    public int BackspaceModifiers;
 }
 
 internal static class NativeInputBoxApi
