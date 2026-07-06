@@ -451,6 +451,17 @@ HRESULT InputBoxHost::EnsureResources()
 		}
 	}
 
+	if (!backgroundBrush_)
+	{
+		auto hr = renderTarget_->CreateSolidColorBrush(
+			ColorFromArgb(config_.backgroundColor),
+			backgroundBrush_.GetAddressOf());
+		if (FAILED(hr))
+		{
+			return hr;
+		}
+	}
+
 	if (!textBrush_)
 	{
 		auto hr = renderTarget_->CreateSolidColorBrush(
@@ -491,6 +502,7 @@ void InputBoxHost::DiscardResources()
 {
 	textBrush_.Reset();
 	borderBrush_.Reset();
+	backgroundBrush_.Reset();
 	caretBrush_.Reset();
 	placeholderBrush_.Reset();
 	textFormat_.Reset();
@@ -940,6 +952,7 @@ void InputBoxHost::Render()
 		CreateInputRect(config_),
 		config_.cornerRadius,
 		config_.cornerRadius);
+	renderTarget_->FillRoundedRectangle(roundedRect, backgroundBrush_.Get());
 	renderTarget_->DrawRoundedRectangle(roundedRect, borderBrush_.Get(), config_.borderThickness);
 
 	const auto textRect = CreateTextRect(config_);

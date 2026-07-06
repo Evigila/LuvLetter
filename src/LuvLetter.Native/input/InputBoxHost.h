@@ -79,6 +79,7 @@ private:
 	Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;
 	Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> renderTarget_;
 	Microsoft::WRL::ComPtr<IDWriteTextFormat> textFormat_;
+	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> backgroundBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> borderBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> placeholderBrush_;
