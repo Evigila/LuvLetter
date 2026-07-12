@@ -72,6 +72,7 @@ public sealed class LuvLetterConfigurationStore
     {
         var defaults = LuvLetterConfiguration.Default;
         configuration ??= defaults;
+        configuration = MigrateLegacyVisualDefaults(configuration, defaults);
 
         var inputBox = configuration.InputBox ?? defaults.InputBox;
         var hotkeys = inputBox.Hotkeys ?? defaults.InputBox.Hotkeys;
@@ -133,6 +134,73 @@ public sealed class LuvLetterConfigurationStore
                 Hotkeys = featureHotkeys,
             },
         };
+    }
+
+    private static LuvLetterConfiguration MigrateLegacyVisualDefaults(
+        LuvLetterConfiguration configuration,
+        LuvLetterConfiguration defaults)
+    {
+        if (configuration.SchemaVersion >= 3)
+        {
+            return configuration;
+        }
+
+        var migrated = configuration;
+        var inputBox = configuration.InputBox;
+        if (inputBox is not null
+            && inputBox.Size is { } inputSize
+            && inputBox.Colors is { } inputColors
+            && NearlyEquals(inputSize.CornerRadius, 8.0f)
+            && NearlyEquals(inputSize.BorderThickness, 2.0f)
+            && IsLegacyOpaqueWhite(inputColors.Border))
+        {
+            migrated = migrated with
+            {
+                InputBox = inputBox with
+                {
+                    Size = inputSize with
+                    {
+                        CornerRadius = defaults.InputBox.Size.CornerRadius,
+                        BorderThickness = defaults.InputBox.Size.BorderThickness,
+                    },
+                    Colors = inputColors with { Border = defaults.InputBox.Colors.Border },
+                },
+            };
+        }
+
+        var featureWindow = configuration.FeatureWindow;
+        if (featureWindow is not null
+            && featureWindow.Layout is { } featureLayout
+            && featureWindow.Colors is { } featureColors
+            && NearlyEquals(featureLayout.CornerRadius, 12.0f)
+            && NearlyEquals(featureLayout.BorderThickness, 2.0f)
+            && IsLegacyOpaqueWhite(featureColors.Border))
+        {
+            migrated = migrated with
+            {
+                FeatureWindow = featureWindow with
+                {
+                    Layout = featureLayout with
+                    {
+                        CornerRadius = defaults.FeatureWindow.Layout.CornerRadius,
+                        BorderThickness = defaults.FeatureWindow.Layout.BorderThickness,
+                    },
+                    Colors = featureColors with { Border = defaults.FeatureWindow.Colors.Border },
+                },
+            };
+        }
+
+        return migrated;
+    }
+
+    private static bool NearlyEquals(float left, float right) =>
+        Math.Abs(left - right) < 0.0001f;
+
+    private static bool IsLegacyOpaqueWhite(string? color)
+    {
+        var normalized = color?.Trim().TrimStart('#');
+        return string.Equals(normalized, "FFFFFFFF", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(normalized, "FFFFFF", StringComparison.OrdinalIgnoreCase);
     }
 
     private LuvLetterConfiguration Load()

@@ -2,7 +2,7 @@ namespace LuvLetter.Core.Configuration;
 
 public sealed record FeatureWindowColorOptions
 {
-    public string Border { get; init; } = "#FFFFFFFF";
+    public string Border { get; init; } = "#66FFFFFF";
 
     public string Background { get; init; } = "#38F5F5F5";
 

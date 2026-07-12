@@ -12,9 +12,9 @@ public sealed record InputBoxSizeOptions
 
     public int Height { get; init; } = 44;
 
-    public float CornerRadius { get; init; } = 8.0f;
+    public float CornerRadius { get; init; } = 10.0f;
 
-    public float BorderThickness { get; init; } = 2.0f;
+    public float BorderThickness { get; init; } = 1.0f;
 
     public float FontSize { get; init; } = 20.0f;
 

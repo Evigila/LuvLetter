@@ -54,6 +54,29 @@ namespace
 			/ static_cast<float>(NormalizeDpi(dpi));
 	}
 
+	D2D1_ROUNDED_RECT CreateInsetRoundedRect(
+		float left,
+		float top,
+		float right,
+		float bottom,
+		float cornerRadius,
+		float borderThickness) noexcept
+	{
+		const auto width = (std::max)(0.0f, right - left);
+		const auto height = (std::max)(0.0f, bottom - top);
+		// Leave half a DIP beyond the stroke so Direct2D's coverage pixels remain
+		// inside the layered bitmap instead of being clipped at the surface edge.
+		const auto requestedInset = 0.5f + (std::max)(0.0f, borderThickness) / 2.0f;
+		const auto maximumInset = (std::max)(0.0f, (std::min)(width, height) / 2.0f - 0.01f);
+		const auto inset = (std::min)(requestedInset, maximumInset);
+		const auto rect = D2D1::RectF(left + inset, top + inset, right - inset, bottom - inset);
+		const auto radius = (std::clamp)(
+			cornerRadius,
+			0.0f,
+			(std::max)(0.0f, (std::min)(rect.right - rect.left, rect.bottom - rect.top) / 2.0f));
+		return D2D1::RoundedRect(rect, radius, radius);
+	}
+
 	UINT QueryWindowDpi(HWND window) noexcept
 	{
 		using GetDpiForWindowFunction = UINT(WINAPI*)(HWND);
@@ -100,15 +123,15 @@ namespace
 		config.abiVersion = LUVLETTER_NATIVE_ABI_VERSION;
 		config.width = 640;
 		config.height = 44;
-		config.cornerRadius = 8.0f;
-		config.borderThickness = 2.0f;
+		config.cornerRadius = 10.0f;
+		config.borderThickness = 1.0f;
 		config.fontSize = 20.0f;
 		config.horizontalPadding = 10.0f;
 		config.verticalPadding = 6.0f;
 		config.caretWidth = 2.25f;
 		config.positionMode = 0;
 		config.bottomMargin = 60;
-		config.borderColor = 0xFFFFFFFF;
+		config.borderColor = 0x66FFFFFF;
 		config.backgroundColor = 0x38F5F5F5;
 		config.textColor = 0xFFFFFFFF;
 		config.caretColor = 0xFFFFFFFF;
@@ -124,13 +147,13 @@ namespace
 		config.structSize = sizeof(config);
 		config.abiVersion = LUVLETTER_NATIVE_ABI_VERSION;
 		config.itemsPerPage = 7;
-		config.cellSize = 112.0f;
+		config.cellSize = 96.0f;
 		config.gap = 12.0f;
-		config.cornerRadius = 12.0f;
-		config.borderThickness = 2.0f;
-		config.fontSize = 15.0f;
-		config.bottomMargin = 72;
-		config.borderColor = 0xFFFFFFFF;
+		config.cornerRadius = 16.0f;
+		config.borderThickness = 1.0f;
+		config.fontSize = 16.0f;
+		config.bottomMargin = 60;
+		config.borderColor = 0x66FFFFFF;
 		config.backgroundColor = 0x38F5F5F5;
 		config.textColor = 0xFFFFFFFF;
 		config.accentColor = 0xFFFFFFFF;
@@ -1358,59 +1381,21 @@ void InputBoxHost::SetFeatureItemsOnUiThread(std::vector<FeatureItem>&& items)
 
 void InputBoxHost::UpdateInputWindowShape() const
 {
-	if (inputHwnd_ == nullptr) return;
-	const auto radiusDip = (std::min)(
-		config_.cornerRadius,
-		static_cast<float>((std::min)(config_.width, config_.height)) / 2.0f);
-	const auto radius = DipToPixels(radiusDip, inputDpi_);
-	if (radius <= 0)
+	if (inputHwnd_ != nullptr)
 	{
+		// HRGN coverage is binary and destroys the per-pixel antialiasing produced
+		// by D2D. The layered bitmap already supplies the visual and hit-test shape.
 		SetWindowRgn(inputHwnd_, nullptr, TRUE);
-		return;
-	}
-	const auto region = CreateRoundRectRgn(
-		0, 0,
-		GetInputWindowPixelWidth(), GetInputWindowPixelHeight(),
-		radius * 2, radius * 2);
-	if (region != nullptr && SetWindowRgn(inputHwnd_, region, TRUE) == 0)
-	{
-		DeleteObject(region);
 	}
 }
 
 void InputBoxHost::UpdateFeatureWindowShape() const
 {
-	if (featureHwnd_ == nullptr) return;
-	const auto count = GetFeaturePageItemCount();
-	if (count == 0)
+	if (featureHwnd_ != nullptr)
 	{
+		// Alpha-zero gaps and corners of an UpdateLayeredWindow bitmap are already
+		// transparent to hit testing; an integer HRGN would only reintroduce stairs.
 		SetWindowRgn(featureHwnd_, nullptr, TRUE);
-		return;
-	}
-	const auto radius = DipToPixels(
-		(std::min)(featureConfig_.cornerRadius, featureConfig_.cellSize / 2.0f),
-		featureDpi_);
-	const auto combined = CreateRectRgn(0, 0, 0, 0);
-	if (combined == nullptr) return;
-	for (size_t index = 0; index < count; ++index)
-	{
-		const auto leftDip = static_cast<float>(index)
-			* (featureConfig_.cellSize + featureConfig_.gap);
-		const auto left = DipToPixels(leftDip, featureDpi_);
-		const auto right = DipToPixels(leftDip + featureConfig_.cellSize, featureDpi_);
-		const auto bottom = GetFeatureWindowPixelHeight();
-		const auto cellRegion = radius > 0
-			? CreateRoundRectRgn(left, 0, right, bottom, radius * 2, radius * 2)
-			: CreateRectRgn(left, 0, right, bottom);
-		if (cellRegion != nullptr)
-		{
-			CombineRgn(combined, combined, cellRegion, RGN_OR);
-			DeleteObject(cellRegion);
-		}
-	}
-	if (SetWindowRgn(featureHwnd_, combined, TRUE) == 0)
-	{
-		DeleteObject(combined);
 	}
 }
 
@@ -1902,11 +1887,21 @@ void InputBoxHost::RenderInput()
 	RECT bindRect{ 0, 0, width, height };
 	if (FAILED(inputRenderTarget_->BindDC(inputSurface_->dc, &bindRect))) return;
 	inputRenderTarget_->BeginDraw();
+	inputRenderTarget_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 	inputRenderTarget_->Clear(D2D1::ColorF(0, 0.0f));
-	const auto inputRect = D2D1::RectF(1.0f, 1.0f, config_.width - 1.0f, config_.height - 1.0f);
-	const auto rounded = D2D1::RoundedRect(inputRect, config_.cornerRadius, config_.cornerRadius);
+	const auto rounded = CreateInsetRoundedRect(
+		0.0f,
+		0.0f,
+		static_cast<float>(config_.width),
+		static_cast<float>(config_.height),
+		config_.cornerRadius,
+		config_.borderThickness);
 	inputRenderTarget_->FillRoundedRectangle(rounded, inputBackgroundBrush_.Get());
-	inputRenderTarget_->DrawRoundedRectangle(rounded, inputBorderBrush_.Get(), config_.borderThickness);
+	if (config_.borderThickness > 0.0f)
+	{
+		inputRenderTarget_->DrawRoundedRectangle(
+			rounded, inputBorderBrush_.Get(), config_.borderThickness);
+	}
 	const auto horizontalPadding = (std::min)((std::max)(0.0f, config_.horizontalPadding), config_.width / 2.0f - 1.0f);
 	const auto verticalPadding = (std::min)((std::max)(0.0f, config_.verticalPadding), config_.height / 2.0f - 1.0f);
 	const auto textRect = D2D1::RectF(
@@ -2008,6 +2003,7 @@ void InputBoxHost::RenderFeature()
 	RECT bindRect{ 0, 0, width, height };
 	if (FAILED(featureRenderTarget_->BindDC(featureSurface_->dc, &bindRect))) return;
 	featureRenderTarget_->BeginDraw();
+	featureRenderTarget_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 	featureRenderTarget_->Clear(D2D1::ColorF(0, 0.0f));
 	const auto count = GetFeaturePageItemCount();
 	const auto perPage = static_cast<size_t>(featureConfig_.itemsPerPage);
@@ -2015,10 +2011,19 @@ void InputBoxHost::RenderFeature()
 	for (size_t index = 0; index < count; ++index)
 	{
 		const auto left = static_cast<float>(index) * (featureConfig_.cellSize + featureConfig_.gap);
-		const auto rect = D2D1::RectF(left + 1.0f, 1.0f, left + featureConfig_.cellSize - 1.0f, featureConfig_.cellSize - 1.0f);
-		const auto rounded = D2D1::RoundedRect(rect, featureConfig_.cornerRadius, featureConfig_.cornerRadius);
+		const auto rounded = CreateInsetRoundedRect(
+			left,
+			0.0f,
+			left + featureConfig_.cellSize,
+			featureConfig_.cellSize,
+			featureConfig_.cornerRadius,
+			featureConfig_.borderThickness);
 		featureRenderTarget_->FillRoundedRectangle(rounded, featureBackgroundBrush_.Get());
-		featureRenderTarget_->DrawRoundedRectangle(rounded, featureBorderBrush_.Get(), featureConfig_.borderThickness);
+		if (featureConfig_.borderThickness > 0.0f)
+		{
+			featureRenderTarget_->DrawRoundedRectangle(
+				rounded, featureBorderBrush_.Get(), featureConfig_.borderThickness);
+		}
 		const wchar_t number[] = {
 			static_cast<wchar_t>(featureConfig_.firstItemVirtualKey + index),
 			L'\0'
@@ -2319,7 +2324,10 @@ LuvLetterInputBoxConfig InputBoxHost::SanitizeConfig(const LuvLetterInputBoxConf
 	sanitized.width = (std::clamp)(config.width, 120, 7680);
 	sanitized.height = (std::clamp)(config.height, 24, 512);
 	sanitized.cornerRadius = (std::clamp)(FiniteOr(config.cornerRadius, sanitized.cornerRadius), 0.0f, 512.0f);
-	sanitized.borderThickness = (std::clamp)(FiniteOr(config.borderThickness, sanitized.borderThickness), 0.0f, 32.0f);
+	sanitized.borderThickness = (std::clamp)(
+		FiniteOr(config.borderThickness, sanitized.borderThickness),
+		0.0f,
+		(std::min)(16.0f, static_cast<float>(sanitized.height) / 2.0f));
 	sanitized.fontSize = (std::clamp)(FiniteOr(config.fontSize, sanitized.fontSize), 6.0f, 256.0f);
 	sanitized.horizontalPadding = (std::clamp)(FiniteOr(config.horizontalPadding, sanitized.horizontalPadding), 0.0f, static_cast<float>(sanitized.width) / 2.0f);
 	sanitized.verticalPadding = (std::clamp)(FiniteOr(config.verticalPadding, sanitized.verticalPadding), 0.0f, static_cast<float>(sanitized.height) / 2.0f);
@@ -2350,7 +2358,10 @@ LuvLetterFeatureWindowConfig InputBoxHost::SanitizeFeatureConfig(const LuvLetter
 	sanitized.cellSize = (std::clamp)(FiniteOr(config.cellSize, sanitized.cellSize), 32.0f, 512.0f);
 	sanitized.gap = (std::clamp)(FiniteOr(config.gap, sanitized.gap), 0.0f, 128.0f);
 	sanitized.cornerRadius = (std::clamp)(FiniteOr(config.cornerRadius, sanitized.cornerRadius), 0.0f, 256.0f);
-	sanitized.borderThickness = (std::clamp)(FiniteOr(config.borderThickness, sanitized.borderThickness), 0.0f, 32.0f);
+	sanitized.borderThickness = (std::clamp)(
+		FiniteOr(config.borderThickness, sanitized.borderThickness),
+		0.0f,
+		(std::min)(16.0f, sanitized.cellSize / 2.0f));
 	sanitized.fontSize = (std::clamp)(FiniteOr(config.fontSize, sanitized.fontSize), 6.0f, 128.0f);
 	sanitized.bottomMargin = (std::clamp)(config.bottomMargin, 0, 4096);
 	sanitized.offsetX = (std::clamp)(config.offsetX, -32768, 32768);

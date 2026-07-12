@@ -94,7 +94,7 @@ public sealed class InputBoxService : IInputBoxService
             BottomMargin = inputBox.Placement.BottomMargin,
             CustomX = inputBox.Placement.CustomX,
             CustomY = inputBox.Placement.CustomY,
-            BorderColor = ParseArgb(inputBox.Colors.Border, 0xFFFFFFFF),
+            BorderColor = ParseArgb(inputBox.Colors.Border, 0x66FFFFFF),
             BackgroundColor = ApplyOpacity(
                 ParseArgb(inputBox.Colors.Background, 0x38F5F5F5),
                 inputBox.Colors.BackgroundOpacity),
@@ -122,7 +122,7 @@ public sealed class InputBoxService : IInputBoxService
             BottomMargin = featureWindow.Layout.BottomMargin,
             OffsetX = featureWindow.Layout.OffsetX,
             OffsetY = featureWindow.Layout.OffsetY,
-            BorderColor = ParseArgb(featureWindow.Colors.Border, 0xFFFFFFFF),
+            BorderColor = ParseArgb(featureWindow.Colors.Border, 0x66FFFFFF),
             BackgroundColor = ApplyOpacity(
                 ParseArgb(featureWindow.Colors.Background, 0x38F5F5F5),
                 featureWindow.Colors.BackgroundOpacity),

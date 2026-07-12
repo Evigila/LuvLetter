@@ -64,6 +64,14 @@ internal static class Program
         Assert.True(defaults.AllowLeftControl, "Left Ctrl should be enabled by default.");
         Assert.True(defaults.AllowRightControl, "Right Ctrl should be enabled by default.");
 
+        var configuration = LuvLetterConfiguration.Default;
+        Assert.Equal(1.0f, configuration.InputBox.Size.BorderThickness);
+        Assert.Equal(10.0f, configuration.InputBox.Size.CornerRadius);
+        Assert.Equal("#66FFFFFF", configuration.InputBox.Colors.Border);
+        Assert.Equal(1.0f, configuration.FeatureWindow.Layout.BorderThickness);
+        Assert.Equal(16.0f, configuration.FeatureWindow.Layout.CornerRadius);
+        Assert.Equal("#66FFFFFF", configuration.FeatureWindow.Colors.Border);
+
         return Task.CompletedTask;
     }
 
@@ -631,6 +639,66 @@ internal static class Program
             Assert.Equal(
                 ActivationGestureKind.DoubleControlPress,
                 migrated.ActivationGestures.InputBox);
+
+            var legacyVisualPath = Path.Combine(temporaryDirectory, "legacy-visual-v2.json");
+            File.WriteAllText(
+                legacyVisualPath,
+                """
+                {
+                  "SchemaVersion": 2,
+                  "InputBox": {
+                    "Size": { "CornerRadius": 8, "BorderThickness": 2 },
+                    "Colors": { "Border": "#FFFFFFFF" }
+                  },
+                  "FeatureWindow": {
+                    "Layout": { "CornerRadius": 12, "BorderThickness": 2 },
+                    "Colors": { "Border": "FFFFFF" }
+                  }
+                }
+                """);
+
+            var migratedVisual = new LuvLetterConfigurationStore(legacyVisualPath).Current;
+            Assert.Equal(LuvLetterConfiguration.CurrentSchemaVersion, migratedVisual.SchemaVersion);
+            Assert.Equal(1.0f, migratedVisual.InputBox.Size.BorderThickness);
+            Assert.Equal(10.0f, migratedVisual.InputBox.Size.CornerRadius);
+            Assert.Equal("#66FFFFFF", migratedVisual.InputBox.Colors.Border);
+            Assert.Equal(1.0f, migratedVisual.FeatureWindow.Layout.BorderThickness);
+            Assert.Equal(16.0f, migratedVisual.FeatureWindow.Layout.CornerRadius);
+            Assert.Equal("#66FFFFFF", migratedVisual.FeatureWindow.Colors.Border);
+
+            var customizedVisualPath = Path.Combine(temporaryDirectory, "customized-visual-v2.json");
+            File.WriteAllText(
+                customizedVisualPath,
+                """
+                {
+                  "SchemaVersion": 2,
+                  "InputBox": {
+                    "Size": { "CornerRadius": 9, "BorderThickness": 2 },
+                    "Colors": { "Border": "#FFFFFFFF" }
+                  }
+                }
+                """);
+            var customizedVisual = new LuvLetterConfigurationStore(customizedVisualPath).Current;
+            Assert.Equal(9.0f, customizedVisual.InputBox.Size.CornerRadius);
+            Assert.Equal(2.0f, customizedVisual.InputBox.Size.BorderThickness);
+            Assert.Equal("#FFFFFFFF", customizedVisual.InputBox.Colors.Border);
+
+            var currentSchemaVisualPath = Path.Combine(temporaryDirectory, "current-visual-v3.json");
+            File.WriteAllText(
+                currentSchemaVisualPath,
+                """
+                {
+                  "SchemaVersion": 3,
+                  "FeatureWindow": {
+                    "Layout": { "CornerRadius": 12, "BorderThickness": 2 },
+                    "Colors": { "Border": "#FFFFFFFF" }
+                  }
+                }
+                """);
+            var currentSchemaVisual = new LuvLetterConfigurationStore(currentSchemaVisualPath).Current;
+            Assert.Equal(12.0f, currentSchemaVisual.FeatureWindow.Layout.CornerRadius);
+            Assert.Equal(2.0f, currentSchemaVisual.FeatureWindow.Layout.BorderThickness);
+            Assert.Equal("#FFFFFFFF", currentSchemaVisual.FeatureWindow.Colors.Border);
 
             TestFailedSaveDoesNotChangeCurrent(temporaryDirectory);
         }

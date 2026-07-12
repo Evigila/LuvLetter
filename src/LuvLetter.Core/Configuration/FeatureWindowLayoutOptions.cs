@@ -10,9 +10,9 @@ public sealed record FeatureWindowLayoutOptions
 
     public float Gap { get; init; } = 12.0f;
 
-    public float CornerRadius { get; init; } = 12.0f;
+    public float CornerRadius { get; init; } = 16.0f;
 
-    public float BorderThickness { get; init; } = 2.0f;
+    public float BorderThickness { get; init; } = 1.0f;
 
     public float FontSize { get; init; } = 16.0f;
 
