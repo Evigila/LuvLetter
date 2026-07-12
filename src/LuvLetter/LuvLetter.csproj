@@ -14,14 +14,34 @@
     <ProjectReference Include="..\LuvLetter.Core\LuvLetter.Core.csproj" />
   </ItemGroup>
 
-  <ItemGroup>
-    <NativeProject Include="..\LuvLetter.Native\LuvLetter.Native.vcxproj" />
+  <ItemGroup Condition="'$(SkipNativeBuild)' != 'true' and '$(MSBuildRuntimeType)' == 'Full'">
+    <ProjectReference
+      Include="..\LuvLetter.Native\LuvLetter.Native.vcxproj"
+      ReferenceOutputAssembly="false"
+      SkipGetTargetFrameworkProperties="true"
+      SetPlatform="Platform=x64" />
   </ItemGroup>
 
+  <PropertyGroup>
+    <NativeRendererPath>$(MSBuildThisFileDirectory)bin\$(Configuration)\$(TargetFramework)\LuvLetter.Native.dll</NativeRendererPath>
+  </PropertyGroup>
+
   <Target
-    Name="BuildNativeRenderer"
-    BeforeTargets="Build"
-    Condition="'$(SkipNativeBuild)' != 'true' and '$(BuildingSolutionFile)' != 'true'">
-    <MSBuild Projects="@(NativeProject)" Targets="Build" Properties="Configuration=$(Configuration);Platform=x64" />
+    Name="RequireVisualStudioMsBuildForNativeRenderer"
+    BeforeTargets="PrepareForBuild"
+    Condition="'$(SkipNativeBuild)' != 'true' and '$(BuildingSolutionFile)' != 'true' and '$(MSBuildRuntimeType)' != 'Full'">
+    <Error Text="LuvLetter.Native requires the full Visual Studio MSBuild. Build LuvLetter.slnx with MSBuild.exe, or set SkipNativeBuild=true only when a current native DLL already exists." />
+  </Target>
+
+  <Target Name="IncludeNativeRendererInPublish" AfterTargets="ComputeFilesToPublish">
+    <Error
+      Condition="!Exists('$(NativeRendererPath)')"
+      Text="Native renderer not found at $(NativeRendererPath). Build the solution with Visual Studio MSBuild before publishing." />
+    <ItemGroup>
+      <ResolvedFileToPublish Include="$(NativeRendererPath)">
+        <RelativePath>LuvLetter.Native.dll</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+    </ItemGroup>
   </Target>
 </Project>

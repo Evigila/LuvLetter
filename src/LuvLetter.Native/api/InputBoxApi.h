@@ -12,8 +12,12 @@
 
 extern "C"
 {
+	inline constexpr uint32_t LUVLETTER_NATIVE_ABI_VERSION = 1;
+
 	struct LuvLetterInputBoxConfig
 	{
+		uint32_t structSize;
+		uint32_t abiVersion;
 		int32_t width;
 		int32_t height;
 		float cornerRadius;
@@ -40,10 +44,71 @@ extern "C"
 		int32_t backspaceModifiers;
 	};
 
+	struct LuvLetterFeatureWindowConfig
+	{
+		uint32_t structSize;
+		uint32_t abiVersion;
+		int32_t itemsPerPage;
+		float cellSize;
+		float gap;
+		float cornerRadius;
+		float borderThickness;
+		float fontSize;
+		int32_t bottomMargin;
+		int32_t offsetX;
+		int32_t offsetY;
+		uint32_t borderColor;
+		uint32_t backgroundColor;
+		uint32_t textColor;
+		uint32_t accentColor;
+		int32_t previousVirtualKey;
+		int32_t nextVirtualKey;
+		int32_t cancelVirtualKey;
+		int32_t firstItemVirtualKey;
+		int32_t previousModifiers;
+		int32_t nextModifiers;
+		int32_t cancelModifiers;
+	};
+
+	struct LuvLetterFeatureItem
+	{
+		uint64_t token;
+		const wchar_t* label;
+	};
+
+	using LuvLetterFeatureActivatedCallback = void (LUVLETTER_NATIVE_CALL*)(
+		uint64_t token,
+		void* context);
+	using LuvLetterInputSubmittedCallback = void (LUVLETTER_NATIVE_CALL*)(
+		const wchar_t* text,
+		int32_t length,
+		void* context);
+
+	LUVLETTER_NATIVE_EXPORT uint32_t LUVLETTER_NATIVE_CALL GetNativeApiVersion();
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ApplyInputBoxConfig(
 		const LuvLetterInputBoxConfig* config);
+	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL SetInputSubmittedCallback(
+		LuvLetterInputSubmittedCallback callback,
+		void* context);
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ShowInputBox();
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL HideInputBox();
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ToggleInputBox();
-	LUVLETTER_NATIVE_EXPORT void LUVLETTER_NATIVE_CALL ShutdownInputBox();
+
+	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ApplyFeatureWindowConfig(
+		const LuvLetterFeatureWindowConfig* config);
+	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL SetFeatureItems(
+		const LuvLetterFeatureItem* items,
+		int32_t count);
+	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL SetFeatureActivatedCallback(
+		LuvLetterFeatureActivatedCallback callback,
+		void* context);
+	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ShowFeatureWindow();
+	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL HideFeatureWindow();
+	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ToggleFeatureWindow();
+
+	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ShutdownInputBox();
 }
+
+static_assert(sizeof(LuvLetterInputBoxConfig) == 104);
+static_assert(sizeof(LuvLetterFeatureWindowConfig) == 88);
+static_assert(sizeof(LuvLetterFeatureItem) == 16);

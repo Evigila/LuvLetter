@@ -1,180 +1,363 @@
+using System.ComponentModel;
 using System.Runtime.InteropServices;
-using System.Windows.Interop;
-using LuvLetter.Core.Hotkeys;
-using LuvLetter.Core.Native;
+using System.Windows.Threading;
+using LuvLetter.Core.Configuration;
 
 namespace LuvLetter.Hotkeys;
 
 public sealed class GlobalHotkeyService : IDisposable
 {
-    private const int WmHotKey = 0x0312;
-    private const int HotkeyId = 1;
-    private const uint ModAlt = 0x0001;
-    private const uint ModControl = 0x0002;
-    private const uint ModShift = 0x0004;
-    private const uint ModWin = 0x0008;
-    private const uint ModNoRepeat = 0x4000;
+    private const int WhKeyboardLl = 13;
+    private const int WmKeyDown = 0x0100;
+    private const int WmKeyUp = 0x0101;
+    private const int WmSysKeyDown = 0x0104;
+    private const int WmSysKeyUp = 0x0105;
+    private const uint VkControl = 0x11;
+    private const uint VkLeftControl = 0xA2;
+    private const uint VkRightControl = 0xA3;
+    private const int LlkhfExtended = 0x01;
+    private const int KeyboardFlagsOffset = 8;
 
-    private static readonly IntPtr HwndMessage = new(-3);
+    private readonly Dispatcher dispatcher;
+    private readonly LowLevelKeyboardProc hookCallback;
+    private readonly DispatcherTimer deadlineTimer;
+    private CtrlGestureStateMachine? stateMachine;
+    private IntPtr hookHandle;
+    private int disposalStarted;
 
-    private readonly IInputBoxService inputBoxService;
-    private HwndSource? messageSource;
-    private HotkeyDefinition? currentHotkey;
-
-    public GlobalHotkeyService(IInputBoxService inputBoxService)
+    public GlobalHotkeyService()
     {
-        this.inputBoxService = inputBoxService;
+        dispatcher = Dispatcher.CurrentDispatcher;
+        hookCallback = HandleLowLevelKeyboardEvent;
+        deadlineTimer = new DispatcherTimer(DispatcherPriority.Send, dispatcher);
+        deadlineTimer.Tick += HandleDeadlineTimerTick;
     }
 
-    public void Start(HotkeyDefinition hotkey)
+    public event EventHandler? CommandRequested;
+
+    public event EventHandler? FeatureWindowRequested;
+
+    public void Start(ActivationGestureOptions options)
     {
-        EnsureMessageSource();
-        Register(hotkey);
-        currentHotkey = hotkey;
+        ArgumentNullException.ThrowIfNull(options);
+        InvokeOnDispatcher(() => StartCore(options));
     }
 
-    public bool TryUpdate(HotkeyDefinition hotkey, out string? error)
+    public void Update(ActivationGestureOptions options)
     {
-        EnsureMessageSource();
-        var previousHotkey = currentHotkey;
-        Unregister();
-
-        if (TryRegister(hotkey, out error))
-        {
-            currentHotkey = hotkey;
-            return true;
-        }
-
-        if (previousHotkey is not null && TryRegister(previousHotkey, out _))
-        {
-            currentHotkey = previousHotkey;
-        }
-
-        return false;
+        ArgumentNullException.ThrowIfNull(options);
+        InvokeOnDispatcher(() => UpdateCore(options));
     }
 
     public void Dispose()
     {
-        Unregister();
-        if (messageSource is not null)
-        {
-            messageSource.RemoveHook(HandleWindowMessage);
-            messageSource.Dispose();
-            messageSource = null;
-        }
-    }
-
-    private void EnsureMessageSource()
-    {
-        if (messageSource is not null)
+        if (Interlocked.Exchange(ref disposalStarted, 1) != 0)
         {
             return;
         }
 
-        var parameters = new HwndSourceParameters("LuvLetter.HotkeySink")
+        if (dispatcher.CheckAccess())
         {
-            Width = 0,
-            Height = 0,
-            ParentWindow = HwndMessage,
-            WindowStyle = 0,
-        };
+            DisposeCore();
+        }
+        else if (!dispatcher.HasShutdownStarted && !dispatcher.HasShutdownFinished)
+        {
+            try
+            {
+                dispatcher.Invoke(DisposeCore);
+            }
+            catch (InvalidOperationException)
+            {
+                DisposeAfterDispatcherShutdown();
+            }
+            catch (TaskCanceledException)
+            {
+                DisposeAfterDispatcherShutdown();
+            }
+        }
+        else
+        {
+            DisposeAfterDispatcherShutdown();
+        }
 
-        messageSource = new HwndSource(parameters);
-        messageSource.AddHook(HandleWindowMessage);
+        GC.SuppressFinalize(this);
     }
 
-    private void Register(HotkeyDefinition hotkey)
+    private void StartCore(ActivationGestureOptions options)
     {
-        if (!TryRegister(hotkey, out var error))
+        ThrowIfDisposed();
+        dispatcher.VerifyAccess();
+
+        if (hookHandle != IntPtr.Zero)
         {
-            throw new InvalidOperationException(error);
+            throw new InvalidOperationException("The Ctrl gesture hook is already running.");
         }
+
+        CtrlGestureStateMachine.ValidateOptions(options);
+        var nextStateMachine = new CtrlGestureStateMachine(options);
+
+        var moduleHandle = GetModuleHandle(null);
+        if (moduleHandle == IntPtr.Zero)
+        {
+            throw new Win32Exception(
+                Marshal.GetLastWin32Error(),
+                "Cannot resolve the LuvLetter module for the Ctrl gesture hook."
+            );
+        }
+
+        var nextHookHandle = SetWindowsHookEx(
+            WhKeyboardLl,
+            hookCallback,
+            moduleHandle,
+            0
+        );
+        if (nextHookHandle == IntPtr.Zero)
+        {
+            throw new Win32Exception(
+                Marshal.GetLastWin32Error(),
+                "Cannot install the global Ctrl gesture hook."
+            );
+        }
+
+        stateMachine = nextStateMachine;
+        hookHandle = nextHookHandle;
     }
 
-    private bool TryRegister(HotkeyDefinition hotkey, out string? error)
+    private void UpdateCore(ActivationGestureOptions options)
     {
-        error = null;
-        if (messageSource is null)
+        ThrowIfDisposed();
+        dispatcher.VerifyAccess();
+
+        if (hookHandle == IntPtr.Zero || stateMachine is null)
         {
-            error = "Hotkey message source is not ready";
-            return false;
+            // A failed initial hook installation must not make the settings window a
+            // dead end. Applying the configuration is also the explicit retry path.
+            StartCore(options);
+            return;
         }
 
-        if (hotkey.Modifiers == HotkeyModifierKeys.None)
-        {
-            error = "Activation hotkey must include Alt, Ctrl, Shift, or Win";
-            return false;
-        }
-
-        var modifiers = ToNativeModifiers(hotkey.Modifiers) | ModNoRepeat;
-        if (RegisterHotKey(messageSource.Handle, HotkeyId, modifiers, (uint)hotkey.VirtualKey))
-        {
-            return true;
-        }
-
-        error = $"Cannot register {hotkey.DisplayText}. Win32: {Marshal.GetLastWin32Error()}";
-        return false;
+        stateMachine.Update(options);
+        ScheduleNextDeadline();
     }
 
-    private void Unregister()
+    private IntPtr HandleLowLevelKeyboardEvent(
+        int code,
+        IntPtr messagePointer,
+        IntPtr keyboardData
+    )
     {
-        if (messageSource is not null)
+        try
         {
-            _ = UnregisterHotKey(messageSource.Handle, HotkeyId);
+            if (code >= 0 && Volatile.Read(ref disposalStarted) == 0 && stateMachine is not null)
+            {
+                ProcessKeyboardEvent(unchecked((int)messagePointer.ToInt64()), keyboardData);
+            }
         }
+        catch
+        {
+            // Exceptions must never cross the unmanaged hook boundary. Resetting the
+            // in-progress gesture prevents a malformed event from triggering later.
+            stateMachine?.Reset();
+            deadlineTimer.Stop();
+        }
+
+        return CallNextHookEx(IntPtr.Zero, code, messagePointer, keyboardData);
     }
 
-    private IntPtr HandleWindowMessage(
-        IntPtr hwnd,
-        int message,
-        IntPtr wParam,
-        IntPtr lParam,
-        ref bool handled)
+    private void ProcessKeyboardEvent(int message, IntPtr keyboardData)
     {
-        if (message == WmHotKey && wParam.ToInt32() == HotkeyId)
+        var isKeyDown = message is WmKeyDown or WmSysKeyDown;
+        var isKeyUp = message is WmKeyUp or WmSysKeyUp;
+        if (!isKeyDown && !isKeyUp)
         {
-            _ = Task.Run(inputBoxService.Toggle);
-            handled = true;
+            return;
         }
 
-        return IntPtr.Zero;
+        var virtualKey = unchecked((uint)Marshal.ReadInt32(keyboardData));
+        var timestampMs = Environment.TickCount64;
+        var previousDeadline = stateMachine!.NextDeadlineTimestampMs;
+        CtrlGestureAction action;
+
+        if (TryGetControlSide(virtualKey, keyboardData, out var side))
+        {
+            action = isKeyDown
+                ? stateMachine!.HandleControlDown(side, timestampMs)
+                : stateMachine!.HandleControlUp(side, timestampMs);
+        }
+        else
+        {
+            stateMachine.HandleOtherKey(timestampMs);
+            action = CtrlGestureAction.None;
+        }
+
+        if (previousDeadline != stateMachine.NextDeadlineTimestampMs)
+        {
+            ScheduleNextDeadline(timestampMs);
+        }
+
+        QueueGestureAction(action);
     }
 
-    private static uint ToNativeModifiers(HotkeyModifierKeys modifiers)
+    private void HandleDeadlineTimerTick(object? sender, EventArgs eventArgs)
     {
-        uint nativeModifiers = 0;
-        if (modifiers.HasFlag(HotkeyModifierKeys.Alt))
+        deadlineTimer.Stop();
+
+        if (Volatile.Read(ref disposalStarted) != 0 || stateMachine is null)
         {
-            nativeModifiers |= ModAlt;
+            return;
         }
 
-        if (modifiers.HasFlag(HotkeyModifierKeys.Control))
-        {
-            nativeModifiers |= ModControl;
-        }
-
-        if (modifiers.HasFlag(HotkeyModifierKeys.Shift))
-        {
-            nativeModifiers |= ModShift;
-        }
-
-        if (modifiers.HasFlag(HotkeyModifierKeys.Win))
-        {
-            nativeModifiers |= ModWin;
-        }
-
-        return nativeModifiers;
+        var timestampMs = Environment.TickCount64;
+        var action = stateMachine.HandleTimeout(timestampMs);
+        ScheduleNextDeadline(timestampMs);
+        QueueGestureAction(action);
     }
+
+    private void ScheduleNextDeadline(long? timestampMs = null)
+    {
+        deadlineTimer.Stop();
+
+        var deadlineAtMs = stateMachine?.NextDeadlineTimestampMs;
+        if (!deadlineAtMs.HasValue || Volatile.Read(ref disposalStarted) != 0)
+        {
+            return;
+        }
+
+        var nowMs = timestampMs ?? Environment.TickCount64;
+        var remainingMs = deadlineAtMs.Value > nowMs ? deadlineAtMs.Value - nowMs : 1;
+        deadlineTimer.Interval = TimeSpan.FromMilliseconds(remainingMs);
+        deadlineTimer.Start();
+    }
+
+    private void QueueGestureAction(CtrlGestureAction action)
+    {
+        if (action == CtrlGestureAction.None)
+        {
+            return;
+        }
+
+        _ = dispatcher.BeginInvoke(
+            new Action(() =>
+            {
+                if (Volatile.Read(ref disposalStarted) != 0 || hookHandle == IntPtr.Zero)
+                {
+                    return;
+                }
+
+                if (action == CtrlGestureAction.CommandRequested)
+                {
+                    CommandRequested?.Invoke(this, EventArgs.Empty);
+                }
+                else
+                {
+                    FeatureWindowRequested?.Invoke(this, EventArgs.Empty);
+                }
+            }),
+            DispatcherPriority.Input
+        );
+    }
+
+    private void DisposeCore()
+    {
+        dispatcher.VerifyAccess();
+        deadlineTimer.Stop();
+        deadlineTimer.Tick -= HandleDeadlineTimerTick;
+        stateMachine?.Reset();
+        stateMachine = null;
+
+        var handle = Interlocked.Exchange(ref hookHandle, IntPtr.Zero);
+        if (handle != IntPtr.Zero)
+        {
+            _ = UnhookWindowsHookEx(handle);
+        }
+    }
+
+    private void DisposeAfterDispatcherShutdown()
+    {
+        stateMachine = null;
+        var handle = Interlocked.Exchange(ref hookHandle, IntPtr.Zero);
+        if (handle != IntPtr.Zero)
+        {
+            _ = UnhookWindowsHookEx(handle);
+        }
+    }
+
+    private void InvokeOnDispatcher(Action action)
+    {
+        ThrowIfDisposed();
+
+        if (dispatcher.HasShutdownStarted || dispatcher.HasShutdownFinished)
+        {
+            throw new InvalidOperationException("The owning WPF Dispatcher is shutting down.");
+        }
+
+        if (dispatcher.CheckAccess())
+        {
+            action();
+        }
+        else
+        {
+            dispatcher.Invoke(action);
+        }
+    }
+
+    private void ThrowIfDisposed()
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposalStarted) != 0, this);
+    }
+
+    private static bool TryGetControlSide(
+        uint virtualKey,
+        IntPtr keyboardData,
+        out ControlKeySide side
+    )
+    {
+        switch (virtualKey)
+        {
+            case VkLeftControl:
+                side = ControlKeySide.Left;
+                return true;
+            case VkRightControl:
+                side = ControlKeySide.Right;
+                return true;
+            case VkControl:
+                var flags = Marshal.ReadInt32(keyboardData, KeyboardFlagsOffset);
+                side = (flags & LlkhfExtended) != 0
+                    ? ControlKeySide.Right
+                    : ControlKeySide.Left;
+                return true;
+            default:
+                side = default;
+                return false;
+        }
+    }
+
+    private delegate IntPtr LowLevelKeyboardProc(
+        int code,
+        IntPtr messagePointer,
+        IntPtr keyboardData
+    );
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SetWindowsHookEx(
+        int hookId,
+        LowLevelKeyboardProc callback,
+        IntPtr moduleHandle,
+        uint threadId
+    );
 
     [DllImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool RegisterHotKey(
-        IntPtr hwnd,
-        int id,
-        uint modifiers,
-        uint virtualKey);
+    private static extern bool UnhookWindowsHookEx(IntPtr hookHandle);
 
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool UnregisterHotKey(IntPtr hwnd, int id);
+    [DllImport("user32.dll")]
+    private static extern IntPtr CallNextHookEx(
+        IntPtr hookHandle,
+        int code,
+        IntPtr messagePointer,
+        IntPtr keyboardData
+    );
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern IntPtr GetModuleHandle(string? moduleName);
 }

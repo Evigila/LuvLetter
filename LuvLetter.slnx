@@ -2,4 +2,5 @@
   <Project Path="src/LuvLetter.Core/LuvLetter.Core.csproj" />
   <Project Path="src/LuvLetter.Native/LuvLetter.Native.vcxproj" Id="dbab9404-5805-db04-b489-7cebc616287a" />
   <Project Path="src/LuvLetter/LuvLetter.csproj" />
+  <Project Path="tests/LuvLetter.Core.Tests/LuvLetter.Core.Tests.csproj" />
 </Solution>
