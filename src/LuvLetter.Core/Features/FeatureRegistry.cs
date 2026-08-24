@@ -1,10 +1,10 @@
 namespace LuvLetter.Core.Features;
 
-public sealed class FeatureRegistry
+public sealed class FeatureRegistry : IFeatureRegistrar
 {
     private readonly object syncRoot = new();
-    private readonly List<FeatureDefinition> features = [];
-    private readonly Dictionary<string, int> indices = new(StringComparer.Ordinal);
+    private List<FeatureDefinition> features = [];
+    private Dictionary<string, int> indices = new(StringComparer.Ordinal);
 
     public event EventHandler? Changed;
 
@@ -17,10 +17,7 @@ public sealed class FeatureRegistry
         FeatureRegistrationMode mode = FeatureRegistrationMode.RejectDuplicate)
     {
         ArgumentNullException.ThrowIfNull(feature);
-        if (!Enum.IsDefined(mode))
-        {
-            throw new ArgumentOutOfRangeException(nameof(mode));
-        }
+        ValidateRegistrationMode(mode);
 
         lock (syncRoot)
         {
@@ -38,6 +35,99 @@ public sealed class FeatureRegistry
                 indices.Add(feature.Id, features.Count);
                 features.Add(feature);
             }
+        }
+
+        RaiseChanged();
+        return true;
+    }
+
+    /// <summary>
+    /// Registers a batch under one registry lock and publishes at most one change event.
+    /// RejectDuplicate leaves the registry unchanged if an identifier already exists or
+    /// occurs more than once in the batch. ReplaceExisting keeps an existing feature's
+    /// position; within the batch, the last definition for an identifier wins while its
+    /// first occurrence determines the position of a newly registered feature.
+    /// </summary>
+    public bool RegisterRange(
+        IEnumerable<FeatureDefinition> featureDefinitions,
+        FeatureRegistrationMode mode = FeatureRegistrationMode.RejectDuplicate)
+    {
+        ArgumentNullException.ThrowIfNull(featureDefinitions);
+        ValidateRegistrationMode(mode);
+
+        var batch = new List<FeatureDefinition>();
+        var batchIndices = new Dictionary<string, int>(StringComparer.Ordinal);
+        var hasDuplicate = false;
+
+        foreach (var feature in featureDefinitions)
+        {
+            if (feature is null)
+            {
+                throw new ArgumentException(
+                    "A feature registration batch cannot contain null.",
+                    nameof(featureDefinitions));
+            }
+
+            if (batchIndices.TryGetValue(feature.Id, out var batchIndex))
+            {
+                if (mode == FeatureRegistrationMode.RejectDuplicate)
+                {
+                    hasDuplicate = true;
+                }
+                else
+                {
+                    batch[batchIndex] = feature;
+                }
+
+                continue;
+            }
+
+            batchIndices.Add(feature.Id, batch.Count);
+            batch.Add(feature);
+        }
+
+        if (hasDuplicate)
+        {
+            return false;
+        }
+
+        if (batch.Count == 0)
+        {
+            return true;
+        }
+
+        lock (syncRoot)
+        {
+            if (mode == FeatureRegistrationMode.RejectDuplicate)
+            {
+                foreach (var feature in batch)
+                {
+                    if (indices.ContainsKey(feature.Id))
+                    {
+                        return false;
+                    }
+                }
+            }
+
+            // Build the complete next state before publishing it so enumeration,
+            // validation, or allocation failures cannot partially register a batch.
+            var nextFeatures = new List<FeatureDefinition>(features);
+            var nextIndices = new Dictionary<string, int>(indices, StringComparer.Ordinal);
+            foreach (var feature in batch)
+            {
+                if (nextIndices.TryGetValue(feature.Id, out var index))
+                {
+                    nextFeatures[index] = feature;
+                }
+                else
+                {
+                    nextIndices.Add(feature.Id, nextFeatures.Count);
+                    nextFeatures.Add(feature);
+                }
+            }
+
+            features = nextFeatures;
+            indices = nextIndices;
         }
 
         RaiseChanged();
@@ -66,6 +156,15 @@ public sealed class FeatureRegistry
         return true;
     }
 
+    public bool IsRegistered(string id)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(id);
+        lock (syncRoot)
+        {
+            return indices.ContainsKey(id.Trim());
+        }
+    }
+
     public IReadOnlyList<FeatureDefinition> Snapshot()
     {
         lock (syncRoot)
@@ -74,7 +173,24 @@ public sealed class FeatureRegistry
         }
     }
 
-    public bool TryActivate(string id)
+    public IReadOnlyList<FeatureItemSnapshot> ItemSnapshot()
+    {
+        lock (syncRoot)
+        {
+            var snapshot = new FeatureItemSnapshot[features.Count];
+            for (var index = 0; index < features.Count; index++)
+            {
+                var feature = features[index];
+                snapshot[index] = new FeatureItemSnapshot(feature.Id, feature.DisplayName);
+            }
+
+            return snapshot;
+        }
+    }
+
+    public async ValueTask<FeatureActivationResult> ActivateAsync(
+        string id,
+        CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(id);
 
@@ -83,42 +199,33 @@ public sealed class FeatureRegistry
         {
             if (!indices.TryGetValue(id.Trim(), out var index))
             {
-                return false;
+                return new(FeatureActivationStatus.NotFound);
             }
 
             feature = features[index];
         }
 
-        return TryActivate(feature);
-    }
-
-    /// <summary>Activates the feature at a zero-based snapshot index.</summary>
-    public bool TryActivate(int index)
-    {
-        FeatureDefinition feature;
-        lock (syncRoot)
-        {
-            if ((uint)index >= (uint)features.Count)
-            {
-                return false;
-            }
-
-            feature = features[index];
-        }
-
-        return TryActivate(feature);
-    }
-
-    private static bool TryActivate(FeatureDefinition feature)
-    {
         try
         {
-            feature.Activate();
-            return true;
+            cancellationToken.ThrowIfCancellationRequested();
+            await feature.ActivateAsync(cancellationToken).ConfigureAwait(false);
+            return new(FeatureActivationStatus.Succeeded);
         }
-        catch
+        catch (OperationCanceledException exception)
         {
-            return false;
+            return new(FeatureActivationStatus.Canceled, exception);
+        }
+        catch (Exception exception)
+        {
+            return new(FeatureActivationStatus.Failed, exception);
+        }
+    }
+
+    private static void ValidateRegistrationMode(FeatureRegistrationMode mode)
+    {
+        if (!Enum.IsDefined(mode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode));
         }
     }
 

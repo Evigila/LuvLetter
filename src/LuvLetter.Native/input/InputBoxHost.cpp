@@ -1,4 +1,5 @@
 #include "input/InputBoxHost.h"
+#include "input/NativeConfigurationSanitizer.h"
 
 #include <imm.h>
 #include <windowsx.h>
@@ -6,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <new>
 #include <utility>
@@ -25,12 +27,25 @@ namespace
 	constexpr DWORD StartupTimeoutMs = 10000;
 	constexpr DWORD RequestTimeoutMs = 5000;
 	constexpr DWORD ShutdownTimeoutMs = 5000;
-	constexpr size_t MaxHistoryItems = 100;
 	constexpr size_t MaxInputCharacters = 32768;
 	constexpr int32_t MaxFeatureItems = 4096;
-	constexpr float MaxTextLayoutWidth = 16777216.0f;
+	constexpr float MaxTextLayoutHeight = 16777216.0f;
+	constexpr int64_t MaxInputSurfacePixels = 16LL * 1024LL * 1024LL;
+	constexpr int64_t MaxFeatureSurfacePixels = 16LL * 1024LL * 1024LL;
 	constexpr wchar_t PlaceholderText[] = L"Enter command here";
 	constexpr UINT DefaultDpi = 96;
+
+	constexpr int SelectInputLineCapacity(UINT32 lineCount) noexcept
+	{
+		return lineCount <= 1 ? 1 : lineCount <= 2 ? 2 : lineCount <= 4 ? 4 : 6;
+	}
+
+	static_assert(SelectInputLineCapacity(1) == 1);
+	static_assert(SelectInputLineCapacity(2) == 2);
+	static_assert(SelectInputLineCapacity(3) == 4);
+	static_assert(SelectInputLineCapacity(4) == 4);
+	static_assert(SelectInputLineCapacity(5) == 6);
+	static_assert(SelectInputLineCapacity(100) == 6);
 
 	UINT NormalizeDpi(UINT dpi) noexcept
 	{
@@ -52,6 +67,44 @@ namespace
 	{
 		return static_cast<float>(value) * static_cast<float>(DefaultDpi)
 			/ static_cast<float>(NormalizeDpi(dpi));
+	}
+
+	bool PresentLayeredSurface(
+		HWND window,
+		HDC sourceDc,
+		int width,
+		int height,
+		const RECT* dirtyRect = nullptr) noexcept
+	{
+		POINT source{ 0, 0 };
+		SIZE size{ width, height };
+		BLENDFUNCTION blend{ AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+		if (dirtyRect != nullptr)
+		{
+			UPDATELAYEREDWINDOWINFO update{};
+			update.cbSize = sizeof(update);
+			update.psize = &size;
+			update.hdcSrc = sourceDc;
+			update.pptSrc = &source;
+			update.pblend = &blend;
+			update.dwFlags = ULW_ALPHA;
+			update.prcDirty = dirtyRect;
+			if (UpdateLayeredWindowIndirect(window, &update))
+			{
+				return true;
+			}
+		}
+
+		return UpdateLayeredWindow(
+			window,
+			nullptr,
+			nullptr,
+			&size,
+			sourceDc,
+			&source,
+			0,
+			&blend,
+			ULW_ALPHA) != FALSE;
 	}
 
 	D2D1_ROUNDED_RECT CreateInsetRoundedRect(
@@ -116,54 +169,6 @@ namespace
 		ToggleFeature,
 	};
 
-	LuvLetterInputBoxConfig CreateDefaultConfig()
-	{
-		LuvLetterInputBoxConfig config{};
-		config.structSize = sizeof(config);
-		config.abiVersion = LUVLETTER_NATIVE_ABI_VERSION;
-		config.width = 640;
-		config.height = 44;
-		config.cornerRadius = 10.0f;
-		config.borderThickness = 1.0f;
-		config.fontSize = 20.0f;
-		config.horizontalPadding = 10.0f;
-		config.verticalPadding = 6.0f;
-		config.caretWidth = 2.25f;
-		config.positionMode = 0;
-		config.bottomMargin = 60;
-		config.borderColor = 0x66FFFFFF;
-		config.backgroundColor = 0x38F5F5F5;
-		config.textColor = 0xFFFFFFFF;
-		config.caretColor = 0xFFFFFFFF;
-		config.submitVirtualKey = VK_RETURN;
-		config.cancelVirtualKey = VK_ESCAPE;
-		config.backspaceVirtualKey = VK_BACK;
-		return config;
-	}
-
-	LuvLetterFeatureWindowConfig CreateDefaultFeatureConfig()
-	{
-		LuvLetterFeatureWindowConfig config{};
-		config.structSize = sizeof(config);
-		config.abiVersion = LUVLETTER_NATIVE_ABI_VERSION;
-		config.itemsPerPage = 7;
-		config.cellSize = 96.0f;
-		config.gap = 12.0f;
-		config.cornerRadius = 16.0f;
-		config.borderThickness = 1.0f;
-		config.fontSize = 16.0f;
-		config.bottomMargin = 60;
-		config.borderColor = 0x66FFFFFF;
-		config.backgroundColor = 0x38F5F5F5;
-		config.textColor = 0xFFFFFFFF;
-		config.accentColor = 0xFFFFFFFF;
-		config.previousVirtualKey = VK_OEM_MINUS;
-		config.nextVirtualKey = VK_OEM_PLUS;
-		config.cancelVirtualKey = VK_ESCAPE;
-		config.firstItemVirtualKey = L'1';
-		return config;
-	}
-
 	D2D1_COLOR_F ColorFromArgb(uint32_t argb)
 	{
 		return D2D1::ColorF(
@@ -171,13 +176,6 @@ namespace
 			static_cast<float>((argb >> 8) & 0xFF) / 255.0f,
 			static_cast<float>(argb & 0xFF) / 255.0f,
 			static_cast<float>((argb >> 24) & 0xFF) / 255.0f);
-	}
-
-	D2D1_COLOR_F PlaceholderColorFromArgb(uint32_t argb)
-	{
-		auto color = ColorFromArgb(argb);
-		color.a *= 0.48f;
-		return color;
 	}
 
 	bool IsKeyDown(int virtualKey)
@@ -212,11 +210,6 @@ namespace
 		return virtualKey > 0
 			&& wParam == static_cast<WPARAM>(virtualKey)
 			&& GetCurrentHotkeyModifiers() == modifiers;
-	}
-
-	float FiniteOr(float value, float fallback)
-	{
-		return std::isfinite(value) ? value : fallback;
 	}
 
 	bool IsHighSurrogate(wchar_t value)
@@ -306,6 +299,7 @@ struct InputBoxHost::CachedSurface
 	HDC dc = nullptr;
 	HBITMAP bitmap = nullptr;
 	HGDIOBJ originalBitmap = nullptr;
+	void* bits = nullptr;
 	int width = 0;
 	int height = 0;
 
@@ -314,10 +308,23 @@ struct InputBoxHost::CachedSurface
 		Reset();
 	}
 
-	HRESULT Ensure(int requestedWidth, int requestedHeight)
+	HRESULT Ensure(int requestedWidth, int requestedHeight, int64_t maximumPixels)
 	{
-		requestedWidth = (std::max)(1, requestedWidth);
-		requestedHeight = (std::max)(1, requestedHeight);
+		if (requestedWidth <= 0 || requestedHeight <= 0 || maximumPixels <= 0)
+		{
+			return E_INVALIDARG;
+		}
+		if (static_cast<int64_t>(requestedWidth)
+			> maximumPixels / static_cast<int64_t>(requestedHeight))
+		{
+			return HRESULT_FROM_WIN32(ERROR_NOT_ENOUGH_MEMORY);
+		}
+		const auto pixelCount = static_cast<int64_t>(requestedWidth)
+			* static_cast<int64_t>(requestedHeight);
+		if (pixelCount > static_cast<int64_t>((std::numeric_limits<DWORD>::max)()) / 4)
+		{
+			return HRESULT_FROM_WIN32(ERROR_ARITHMETIC_OVERFLOW);
+		}
 		if (dc != nullptr && bitmap != nullptr && width == requestedWidth && height == requestedHeight)
 		{
 			return S_OK;
@@ -338,12 +345,12 @@ struct InputBoxHost::CachedSurface
 		bitmapInfo.bmiHeader.biPlanes = 1;
 		bitmapInfo.bmiHeader.biBitCount = 32;
 		bitmapInfo.bmiHeader.biCompression = BI_RGB;
-		void* bitmapBits = nullptr;
+		bitmapInfo.bmiHeader.biSizeImage = static_cast<DWORD>(pixelCount * 4);
 		bitmap = CreateDIBSection(
 			screenDc,
 			&bitmapInfo,
 			DIB_RGB_COLORS,
-			&bitmapBits,
+			&bits,
 			nullptr,
 			0);
 		ReleaseDC(nullptr, screenDc);
@@ -369,6 +376,28 @@ struct InputBoxHost::CachedSurface
 		return S_OK;
 	}
 
+	void Clear(const RECT& requestedRect) noexcept
+	{
+		if (bits == nullptr || width <= 0 || height <= 0)
+		{
+			return;
+		}
+		const auto left = (std::clamp)(requestedRect.left, 0L, static_cast<LONG>(width));
+		const auto top = (std::clamp)(requestedRect.top, 0L, static_cast<LONG>(height));
+		const auto right = (std::clamp)(requestedRect.right, left, static_cast<LONG>(width));
+		const auto bottom = (std::clamp)(requestedRect.bottom, top, static_cast<LONG>(height));
+		const auto stride = static_cast<size_t>(width) * 4U;
+		const auto rowBytes = static_cast<size_t>(right - left) * 4U;
+		auto* bytes = static_cast<unsigned char*>(bits);
+		for (auto row = top; row < bottom; ++row)
+		{
+			std::memset(
+				bytes + static_cast<size_t>(row) * stride + static_cast<size_t>(left) * 4U,
+				0,
+				rowBytes);
+		}
+	}
+
 	void Reset() noexcept
 	{
 		if (dc != nullptr && originalBitmap != nullptr)
@@ -387,6 +416,7 @@ struct InputBoxHost::CachedSurface
 		dc = nullptr;
 		bitmap = nullptr;
 		originalBitmap = nullptr;
+		bits = nullptr;
 		width = 0;
 		height = 0;
 	}
@@ -983,8 +1013,8 @@ HRESULT InputBoxHost::Run()
 		return comResult;
 	}
 
-	config_ = CreateDefaultConfig();
-	featureConfig_ = CreateDefaultFeatureConfig();
+	config_ = NativeConfigurationSanitizer::DefaultInputBox();
+	featureConfig_ = NativeConfigurationSanitizer::DefaultFeatureWindow();
 	inputSurface_ = std::make_unique<CachedSurface>();
 	featureSurface_ = std::make_unique<CachedSurface>();
 
@@ -1062,6 +1092,7 @@ HRESULT InputBoxHost::Run()
 	featureVisible_ = false;
 	text_.clear();
 	featureItems_.clear();
+	featurePager_.Reset(0, static_cast<size_t>(featureConfig_.itemsPerPage));
 	inputSubmittedCallback_ = nullptr;
 	featureActivatedCallback_ = nullptr;
 
@@ -1190,7 +1221,10 @@ HRESULT InputBoxHost::EnsureInputResources()
 	{
 		inputSurface_ = std::make_unique<CachedSurface>();
 	}
-	result = inputSurface_->Ensure(GetInputWindowPixelWidth(), GetInputWindowPixelHeight());
+	result = inputSurface_->Ensure(
+		GetInputWindowPixelWidth(),
+		GetInputWindowPixelHeight(),
+		MaxInputSurfacePixels);
 	if (FAILED(result))
 	{
 		return result;
@@ -1211,8 +1245,13 @@ HRESULT InputBoxHost::EnsureInputResources()
 			DWRITE_FONT_STRETCH_NORMAL, config_.fontSize, L"", inputTextFormat_.GetAddressOf());
 		if (FAILED(result)) return result;
 		inputTextFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-		inputTextFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-		inputTextFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+		inputTextFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+		inputTextFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK);
+		result = inputTextFormat_->SetLineSpacing(
+			DWRITE_LINE_SPACING_METHOD_UNIFORM,
+			GetInputLineHeightDip(),
+			config_.fontSize);
+		if (FAILED(result)) return result;
 	}
 	if (!inputBorderBrush_)
 	{
@@ -1231,12 +1270,19 @@ HRESULT InputBoxHost::EnsureInputResources()
 	}
 	if (!inputPlaceholderBrush_)
 	{
-		result = inputRenderTarget_->CreateSolidColorBrush(PlaceholderColorFromArgb(config_.textColor), inputPlaceholderBrush_.GetAddressOf());
+		result = inputRenderTarget_->CreateSolidColorBrush(ColorFromArgb(config_.textColor), inputPlaceholderBrush_.GetAddressOf());
 		if (FAILED(result)) return result;
 	}
 	if (!inputCaretBrush_)
 	{
 		result = inputRenderTarget_->CreateSolidColorBrush(ColorFromArgb(config_.caretColor), inputCaretBrush_.GetAddressOf());
+		if (FAILED(result)) return result;
+	}
+	if (!text_.empty() && !inputTextLayout_)
+	{
+		result = dwriteFactory_->CreateTextLayout(
+			text_.c_str(), static_cast<UINT32>(text_.size()), inputTextFormat_.Get(),
+			GetInputTextWidthDip(), MaxTextLayoutHeight, inputTextLayout_.GetAddressOf());
 		if (FAILED(result)) return result;
 	}
 	return S_OK;
@@ -1246,13 +1292,16 @@ HRESULT InputBoxHost::EnsureFeatureResources()
 {
 	auto result = EnsureFactories();
 	if (FAILED(result)) return result;
-	const auto width = GetFeatureWindowPixelWidth();
-	const auto height = GetFeatureWindowPixelHeight();
+	int width = 0;
+	int height = 0;
+	float renderScale = 1.0f;
+	GetFeatureSurfaceMetrics(width, height, renderScale);
+	(void)renderScale;
 	if (featureSurface_ == nullptr)
 	{
 		featureSurface_ = std::make_unique<CachedSurface>();
 	}
-	result = featureSurface_->Ensure(width, height);
+	result = featureSurface_->Ensure(width, height, MaxFeatureSurfacePixels);
 	if (FAILED(result)) return result;
 	if (!featureRenderTarget_)
 	{
@@ -1266,7 +1315,7 @@ HRESULT InputBoxHost::EnsureFeatureResources()
 	if (!featureTextFormat_)
 	{
 		result = dwriteFactory_->CreateTextFormat(
-			L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL,
+			L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
 			DWRITE_FONT_STRETCH_NORMAL, featureConfig_.fontSize, L"", featureTextFormat_.GetAddressOf());
 		if (FAILED(result)) return result;
 		featureTextFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -1308,6 +1357,8 @@ HRESULT InputBoxHost::EnsureFeatureResources()
 
 void InputBoxHost::DiscardInputResources(bool discardSurface)
 {
+	inputCaretDirtyValid_ = false;
+	inputTextLayout_.Reset();
 	inputCaretBrush_.Reset();
 	inputPlaceholderBrush_.Reset();
 	inputTextBrush_.Reset();
@@ -1348,9 +1399,11 @@ void InputBoxHost::DiscardAllResources()
 
 void InputBoxHost::ApplyConfigOnUiThread(const LuvLetterInputBoxConfig& config)
 {
-	config_ = SanitizeConfig(config);
-	horizontalOffset_ = 0.0f;
+	config_ = NativeConfigurationSanitizer::SanitizeInputBox(config);
+	inputLineCapacity_ = 1;
+	verticalOffset_ = 0.0f;
 	DiscardInputResources(true);
+	UpdateResponsiveInputHeight();
 	UpdateInputWindowShape();
 	UpdateInputWindowPosition();
 	if (inputVisible_) RenderInput();
@@ -1358,9 +1411,8 @@ void InputBoxHost::ApplyConfigOnUiThread(const LuvLetterInputBoxConfig& config)
 
 void InputBoxHost::ApplyFeatureConfigOnUiThread(const LuvLetterFeatureWindowConfig& config)
 {
-	featureConfig_ = SanitizeFeatureConfig(config);
-	const auto pageCount = GetFeaturePageCount();
-	featurePage_ = pageCount == 0 ? 0 : (std::min)(featurePage_, pageCount - 1);
+	featureConfig_ = NativeConfigurationSanitizer::SanitizeFeatureWindow(config);
+	featurePager_.SetItemsPerPage(static_cast<size_t>(featureConfig_.itemsPerPage));
 	DiscardFeatureResources(true);
 	UpdateFeatureWindowGeometry();
 	if (featureVisible_) RenderFeature();
@@ -1369,7 +1421,9 @@ void InputBoxHost::ApplyFeatureConfigOnUiThread(const LuvLetterFeatureWindowConf
 void InputBoxHost::SetFeatureItemsOnUiThread(std::vector<FeatureItem>&& items)
 {
 	featureItems_ = std::move(items);
-	featurePage_ = 0;
+	featurePager_.Reset(
+		featureItems_.size(),
+		static_cast<size_t>(featureConfig_.itemsPerPage));
 	if (featureItems_.empty())
 	{
 		HideFeatureWindowOnUiThread();
@@ -1511,7 +1565,6 @@ void InputBoxHost::ShowFeatureWindowAndFocus()
 	if (featureHwnd_ == nullptr || featureItems_.empty()) return;
 	targetMonitor_ = CaptureTargetMonitor();
 	HideInputWindow();
-	featurePage_ = (std::min)(featurePage_, GetFeaturePageCount() - 1);
 	// See ShowInputWindowAndFocus: move once to obtain the window's target DPI,
 	// then perform the configured DIP-based placement with that DPI.
 	UpdateFeatureWindowPosition();
@@ -1570,8 +1623,10 @@ void InputBoxHost::UpdateInputWindowPosition() const
 void InputBoxHost::UpdateFeatureWindowGeometry()
 {
 	if (featureHwnd_ == nullptr) return;
+	updatingFeatureWindowGeometry_ = true;
 	UpdateFeatureWindowShape();
 	UpdateFeatureWindowPosition();
+	updatingFeatureWindowGeometry_ = false;
 }
 
 void InputBoxHost::UpdateFeatureWindowPosition() const
@@ -1583,8 +1638,11 @@ void InputBoxHost::UpdateFeatureWindowPosition() const
 		? targetMonitor_
 		: MonitorFromWindow(featureHwnd_, MONITOR_DEFAULTTOPRIMARY);
 	if (!GetMonitorInfoW(monitor, &monitorInfo)) return;
-	const auto width = GetFeatureWindowPixelWidth();
-	const auto height = GetFeatureWindowPixelHeight();
+	int width = 0;
+	int height = 0;
+	float renderScale = 1.0f;
+	GetFeatureSurfaceMetrics(width, height, renderScale);
+	(void)renderScale;
 	const auto workWidth = monitorInfo.rcWork.right - monitorInfo.rcWork.left;
 	LONG x = monitorInfo.rcWork.left + ((std::max)(0L, workWidth - static_cast<LONG>(width)) / 2);
 	LONG y = monitorInfo.rcWork.bottom - height
@@ -1597,10 +1655,11 @@ void InputBoxHost::UpdateFeatureWindowPosition() const
 void InputBoxHost::ResetInput()
 {
 	text_.clear();
+	inputTextLayout_.Reset();
 	caretIndex_ = 0;
-	horizontalOffset_ = 0.0f;
-	historyIndex_ = -1;
-	historyDraft_.clear();
+	inputLineCapacity_ = 1;
+	verticalOffset_ = 0.0f;
+	inputHistory_.ResetNavigation();
 }
 
 void InputBoxHost::SubmitInput()
@@ -1612,20 +1671,12 @@ void InputBoxHost::SubmitInput()
 			text_.c_str(),
 			static_cast<int32_t>((std::min)(text_.size(), static_cast<size_t>((std::numeric_limits<int32_t>::max)()))),
 			inputSubmittedContext_);
-		if (history_.empty() || history_.back() != text_)
-		{
-			history_.push_back(text_);
-			if (history_.size() > MaxHistoryItems)
-			{
-				history_.erase(history_.begin());
-			}
-		}
 	}
-	historyIndex_ = -1;
-	historyDraft_.clear();
+	inputHistory_.Record(text_);
 	text_.clear();
+	inputTextLayout_.Reset();
 	caretIndex_ = 0;
-	horizontalOffset_ = 0.0f;
+	verticalOffset_ = 0.0f;
 	InvalidateInput();
 }
 
@@ -1641,9 +1692,9 @@ void InputBoxHost::InsertText(const std::wstring& value)
 	}
 	if (safeCount == 0) return;
 	text_.insert(caretIndex_, value.data(), safeCount);
+	inputTextLayout_.Reset();
 	caretIndex_ += safeCount;
-	historyIndex_ = -1;
-	historyDraft_.clear();
+	inputHistory_.ResetNavigation();
 	InvalidateInput();
 }
 
@@ -1657,9 +1708,9 @@ void InputBoxHost::InsertCharacter(wchar_t value)
 	if (IsLowSurrogate(value)
 		&& (caretIndex_ == 0 || !IsHighSurrogate(text_[caretIndex_ - 1]))) return;
 	text_.insert(caretIndex_, 1, value);
+	inputTextLayout_.Reset();
 	++caretIndex_;
-	historyIndex_ = -1;
-	historyDraft_.clear();
+	inputHistory_.ResetNavigation();
 	InvalidateInput();
 }
 
@@ -1668,9 +1719,9 @@ void InputBoxHost::DeleteBeforeCaret()
 	if (caretIndex_ == 0 || text_.empty()) return;
 	const auto previous = PreviousUtf16Boundary(text_, caretIndex_);
 	text_.erase(previous, caretIndex_ - previous);
+	inputTextLayout_.Reset();
 	caretIndex_ = previous;
-	historyIndex_ = -1;
-	historyDraft_.clear();
+	inputHistory_.ResetNavigation();
 	InvalidateInput();
 }
 
@@ -1679,8 +1730,8 @@ void InputBoxHost::DeleteAtCaret()
 	if (caretIndex_ >= text_.size()) return;
 	const auto next = NextUtf16Boundary(text_, caretIndex_);
 	text_.erase(caretIndex_, next - caretIndex_);
-	historyIndex_ = -1;
-	historyDraft_.clear();
+	inputTextLayout_.Reset();
+	inputHistory_.ResetNavigation();
 	InvalidateInput();
 }
 
@@ -1714,28 +1765,8 @@ void InputBoxHost::MoveCaretToEnd()
 
 void InputBoxHost::NavigateHistory(int direction)
 {
-	if (history_.empty()) return;
-	if (historyIndex_ < 0)
-	{
-		if (direction > 0) return;
-		historyDraft_ = text_;
-		historyIndex_ = static_cast<int>(history_.size()) - 1;
-	}
-	else
-	{
-		historyIndex_ += direction;
-	}
-	if (historyIndex_ < 0) historyIndex_ = 0;
-	if (historyIndex_ >= static_cast<int>(history_.size()))
-	{
-		historyIndex_ = -1;
-		text_ = historyDraft_;
-		historyDraft_.clear();
-	}
-	else
-	{
-		text_ = history_[historyIndex_];
-	}
+	if (!inputHistory_.TryNavigate(direction, text_)) return;
+	inputTextLayout_.Reset();
 	caretIndex_ = text_.size();
 	InvalidateInput();
 }
@@ -1788,19 +1819,14 @@ void InputBoxHost::SetCaretFromPoint(LPARAM lParam)
 		InvalidateInput();
 		return;
 	}
-	const auto horizontalPadding = (std::min)(config_.horizontalPadding, static_cast<float>(config_.width) / 2.0f - 1.0f);
-	const auto verticalPadding = (std::min)(config_.verticalPadding, static_cast<float>(config_.height) / 2.0f - 1.0f);
-	Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
-	if (FAILED(dwriteFactory_->CreateTextLayout(
-		text_.c_str(), static_cast<UINT32>(text_.size()), inputTextFormat_.Get(),
-		MaxTextLayoutWidth, config_.height - 2.0f * verticalPadding, layout.GetAddressOf()))) return;
 	BOOL trailing = FALSE;
 	BOOL inside = FALSE;
 	DWRITE_HIT_TEST_METRICS metrics{};
 	const auto x = PixelsToDip(GET_X_LPARAM(lParam), inputDpi_)
-		- horizontalPadding + horizontalOffset_;
-	const auto y = PixelsToDip(GET_Y_LPARAM(lParam), inputDpi_) - verticalPadding;
-	if (SUCCEEDED(layout->HitTestPoint(x, y, &trailing, &inside, &metrics)))
+		- (std::max)(0.0f, config_.horizontalPadding);
+	const auto textTop = GetInputTextTopDip();
+	const auto y = PixelsToDip(GET_Y_LPARAM(lParam), inputDpi_) - textTop + verticalOffset_;
+	if (SUCCEEDED(inputTextLayout_->HitTestPoint(x, y, &trailing, &inside, &metrics)))
 	{
 		caretIndex_ = (std::min)(
 			static_cast<size_t>(metrics.textPosition + (trailing ? metrics.length : 0)),
@@ -1817,6 +1843,7 @@ void InputBoxHost::SetCaretFromPoint(LPARAM lParam)
 void InputBoxHost::InvalidateInput()
 {
 	caretVisible_ = true;
+	UpdateResponsiveInputHeight();
 	EnsureCaretVisible();
 	if (inputHwnd_ != nullptr)
 	{
@@ -1826,38 +1853,63 @@ void InputBoxHost::InvalidateInput()
 	}
 }
 
-float InputBoxHost::GetCaretLogicalX()
+void InputBoxHost::UpdateResponsiveInputHeight()
 {
-	if (text_.empty() || caretIndex_ == 0 || FAILED(EnsureInputResources())) return 0.0f;
-	Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
-	if (FAILED(dwriteFactory_->CreateTextLayout(
-		text_.c_str(), static_cast<UINT32>(text_.size()), inputTextFormat_.Get(),
-		MaxTextLayoutWidth, static_cast<float>(config_.height), layout.GetAddressOf()))) return 0.0f;
-	DWRITE_HIT_TEST_METRICS metrics{};
-	float x = 0.0f;
-	float y = 0.0f;
-	if (SUCCEEDED(layout->HitTestTextPosition(
-		static_cast<UINT32>((std::min)(caretIndex_, text_.size())), FALSE, &x, &y, &metrics)))
+	int nextCapacity = 1;
+	if (!text_.empty())
 	{
-		return x;
+		if (FAILED(EnsureInputResources())) return;
+		DWRITE_TEXT_METRICS metrics{};
+		if (!inputTextLayout_ || FAILED(inputTextLayout_->GetMetrics(&metrics))) return;
+		nextCapacity = SelectInputLineCapacity(metrics.lineCount);
 	}
-	return 0.0f;
+
+	if (nextCapacity == inputLineCapacity_) return;
+	inputLineCapacity_ = nextCapacity;
+	verticalOffset_ = 0.0f;
+	DiscardInputResources(true);
+	UpdateInputWindowPosition();
+}
+
+D2D1_POINT_2F InputBoxHost::GetCaretLogicalPosition()
+{
+	auto position = D2D1::Point2F(0.0f, 0.0f);
+	if (text_.empty() || caretIndex_ == 0 || FAILED(EnsureInputResources())) return position;
+	DWRITE_HIT_TEST_METRICS metrics{};
+	if (inputTextLayout_ == nullptr || FAILED(inputTextLayout_->HitTestTextPosition(
+		static_cast<UINT32>((std::min)(caretIndex_, text_.size())),
+		FALSE,
+		&position.x,
+		&position.y,
+		&metrics)))
+	{
+		return D2D1::Point2F(0.0f, 0.0f);
+	}
+	return position;
 }
 
 void InputBoxHost::EnsureCaretVisible()
 {
-	const auto availableWidth = (std::max)(1.0f, static_cast<float>(config_.width) - 2.0f * config_.horizontalPadding);
-	const auto caretX = GetCaretLogicalX();
-	const auto margin = (std::max)(config_.caretWidth + 2.0f, 4.0f);
-	if (caretX - horizontalOffset_ > availableWidth - margin)
+	if (text_.empty() || FAILED(EnsureInputResources()) || !inputTextLayout_)
 	{
-		horizontalOffset_ = caretX - availableWidth + margin;
+		verticalOffset_ = 0.0f;
+		return;
 	}
-	else if (caretX < horizontalOffset_)
+	const auto caret = GetCaretLogicalPosition();
+	const auto lineHeight = GetInputLineHeightDip();
+	const auto viewportHeight = GetInputTextViewportHeightDip();
+	DWRITE_TEXT_METRICS textMetrics{};
+	if (FAILED(inputTextLayout_->GetMetrics(&textMetrics))) return;
+	if (caret.y < verticalOffset_)
 	{
-		horizontalOffset_ = caretX;
+		verticalOffset_ = caret.y;
 	}
-	horizontalOffset_ = (std::max)(0.0f, horizontalOffset_);
+	else if (caret.y + lineHeight > verticalOffset_ + viewportHeight)
+	{
+		verticalOffset_ = caret.y + lineHeight - viewportHeight;
+	}
+	const auto maximumOffset = (std::max)(0.0f, textMetrics.height - viewportHeight);
+	verticalOffset_ = (std::clamp)(verticalOffset_, 0.0f, maximumOffset);
 }
 
 void InputBoxHost::UpdateImeCompositionWindow()
@@ -1866,34 +1918,97 @@ void InputBoxHost::UpdateImeCompositionWindow()
 	const auto inputContext = ImmGetContext(inputHwnd_);
 	if (inputContext == nullptr) return;
 	const auto horizontalPadding = (std::max)(0.0f, config_.horizontalPadding);
-	const auto verticalPadding = (std::max)(0.0f, config_.verticalPadding);
+	const auto caret = GetCaretLogicalPosition();
+	const auto textTop = GetInputTextTopDip();
 	COMPOSITIONFORM compositionForm{};
 	compositionForm.dwStyle = CFS_POINT;
 	compositionForm.ptCurrentPos.x = DipToPixels(
-		horizontalPadding + GetCaretLogicalX() - horizontalOffset_,
+		horizontalPadding + caret.x,
 		inputDpi_);
 	compositionForm.ptCurrentPos.y = DipToPixels(
-		verticalPadding + config_.fontSize,
+		textTop + caret.y - verticalOffset_ + config_.fontSize,
 		inputDpi_);
 	ImmSetCompositionWindow(inputContext, &compositionForm);
 	ImmReleaseContext(inputHwnd_, inputContext);
 }
 
-void InputBoxHost::RenderInput()
+void InputBoxHost::RenderInput(bool caretOnly)
 {
 	if (inputHwnd_ == nullptr || FAILED(EnsureInputResources())) return;
 	const auto width = GetInputWindowPixelWidth();
 	const auto height = GetInputWindowPixelHeight();
+	const auto horizontalPadding = (std::min)(
+		(std::max)(0.0f, config_.horizontalPadding),
+		config_.width / 2.0f - 1.0f);
+	const auto windowHeight = GetInputWindowHeightDip();
+	const auto verticalPadding = (std::min)(
+		(std::max)(0.0f, config_.verticalPadding),
+		windowHeight / 2.0f - 1.0f);
+	const auto lineHeight = GetInputLineHeightDip();
+	const auto textTop = GetInputTextTopDip();
+	const auto textRect = D2D1::RectF(
+		horizontalPadding, textTop,
+		config_.width - horizontalPadding,
+		(std::min)(windowHeight - verticalPadding, textTop + GetInputTextViewportHeightDip()));
+	const auto caret = GetCaretLogicalPosition();
+	const auto caretX = textRect.left + caret.x;
+	const auto caretHeight = (std::min)(
+		lineHeight,
+		(std::max)(1.0f, config_.fontSize * 1.1f));
+	const auto caretTop = textTop + caret.y - verticalOffset_
+		+ (lineHeight - caretHeight) / 2.0f;
+	RECT nextCaretDirty{
+		DipToPixels(caretX, inputDpi_) - 2,
+		DipToPixels(caretTop, inputDpi_) - 2,
+		DipToPixels(caretX + config_.caretWidth, inputDpi_) + 2,
+		DipToPixels(caretTop + caretHeight, inputDpi_) + 2,
+	};
+	nextCaretDirty.left = (std::clamp)(nextCaretDirty.left, 0L, static_cast<LONG>(width));
+	nextCaretDirty.top = (std::clamp)(nextCaretDirty.top, 0L, static_cast<LONG>(height));
+	nextCaretDirty.right = (std::clamp)(
+		nextCaretDirty.right,
+		nextCaretDirty.left,
+		static_cast<LONG>(width));
+	nextCaretDirty.bottom = (std::clamp)(
+		nextCaretDirty.bottom,
+		nextCaretDirty.top,
+		static_cast<LONG>(height));
+	const auto nextCaretDirtyValid = nextCaretDirty.right > nextCaretDirty.left
+		&& nextCaretDirty.bottom > nextCaretDirty.top;
+	const auto dirtyMatches = inputCaretDirtyValid_ && nextCaretDirtyValid
+		&& EqualRect(&inputCaretDirtyRect_, &nextCaretDirty) != FALSE;
+	caretOnly = caretOnly && dirtyMatches;
+	if (caretOnly)
+	{
+		inputSurface_->Clear(inputCaretDirtyRect_);
+	}
+
 	RECT bindRect{ 0, 0, width, height };
 	if (FAILED(inputRenderTarget_->BindDC(inputSurface_->dc, &bindRect))) return;
 	inputRenderTarget_->BeginDraw();
 	inputRenderTarget_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-	inputRenderTarget_->Clear(D2D1::ColorF(0, 0.0f));
+	// Make the layered window's per-pixel alpha behavior explicit; ClearType is
+	// not suitable for a premultiplied transparent render target.
+	inputRenderTarget_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+	if (caretOnly)
+	{
+		inputRenderTarget_->PushAxisAlignedClip(
+			D2D1::RectF(
+				PixelsToDip(inputCaretDirtyRect_.left, inputDpi_),
+				PixelsToDip(inputCaretDirtyRect_.top, inputDpi_),
+				PixelsToDip(inputCaretDirtyRect_.right, inputDpi_),
+				PixelsToDip(inputCaretDirtyRect_.bottom, inputDpi_)),
+			D2D1_ANTIALIAS_MODE_ALIASED);
+	}
+	else
+	{
+		inputRenderTarget_->Clear(D2D1::ColorF(0, 0.0f));
+	}
 	const auto rounded = CreateInsetRoundedRect(
 		0.0f,
 		0.0f,
 		static_cast<float>(config_.width),
-		static_cast<float>(config_.height),
+		GetInputWindowHeightDip(),
 		config_.cornerRadius,
 		config_.borderThickness);
 	inputRenderTarget_->FillRoundedRectangle(rounded, inputBackgroundBrush_.Get());
@@ -1902,77 +2017,198 @@ void InputBoxHost::RenderInput()
 		inputRenderTarget_->DrawRoundedRectangle(
 			rounded, inputBorderBrush_.Get(), config_.borderThickness);
 	}
-	const auto horizontalPadding = (std::min)((std::max)(0.0f, config_.horizontalPadding), config_.width / 2.0f - 1.0f);
-	const auto verticalPadding = (std::min)((std::max)(0.0f, config_.verticalPadding), config_.height / 2.0f - 1.0f);
-	const auto textRect = D2D1::RectF(
-		horizontalPadding, verticalPadding,
-		config_.width - horizontalPadding, config_.height - verticalPadding);
 	inputRenderTarget_->PushAxisAlignedClip(textRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 	if (text_.empty())
 	{
+		const auto placeholderRect = D2D1::RectF(
+			textRect.left, textTop, textRect.right, textTop + lineHeight);
 		inputRenderTarget_->DrawTextW(
 			PlaceholderText, static_cast<UINT32>(std::size(PlaceholderText) - 1), inputTextFormat_.Get(),
-			textRect, inputPlaceholderBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP, DWRITE_MEASURING_MODE_NATURAL);
+			placeholderRect, inputPlaceholderBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP, DWRITE_MEASURING_MODE_NATURAL);
 	}
-	else
+	else if (inputTextLayout_)
 	{
-		Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
-		if (SUCCEEDED(dwriteFactory_->CreateTextLayout(
-			text_.c_str(), static_cast<UINT32>(text_.size()), inputTextFormat_.Get(),
-			MaxTextLayoutWidth, textRect.bottom - textRect.top, layout.GetAddressOf())))
-		{
-			inputRenderTarget_->DrawTextLayout(
-				D2D1::Point2F(textRect.left - horizontalOffset_, textRect.top),
-				layout.Get(), inputTextBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
-		}
+		inputRenderTarget_->DrawTextLayout(
+			D2D1::Point2F(textRect.left, textTop - verticalOffset_),
+			inputTextLayout_.Get(), inputTextBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
 	}
 	if (caretVisible_)
 	{
-		const auto caretX = textRect.left + GetCaretLogicalX() - horizontalOffset_;
-		const auto textHeight = (std::max)(1.0f, textRect.bottom - textRect.top);
-		const auto caretHeight = (std::min)(textHeight, (std::max)(1.0f, config_.fontSize * 1.1f));
-		const auto caretTop = textRect.top + (textHeight - caretHeight) / 2.0f;
 		inputRenderTarget_->FillRectangle(
 			D2D1::RectF(caretX, caretTop, caretX + config_.caretWidth, caretTop + caretHeight),
 			inputCaretBrush_.Get());
 	}
 	inputRenderTarget_->PopAxisAlignedClip();
+	if (caretOnly)
+	{
+		inputRenderTarget_->PopAxisAlignedClip();
+	}
 	const auto endResult = inputRenderTarget_->EndDraw();
 	if (endResult == D2DERR_RECREATE_TARGET)
 	{
 		DiscardInputResources(false);
 		return;
 	}
-	if (SUCCEEDED(endResult))
+	if (FAILED(endResult))
 	{
-		POINT source{ 0, 0 };
-		SIZE size{ width, height };
-		BLENDFUNCTION blend{ AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
-		UpdateLayeredWindow(inputHwnd_, nullptr, nullptr, &size, inputSurface_->dc, &source, 0, &blend, ULW_ALPHA);
+		inputCaretDirtyValid_ = false;
+		return;
 	}
-}
 
-size_t InputBoxHost::GetFeaturePageCount() const
-{
-	if (featureItems_.empty()) return 0;
-	const auto perPage = static_cast<size_t>((std::max)(1, featureConfig_.itemsPerPage));
-	return (featureItems_.size() + perPage - 1) / perPage;
-}
-
-size_t InputBoxHost::GetFeaturePageItemCount() const
-{
-	if (featureItems_.empty()) return 0;
-	const auto perPage = static_cast<size_t>((std::max)(1, featureConfig_.itemsPerPage));
-	const auto start = featurePage_ * perPage;
-	return start >= featureItems_.size() ? 0 : (std::min)(perPage, featureItems_.size() - start);
+	inputCaretDirtyRect_ = nextCaretDirty;
+	inputCaretDirtyValid_ = nextCaretDirtyValid;
+	PresentLayeredSurface(
+		inputHwnd_,
+		inputSurface_->dc,
+		width,
+		height,
+		caretOnly ? &inputCaretDirtyRect_ : nullptr);
 }
 
 float InputBoxHost::GetFeatureWindowWidthDip() const
 {
-	const auto count = (std::max)(size_t{ 1 }, GetFeaturePageItemCount());
+	const auto count = (std::max)(size_t{ 1 }, featurePager_.CurrentItemCount());
 	return (std::max)(1.0f,
 		static_cast<float>(count) * featureConfig_.cellSize
 		+ static_cast<float>(count - 1) * featureConfig_.gap);
+}
+
+void InputBoxHost::GetFeatureSurfaceMetrics(int& width, int& height, float& renderScale) const
+{
+	const auto requestedWidth = (std::max)(
+		1,
+		DipToPixels(GetFeatureWindowWidthDip(), featureDpi_));
+	const auto requestedHeight = (std::max)(
+		1,
+		DipToPixels(featureConfig_.cellSize, featureDpi_));
+
+	int availableWidth = requestedWidth;
+	int availableHeight = requestedHeight;
+	const auto monitor = targetMonitor_ != nullptr
+		? targetMonitor_
+		: (featureHwnd_ != nullptr
+			? MonitorFromWindow(featureHwnd_, MONITOR_DEFAULTTONEAREST)
+			: MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY));
+	MONITORINFO monitorInfo{};
+	monitorInfo.cbSize = sizeof(monitorInfo);
+	if (monitor != nullptr && GetMonitorInfoW(monitor, &monitorInfo))
+	{
+		const auto workWidth = (std::clamp)(
+			static_cast<int64_t>(monitorInfo.rcWork.right)
+				- static_cast<int64_t>(monitorInfo.rcWork.left),
+			int64_t{ 1 },
+			static_cast<int64_t>((std::numeric_limits<int>::max)()));
+		const auto workHeight = (std::clamp)(
+			static_cast<int64_t>(monitorInfo.rcWork.bottom)
+				- static_cast<int64_t>(monitorInfo.rcWork.top),
+			int64_t{ 1 },
+			static_cast<int64_t>((std::numeric_limits<int>::max)()));
+		const auto margin = (std::clamp)(
+			static_cast<int64_t>(DipToPixels(
+				static_cast<float>(featureConfig_.bottomMargin),
+				featureDpi_)),
+			int64_t{ 0 },
+			workHeight - 1);
+		availableWidth = static_cast<int>((std::min)(
+			static_cast<int64_t>(requestedWidth),
+			workWidth));
+		availableHeight = static_cast<int>((std::min)(
+			static_cast<int64_t>(requestedHeight),
+			workHeight - margin));
+	}
+
+	const auto requestedPixels = static_cast<double>(requestedWidth)
+		* static_cast<double>(requestedHeight);
+	auto scale = (std::min)({
+		1.0,
+		static_cast<double>(availableWidth) / static_cast<double>(requestedWidth),
+		static_cast<double>(availableHeight) / static_cast<double>(requestedHeight),
+		std::sqrt(static_cast<double>(MaxFeatureSurfacePixels) / requestedPixels),
+	});
+	scale = (std::clamp)(scale, 0.0, 1.0);
+	width = (std::clamp)(
+		static_cast<int>(std::floor(static_cast<double>(requestedWidth) * scale)),
+		1,
+		availableWidth);
+	height = (std::clamp)(
+		static_cast<int>(std::floor(static_cast<double>(requestedHeight) * scale)),
+		1,
+		availableHeight);
+	if (static_cast<int64_t>(width)
+		> MaxFeatureSurfacePixels / static_cast<int64_t>(height))
+	{
+		width = static_cast<int>(MaxFeatureSurfacePixels / static_cast<int64_t>(height));
+	}
+	renderScale = static_cast<float>((std::min)(
+		static_cast<double>(width) / static_cast<double>(requestedWidth),
+		static_cast<double>(height) / static_cast<double>(requestedHeight)));
+}
+
+float InputBoxHost::GetInputLineHeightDip() const
+{
+	return (std::max)(1.0f, config_.fontSize * 1.25f);
+}
+
+float InputBoxHost::GetInputWindowHeightDip() const
+{
+	const auto singleLineHeight = (std::max)(
+		static_cast<float>(config_.height),
+		2.0f * (std::max)(0.0f, config_.verticalPadding) + GetInputLineHeightDip());
+	const auto requestedHeight = singleLineHeight
+		+ static_cast<float>((std::max)(1, inputLineCapacity_) - 1) * GetInputLineHeightDip();
+
+	const auto monitor = targetMonitor_ != nullptr
+		? targetMonitor_
+		: (inputHwnd_ != nullptr
+			? MonitorFromWindow(inputHwnd_, MONITOR_DEFAULTTONEAREST)
+			: nullptr);
+	if (monitor == nullptr) return requestedHeight;
+	MONITORINFO monitorInfo{};
+	monitorInfo.cbSize = sizeof(monitorInfo);
+	if (!GetMonitorInfoW(monitor, &monitorInfo)) return requestedHeight;
+	const auto workHeight = monitorInfo.rcWork.bottom - monitorInfo.rcWork.top;
+	const auto placementMargin = config_.positionMode == 1 || config_.positionMode == 3
+		? 0
+		: DipToPixels(static_cast<float>(config_.bottomMargin), inputDpi_);
+	const auto widthPixels = (std::max)(
+		1,
+		DipToPixels(static_cast<float>(config_.width), inputDpi_));
+	const auto areaLimitedHeight = static_cast<LONG>((std::max)(
+		int64_t{ 1 },
+		MaxInputSurfacePixels / static_cast<int64_t>(widthPixels)));
+	const auto maximumHeightPixels = (std::max)(1L,
+		(std::min)({
+			4096L,
+			areaLimitedHeight,
+			static_cast<LONG>(workHeight) - static_cast<LONG>(placementMargin),
+		}));
+	return (std::min)(requestedHeight, PixelsToDip(maximumHeightPixels, inputDpi_));
+}
+
+float InputBoxHost::GetInputTextWidthDip() const
+{
+	return (std::max)(
+		1.0f,
+		static_cast<float>(config_.width) - 2.0f * (std::max)(0.0f, config_.horizontalPadding));
+}
+
+float InputBoxHost::GetInputTextTopDip() const
+{
+	return (std::max)(
+		(std::max)(0.0f, config_.verticalPadding),
+		(GetInputWindowHeightDip()
+			- static_cast<float>((std::max)(1, inputLineCapacity_)) * GetInputLineHeightDip()) / 2.0f);
+}
+
+float InputBoxHost::GetInputTextViewportHeightDip() const
+{
+	const auto requestedViewport = static_cast<float>((std::max)(1, inputLineCapacity_))
+		* GetInputLineHeightDip();
+	const auto availableViewport = (std::max)(
+		1.0f,
+		GetInputWindowHeightDip() - GetInputTextTopDip()
+			- (std::max)(0.0f, config_.verticalPadding));
+	return (std::min)(requestedViewport, availableViewport);
 }
 
 int InputBoxHost::GetInputWindowPixelWidth() const
@@ -1982,32 +2218,43 @@ int InputBoxHost::GetInputWindowPixelWidth() const
 
 int InputBoxHost::GetInputWindowPixelHeight() const
 {
-	return (std::max)(1, DipToPixels(static_cast<float>(config_.height), inputDpi_));
+	return (std::max)(1, DipToPixels(GetInputWindowHeightDip(), inputDpi_));
 }
 
 int InputBoxHost::GetFeatureWindowPixelWidth() const
 {
-	return (std::max)(1, DipToPixels(GetFeatureWindowWidthDip(), featureDpi_));
+	int width = 0;
+	int height = 0;
+	float renderScale = 1.0f;
+	GetFeatureSurfaceMetrics(width, height, renderScale);
+	return width;
 }
 
 int InputBoxHost::GetFeatureWindowPixelHeight() const
 {
-	return (std::max)(1, DipToPixels(featureConfig_.cellSize, featureDpi_));
+	int width = 0;
+	int height = 0;
+	float renderScale = 1.0f;
+	GetFeatureSurfaceMetrics(width, height, renderScale);
+	return height;
 }
 
 void InputBoxHost::RenderFeature()
 {
 	if (featureHwnd_ == nullptr || featureItems_.empty() || FAILED(EnsureFeatureResources())) return;
-	const auto width = GetFeatureWindowPixelWidth();
-	const auto height = GetFeatureWindowPixelHeight();
+	int width = 0;
+	int height = 0;
+	float renderScale = 1.0f;
+	GetFeatureSurfaceMetrics(width, height, renderScale);
 	RECT bindRect{ 0, 0, width, height };
 	if (FAILED(featureRenderTarget_->BindDC(featureSurface_->dc, &bindRect))) return;
 	featureRenderTarget_->BeginDraw();
+	featureRenderTarget_->SetTransform(D2D1::Matrix3x2F::Scale(renderScale, renderScale));
 	featureRenderTarget_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+	featureRenderTarget_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
 	featureRenderTarget_->Clear(D2D1::ColorF(0, 0.0f));
-	const auto count = GetFeaturePageItemCount();
-	const auto perPage = static_cast<size_t>(featureConfig_.itemsPerPage);
-	const auto start = featurePage_ * perPage;
+	const auto count = featurePager_.CurrentItemCount();
+	const auto start = featurePager_.FirstItemIndex();
 	for (size_t index = 0; index < count; ++index)
 	{
 		const auto left = static_cast<float>(index) * (featureConfig_.cellSize + featureConfig_.gap);
@@ -2049,10 +2296,7 @@ void InputBoxHost::RenderFeature()
 	}
 	if (SUCCEEDED(endResult))
 	{
-		POINT source{ 0, 0 };
-		SIZE size{ width, height };
-		BLENDFUNCTION blend{ AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
-		UpdateLayeredWindow(featureHwnd_, nullptr, nullptr, &size, featureSurface_->dc, &source, 0, &blend, ULW_ALPHA);
+		PresentLayeredSurface(featureHwnd_, featureSurface_->dc, width, height);
 	}
 }
 
@@ -2120,10 +2364,19 @@ bool InputBoxHost::HandleFeatureKeyDown(WPARAM wParam)
 			ActivateFeature(static_cast<size_t>(wParam - firstKey));
 			return true;
 		}
-		if (featureConfig_.firstItemVirtualKey == L'1' && wParam >= VK_NUMPAD1 && wParam <= VK_NUMPAD7)
+		if (featureConfig_.firstItemVirtualKey >= L'0'
+			&& featureConfig_.firstItemVirtualKey <= L'9'
+			&& wParam >= VK_NUMPAD0
+			&& wParam <= VK_NUMPAD9)
 		{
-			ActivateFeature(static_cast<size_t>(wParam - VK_NUMPAD1));
-			return true;
+			const auto firstNumpadKey = static_cast<WPARAM>(
+				VK_NUMPAD0 + featureConfig_.firstItemVirtualKey - L'0');
+			if (wParam >= firstNumpadKey
+				&& wParam < firstNumpadKey + static_cast<WPARAM>(featureConfig_.itemsPerPage))
+			{
+				ActivateFeature(static_cast<size_t>(wParam - firstNumpadKey));
+				return true;
+			}
 		}
 	}
 	return false;
@@ -2131,25 +2384,15 @@ bool InputBoxHost::HandleFeatureKeyDown(WPARAM wParam)
 
 void InputBoxHost::ChangeFeaturePage(int direction)
 {
-	const auto pageCount = GetFeaturePageCount();
-	if (pageCount <= 1) return;
-	if (direction < 0)
-	{
-		featurePage_ = featurePage_ == 0 ? pageCount - 1 : featurePage_ - 1;
-	}
-	else
-	{
-		featurePage_ = (featurePage_ + 1) % pageCount;
-	}
-	DiscardFeatureResources(true);
+	if (!featurePager_.Move(direction)) return;
 	UpdateFeatureWindowGeometry();
 	RenderFeature();
 }
 
 void InputBoxHost::ActivateFeature(size_t indexOnPage)
 {
-	if (indexOnPage >= GetFeaturePageItemCount()) return;
-	const auto absoluteIndex = featurePage_ * static_cast<size_t>(featureConfig_.itemsPerPage) + indexOnPage;
+	size_t absoluteIndex = 0;
+	if (!featurePager_.TryResolveIndex(indexOnPage, absoluteIndex)) return;
 	const auto token = featureItems_[absoluteIndex].token;
 	const auto callback = featureActivatedCallback_;
 	const auto context = featureActivatedContext_;
@@ -2177,7 +2420,7 @@ LRESULT InputBoxHost::HandleInputMessage(HWND hwnd, UINT message, WPARAM wParam,
 		if (wParam == CaretTimerId)
 		{
 			caretVisible_ = !caretVisible_;
-			RenderInput();
+			RenderInput(true);
 			return 0;
 		}
 		break;
@@ -2266,7 +2509,12 @@ LRESULT InputBoxHost::HandleFeatureMessage(HWND hwnd, UINT message, WPARAM wPara
 	case WM_LBUTTONDOWN:
 	{
 		SetFocus(hwnd);
-		const auto x = PixelsToDip(GET_X_LPARAM(lParam), featureDpi_);
+		int width = 0;
+		int height = 0;
+		float renderScale = 1.0f;
+		GetFeatureSurfaceMetrics(width, height, renderScale);
+		const auto x = PixelsToDip(GET_X_LPARAM(lParam), featureDpi_)
+			/ (std::max)(renderScale, 0.0001f);
 		const auto stride = featureConfig_.cellSize + featureConfig_.gap;
 		if (stride > 0.0f)
 		{
@@ -2290,7 +2538,7 @@ LRESULT InputBoxHost::HandleFeatureMessage(HWND hwnd, UINT message, WPARAM wPara
 		return 0;
 	}
 	case WM_SIZE:
-		RenderFeature();
+		if (featureVisible_ && !updatingFeatureWindowGeometry_) RenderFeature();
 		return 0;
 	case WM_CLOSE:
 		HideFeatureWindowOnUiThread();
@@ -2316,72 +2564,6 @@ LRESULT InputBoxHost::DispatchWindowMessage(
 	return kind == WindowKind::Input
 		? HandleInputMessage(hwnd, message, wParam, lParam)
 		: HandleFeatureMessage(hwnd, message, wParam, lParam);
-}
-
-LuvLetterInputBoxConfig InputBoxHost::SanitizeConfig(const LuvLetterInputBoxConfig& config)
-{
-	auto sanitized = CreateDefaultConfig();
-	sanitized.width = (std::clamp)(config.width, 120, 7680);
-	sanitized.height = (std::clamp)(config.height, 24, 512);
-	sanitized.cornerRadius = (std::clamp)(FiniteOr(config.cornerRadius, sanitized.cornerRadius), 0.0f, 512.0f);
-	sanitized.borderThickness = (std::clamp)(
-		FiniteOr(config.borderThickness, sanitized.borderThickness),
-		0.0f,
-		(std::min)(16.0f, static_cast<float>(sanitized.height) / 2.0f));
-	sanitized.fontSize = (std::clamp)(FiniteOr(config.fontSize, sanitized.fontSize), 6.0f, 256.0f);
-	sanitized.horizontalPadding = (std::clamp)(FiniteOr(config.horizontalPadding, sanitized.horizontalPadding), 0.0f, static_cast<float>(sanitized.width) / 2.0f);
-	sanitized.verticalPadding = (std::clamp)(FiniteOr(config.verticalPadding, sanitized.verticalPadding), 0.0f, static_cast<float>(sanitized.height) / 2.0f);
-	sanitized.caretWidth = (std::clamp)(FiniteOr(config.caretWidth, sanitized.caretWidth), 0.5f, 16.0f);
-	sanitized.positionMode = config.positionMode >= 0 && config.positionMode <= 3 ? config.positionMode : sanitized.positionMode;
-	sanitized.offsetX = (std::clamp)(config.offsetX, -32768, 32768);
-	sanitized.offsetY = (std::clamp)(config.offsetY, -32768, 32768);
-	sanitized.bottomMargin = (std::clamp)(config.bottomMargin, 0, 4096);
-	sanitized.customX = (std::clamp)(config.customX, -32768, 32768);
-	sanitized.customY = (std::clamp)(config.customY, -32768, 32768);
-	sanitized.borderColor = config.borderColor;
-	sanitized.backgroundColor = config.backgroundColor;
-	sanitized.textColor = config.textColor;
-	sanitized.caretColor = config.caretColor;
-	sanitized.submitVirtualKey = config.submitVirtualKey > 0 && config.submitVirtualKey <= 0xFF ? config.submitVirtualKey : sanitized.submitVirtualKey;
-	sanitized.cancelVirtualKey = config.cancelVirtualKey > 0 && config.cancelVirtualKey <= 0xFF ? config.cancelVirtualKey : sanitized.cancelVirtualKey;
-	sanitized.backspaceVirtualKey = config.backspaceVirtualKey > 0 && config.backspaceVirtualKey <= 0xFF ? config.backspaceVirtualKey : sanitized.backspaceVirtualKey;
-	sanitized.submitModifiers = config.submitModifiers & 0xF;
-	sanitized.cancelModifiers = config.cancelModifiers & 0xF;
-	sanitized.backspaceModifiers = config.backspaceModifiers & 0xF;
-	return sanitized;
-}
-
-LuvLetterFeatureWindowConfig InputBoxHost::SanitizeFeatureConfig(const LuvLetterFeatureWindowConfig& config)
-{
-	auto sanitized = CreateDefaultFeatureConfig();
-	sanitized.itemsPerPage = (std::clamp)(config.itemsPerPage, 1, 7);
-	sanitized.cellSize = (std::clamp)(FiniteOr(config.cellSize, sanitized.cellSize), 32.0f, 512.0f);
-	sanitized.gap = (std::clamp)(FiniteOr(config.gap, sanitized.gap), 0.0f, 128.0f);
-	sanitized.cornerRadius = (std::clamp)(FiniteOr(config.cornerRadius, sanitized.cornerRadius), 0.0f, 256.0f);
-	sanitized.borderThickness = (std::clamp)(
-		FiniteOr(config.borderThickness, sanitized.borderThickness),
-		0.0f,
-		(std::min)(16.0f, sanitized.cellSize / 2.0f));
-	sanitized.fontSize = (std::clamp)(FiniteOr(config.fontSize, sanitized.fontSize), 6.0f, 128.0f);
-	sanitized.bottomMargin = (std::clamp)(config.bottomMargin, 0, 4096);
-	sanitized.offsetX = (std::clamp)(config.offsetX, -32768, 32768);
-	sanitized.offsetY = (std::clamp)(config.offsetY, -32768, 32768);
-	sanitized.borderColor = config.borderColor;
-	sanitized.backgroundColor = config.backgroundColor;
-	sanitized.textColor = config.textColor;
-	sanitized.accentColor = config.accentColor;
-	sanitized.previousVirtualKey = config.previousVirtualKey > 0 && config.previousVirtualKey <= 0xFF ? config.previousVirtualKey : sanitized.previousVirtualKey;
-	sanitized.nextVirtualKey = config.nextVirtualKey > 0 && config.nextVirtualKey <= 0xFF ? config.nextVirtualKey : sanitized.nextVirtualKey;
-	sanitized.cancelVirtualKey = config.cancelVirtualKey > 0 && config.cancelVirtualKey <= 0xFF ? config.cancelVirtualKey : sanitized.cancelVirtualKey;
-	const auto maximumFirstItemKey = L'9' - sanitized.itemsPerPage + 1;
-	sanitized.firstItemVirtualKey = config.firstItemVirtualKey >= L'0'
-		&& config.firstItemVirtualKey <= maximumFirstItemKey
-		? config.firstItemVirtualKey
-		: sanitized.firstItemVirtualKey;
-	sanitized.previousModifiers = config.previousModifiers & 0xF;
-	sanitized.nextModifiers = config.nextModifiers & 0xF;
-	sanitized.cancelModifiers = config.cancelModifiers & 0xF;
-	return sanitized;
 }
 
 LRESULT InputBoxHost::DispatchWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) noexcept

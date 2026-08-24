@@ -52,7 +52,11 @@
         TextAlignment="Right"
         TextWrapping="Wrap" />
       <Button Width="88" Margin="0,0,8,0" Click="ResetButton_OnClick" Content="Reset" />
-      <Button Width="88" Click="ApplyButton_OnClick" Content="Apply" />
+      <Button
+        Width="88"
+        Click="ApplyButton_OnClick"
+        Content="Apply"
+        PreviewMouseDown="ApplyButton_OnPreviewMouseDown" />
     </StackPanel>
 
     <TabControl>
@@ -118,7 +122,7 @@
                 <TextBox x:Name="BackgroundColorTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
               </StackPanel>
               <StackPanel Margin="0,0,12,10">
-                <TextBlock Text="Background opacity (0-1)" />
+                <TextBlock Text="Background opacity (0-1, background only)" />
                 <TextBox x:Name="BackgroundOpacityTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
               </StackPanel>
               <StackPanel Margin="0,0,0,10">
@@ -126,19 +130,27 @@
                 <TextBox x:Name="TextColorTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
               </StackPanel>
               <StackPanel Margin="0,0,12,0">
+                <TextBlock Text="Text opacity multiplier (0-1)" />
+                <TextBox x:Name="TextOpacityTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel>
                 <TextBlock Text="Caret (#RRGGBB or #AARRGGBB)" />
                 <TextBox x:Name="CaretColorTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
               </StackPanel>
             </UniformGrid>
 
             <TextBlock FontWeight="SemiBold" Text="Size" />
+            <TextBlock
+              Margin="0,3,0,0"
+              Foreground="#666666"
+              Text="Height is the single-line minimum; the input grows to 2, 4, or 6 visible lines, then scrolls." />
             <UniformGrid Columns="3" Margin="0,8,0,0">
               <StackPanel Margin="0,0,12,10">
                 <TextBlock Text="Width" />
                 <TextBox x:Name="WidthTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
               </StackPanel>
               <StackPanel Margin="0,0,12,10">
-                <TextBlock Text="Height" />
+                <TextBlock Text="Single-line height" />
                 <TextBox x:Name="HeightTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
               </StackPanel>
               <StackPanel Margin="0,0,0,10">
@@ -283,12 +295,16 @@
                 <TextBox x:Name="FeatureBackgroundColorTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
               </StackPanel>
               <StackPanel Margin="0,0,0,10">
-                <TextBlock Text="Background opacity (0-1)" />
+                <TextBlock Text="Background opacity (0-1, background only)" />
                 <TextBox x:Name="FeatureBackgroundOpacityTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
               </StackPanel>
               <StackPanel Margin="0,0,12,0">
                 <TextBlock Text="Text (#RRGGBB or #AARRGGBB)" />
                 <TextBox x:Name="FeatureTextColorTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel>
+                <TextBlock Text="Text opacity multiplier (0-1)" />
+                <TextBox x:Name="FeatureTextOpacityTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
               </StackPanel>
             </UniformGrid>
 

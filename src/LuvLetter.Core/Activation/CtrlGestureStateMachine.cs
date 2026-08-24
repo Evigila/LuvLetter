@@ -1,21 +1,21 @@
 using LuvLetter.Core.Configuration;
 
-namespace LuvLetter.Hotkeys;
+namespace LuvLetter.Core.Activation;
 
-internal enum ControlKeySide
+public enum ControlKeySide
 {
     Left,
     Right,
 }
 
-internal enum CtrlGestureAction
+public enum CtrlGestureAction
 {
     None,
     CommandRequested,
     FeatureWindowRequested,
 }
 
-internal sealed class CtrlGestureStateMachine
+public sealed class CtrlGestureStateMachine
 {
     private enum GesturePhase
     {
@@ -34,13 +34,13 @@ internal sealed class CtrlGestureStateMachine
     private bool leftControlDown;
     private bool rightControlDown;
 
-    internal CtrlGestureStateMachine(ActivationGestureOptions options)
+    public CtrlGestureStateMachine(ActivationGestureOptions options)
     {
         ValidateOptions(options);
         this.options = options;
     }
 
-    internal long? NextDeadlineTimestampMs => phase switch
+    public long? NextDeadlineTimestampMs => phase switch
     {
         GesturePhase.FirstPress
             or GesturePhase.WaitingForSecondPress
@@ -48,7 +48,7 @@ internal sealed class CtrlGestureStateMachine
         _ => null,
     };
 
-    internal CtrlGestureAction HandleControlDown(ControlKeySide side, long timestampMs)
+    public CtrlGestureAction HandleControlDown(ControlKeySide side, long timestampMs)
     {
         if (IsControlDown(side))
         {
@@ -107,7 +107,7 @@ internal sealed class CtrlGestureStateMachine
         return CtrlGestureAction.None;
     }
 
-    internal CtrlGestureAction HandleControlUp(ControlKeySide side, long timestampMs)
+    public CtrlGestureAction HandleControlUp(ControlKeySide side, long timestampMs)
     {
         if (!IsControlDown(side))
         {
@@ -144,22 +144,22 @@ internal sealed class CtrlGestureStateMachine
                 break;
 
             case GesturePhase.SecondPress when side == gestureSide:
-            {
-                var pressDurationMs = ElapsedMilliseconds(pressStartedAtMs, timestampMs);
-                ResetPhase();
-
-                if (pressDurationMs >= options.HoldThresholdMs)
                 {
-                    return GetActionFor(ActivationGestureKind.ControlTapThenHold);
-                }
+                    var pressDurationMs = ElapsedMilliseconds(pressStartedAtMs, timestampMs);
+                    ResetPhase();
 
-                if (pressDurationMs <= options.TapMaxDurationMs)
-                {
-                    return GetActionFor(ActivationGestureKind.DoubleControlPress);
-                }
+                    if (pressDurationMs >= options.HoldThresholdMs)
+                    {
+                        return GetActionFor(ActivationGestureKind.ControlTapThenHold);
+                    }
 
-                break;
-            }
+                    if (pressDurationMs <= options.TapMaxDurationMs)
+                    {
+                        return GetActionFor(ActivationGestureKind.DoubleControlPress);
+                    }
+
+                    break;
+                }
 
             case GesturePhase.Idle:
             case GesturePhase.WaitingForSecondPress:
@@ -176,10 +176,8 @@ internal sealed class CtrlGestureStateMachine
         return CtrlGestureAction.None;
     }
 
-    internal void HandleOtherKey(long timestampMs)
+    public void HandleOtherKey()
     {
-        _ = timestampMs;
-
         if (phase == GesturePhase.Idle)
         {
             return;
@@ -195,7 +193,7 @@ internal sealed class CtrlGestureStateMachine
         }
     }
 
-    internal CtrlGestureAction HandleTimeout(long timestampMs)
+    public CtrlGestureAction HandleTimeout(long timestampMs)
     {
         if (timestampMs < deadlineAtMs)
         {
@@ -224,7 +222,7 @@ internal sealed class CtrlGestureStateMachine
         return CtrlGestureAction.None;
     }
 
-    internal void Update(ActivationGestureOptions options)
+    public void Update(ActivationGestureOptions options)
     {
         ValidateOptions(options);
         this.options = options;
@@ -239,14 +237,26 @@ internal sealed class CtrlGestureStateMachine
         }
     }
 
-    internal void Reset()
+    public void CancelPending()
+    {
+        if (leftControlDown || rightControlDown)
+        {
+            SuppressUntilControlsAreReleased();
+        }
+        else
+        {
+            ResetPhase();
+        }
+    }
+
+    public void Reset()
     {
         leftControlDown = false;
         rightControlDown = false;
         ResetPhase();
     }
 
-    internal static void ValidateOptions(ActivationGestureOptions options)
+    public static void ValidateOptions(ActivationGestureOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
 

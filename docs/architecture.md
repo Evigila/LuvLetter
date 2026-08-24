@@ -5,17 +5,72 @@ Direct2D. The repository intentionally avoids third-party runtime frameworks.
 
 ## Projects
 
-- `src/LuvLetter`: the WPF control center and process composition root. It owns
-  the tray icon, global Ctrl gesture hook, configuration window, and user-facing
-  error reporting. WPF does not participate in native drawing or text input.
-- `src/LuvLetter.Core`: configuration, feature registration, bounded command
-  dispatch, and the managed/native interop adapter. A successfully loaded plug-in
-  registers its features through `FeatureRegistry`; registry changes are copied
-  to Native as immutable snapshots.
+- `src/LuvLetter`: the WPF configuration center and Windows process shell. It owns
+  views, control binding, the tray icon, the low-level keyboard-hook adapter, the
+  built-in UI module, process composition, and user-facing error reporting. WPF
+  does not contain gesture recognition, configuration persistence, plug-in loading,
+  native drawing, or text-input logic.
+- `src/LuvLetter.Core`: application and core logic. It owns activation gesture
+  recognition, configuration application and rollback, configuration persistence,
+  feature registration, bounded command dispatch, module discovery/registration,
+  and the managed/native interop adapter. Registry changes are copied to Native as
+  immutable snapshots.
 - `src/LuvLetter.Native`: the C++ Win32/D2D shell. One dedicated UI thread owns
-  both native windows, all HWND state, D2D/DWrite resources, and input state.
+  both native windows, all HWND state, D2D/DWrite resources, and input state. It is
+  the only project that renders the command and feature windows.
 - `tests/LuvLetter.Core.Tests`: a zero-NuGet console smoke suite for Core and
-  the pure Ctrl gesture state machine.
+  its application/core modules.
+
+The compile-time dependency direction is `LuvLetter -> LuvLetter.Core`. The Native
+DLL is reached only through the versioned C ABI; Native never references a managed
+assembly.
+
+## Module boundaries
+
+### LuvLetter
+
+- `Settings`: WPF control mapping, editor input models, value parsing, hotkey capture,
+  and one parser per configuration section. `MainWindow` only coordinates view events
+  and the Core application service.
+- `Hotkeys`: the Windows low-level keyboard hook and WPF Dispatcher adapter. Gesture
+  recognition itself lives in Core.
+- `Tray`: notification-area UI and settings-window lifetime.
+- `Modules`: UI-specific built-in modules.
+- `Program`: the composition root. It creates services and connects events, but does
+  not implement configuration, command, feature, or gesture policy.
+
+### LuvLetter.Core
+
+- `Activation`: the deterministic Ctrl gesture state machine and the activation-service
+  port implemented by the Windows shell.
+- `Application`: use-case orchestration such as applying a configuration across Native,
+  gesture recognition, and persistent storage with compensating rollback.
+- `Commands`: command registration plus bounded, serial asynchronous dispatch.
+- `Configuration`: immutable models plus separate normalizer, schema migrator, JSON
+  repository, and current-snapshot store.
+- `Features`: feature definitions, registration, snapshots, and activation.
+- `Modules`: public module contract, assembly discovery, deferred registration context,
+  per-module failure isolation, and successful `IDisposable` module lifetime ownership.
+  Modules receive only minimal command/feature registrar capabilities.
+- `Native`: managed ABI declarations, configuration mapping, feature token mapping,
+  bounded callback delivery, and Native-session lifecycle. No rendering occurs here.
+
+### LuvLetter.Native
+
+- `api`: the stable exported C ABI and exception boundary.
+- `input/FeaturePager`: Win32-independent feature paging and index resolution.
+- `input/InputHistory`: Win32-independent bounded command history, de-duplication,
+  draft preservation, and navigation.
+- `input/NativeConfigurationSanitizer`: Native-side defaults and defensive range/
+  enum validation for both window configuration structs.
+- `input/InputBoxHost`: ownership of the single Native UI thread and both HWNDs. Input,
+  IME, D2D resource, and window-controller responsibilities should continue to move
+  into focused collaborators without changing the ABI or thread-ownership model.
+
+Modules may depend inward on public Core contracts. Core must not reference WPF,
+Windows Forms, or application views. Native must not know module implementations or
+managed delegates; it receives only configuration structs, display snapshots, and
+opaque feature tokens.
 
 ## Activation
 
@@ -67,10 +122,12 @@ the ABI.
 ## Configuration
 
 Configuration is stored in `%AppData%\LuvLetter\settings.json` with an explicit
-schema version. `LuvLetterConfigurationStore` repairs missing/null sections,
-normalizes finite ranges, migrates the legacy top-level hotkey format, writes to
-a same-directory temporary file, flushes it, and atomically replaces the old
-settings file before publishing the new in-memory snapshot.
+schema version. The configuration module repairs missing/null sections, normalizes
+finite ranges, and migrates supported historical visual defaults. The obsolete
+top-level activation-hotkey format is rejected and replaced with the default Ctrl
+gestures. The JSON repository writes to a same-directory temporary file, flushes it,
+and atomically replaces the old settings file before the Store publishes the new
+in-memory snapshot.
 
 The top-level groups are `InputBox`, `ActivationGestures`, and `FeatureWindow`.
 
@@ -88,7 +145,7 @@ Publishing `src/LuvLetter/LuvLetter.csproj` with the same MSBuild automatically
 builds the x64 Native project and includes `LuvLetter.Native.dll`. Native uses the
 static MSVC runtime, so the published DLL has no VC++ Redistributable dependency.
 
-Run the Core smoke suite with:
+Run the Core smoke suite (currently 15 scenarios) with:
 
 ```powershell
 dotnet run --project tests/LuvLetter.Core.Tests/LuvLetter.Core.Tests.csproj --configuration Release

@@ -9,8 +9,5 @@
 
   <ItemGroup>
     <ProjectReference Include="../../src/LuvLetter.Core/LuvLetter.Core.csproj" />
-    <Compile
-      Include="../../src/LuvLetter/Hotkeys/CtrlGestureStateMachine.cs"
-      Link="Hotkeys/CtrlGestureStateMachine.cs" />
   </ItemGroup>
 </Project>

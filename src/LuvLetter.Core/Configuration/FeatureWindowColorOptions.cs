@@ -10,5 +10,7 @@ public sealed record FeatureWindowColorOptions
 
     public string Text { get; init; } = "#FFFFFFFF";
 
+    public float TextOpacity { get; init; } = 1.0f;
+
     public string Accent { get; init; } = "#FFFFFFFF";
 }

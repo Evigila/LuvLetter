@@ -10,15 +10,17 @@ namespace LuvLetter.Tray;
 public sealed class TrayIconService : IDisposable
 {
     private readonly WpfApplication application;
-    private readonly WpfWindow window;
+    private readonly Func<MainWindow> windowFactory;
     private readonly Forms.ContextMenuStrip contextMenu;
     private readonly Forms.NotifyIcon notifyIcon;
+    private MainWindow? window;
+    private string? cachedStatus;
     private bool isExiting;
 
-    public TrayIconService(WpfApplication application, WpfWindow window)
+    public TrayIconService(WpfApplication application, Func<MainWindow> windowFactory)
     {
         this.application = application;
-        this.window = window;
+        this.windowFactory = windowFactory;
 
         contextMenu = CreateContextMenu();
         notifyIcon = new Forms.NotifyIcon
@@ -30,23 +32,60 @@ public sealed class TrayIconService : IDisposable
         };
 
         notifyIcon.DoubleClick += NotifyIcon_OnDoubleClick;
-        window.Closing += Window_OnClosing;
-        window.StateChanged += Window_OnStateChanged;
         application.ShutdownMode = ShutdownMode.OnExplicitShutdown;
     }
 
     public void StartMinimized()
     {
-        window.ShowInTaskbar = false;
-        window.WindowState = WindowState.Minimized;
-        window.Hide();
+        if (window is not null)
+        {
+            MinimizeToTray(window);
+        }
+    }
+
+    public void SetStatus(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        if (application.Dispatcher.HasShutdownStarted || application.Dispatcher.HasShutdownFinished)
+        {
+            return;
+        }
+
+        if (application.Dispatcher.CheckAccess())
+        {
+            SetStatusCore(text);
+        }
+        else
+        {
+            _ = application.Dispatcher.BeginInvoke(() => SetStatusCore(text));
+        }
+    }
+
+    public void ShowWindow()
+    {
+        if (application.Dispatcher.HasShutdownStarted || application.Dispatcher.HasShutdownFinished)
+        {
+            return;
+        }
+
+        if (application.Dispatcher.CheckAccess())
+        {
+            ShowWindowCore();
+        }
+        else
+        {
+            application.Dispatcher.Invoke(ShowWindowCore);
+        }
     }
 
     public void Dispose()
     {
         notifyIcon.DoubleClick -= NotifyIcon_OnDoubleClick;
-        window.Closing -= Window_OnClosing;
-        window.StateChanged -= Window_OnStateChanged;
+        if (window is not null)
+        {
+            window.Closing -= Window_OnClosing;
+            window.StateChanged -= Window_OnStateChanged;
+        }
 
         notifyIcon.Visible = false;
         notifyIcon.Dispose();
@@ -75,36 +114,79 @@ public sealed class TrayIconService : IDisposable
         }
 
         eventArgs.Cancel = true;
-        MinimizeToTray();
+        if (sender is WpfWindow closingWindow)
+        {
+            MinimizeToTray(closingWindow);
+        }
     }
 
     private void Window_OnStateChanged(object? sender, EventArgs eventArgs)
     {
-        if (!isExiting && window.WindowState == WindowState.Minimized)
+        if (!isExiting
+            && sender is WpfWindow stateChangedWindow
+            && stateChangedWindow.WindowState == WindowState.Minimized)
         {
-            MinimizeToTray();
+            MinimizeToTray(stateChangedWindow);
         }
     }
 
-    private void ShowWindow()
+    private void ShowWindowCore()
     {
-        application.Dispatcher.Invoke(() =>
+        MainWindow settingsWindow;
+        try
         {
-            window.ShowInTaskbar = true;
-            if (!window.IsVisible)
-            {
-                window.Show();
-            }
+            settingsWindow = GetOrCreateWindow();
+        }
+        catch (Exception exception)
+        {
+            System.Windows.MessageBox.Show(
+                $"Cannot open LuvLetter settings.\n\n{exception.Message}",
+                "LuvLetter",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+            return;
+        }
 
-            window.WindowState = WindowState.Normal;
-            window.Activate();
-        });
+        settingsWindow.ShowInTaskbar = true;
+        if (!settingsWindow.IsVisible)
+        {
+            settingsWindow.Show();
+        }
+
+        settingsWindow.WindowState = WindowState.Normal;
+        settingsWindow.Activate();
     }
 
-    private void MinimizeToTray()
+    private MainWindow GetOrCreateWindow()
     {
-        window.ShowInTaskbar = false;
-        window.Hide();
+        if (window is not null)
+        {
+            return window;
+        }
+
+        var createdWindow = windowFactory();
+        createdWindow.Closing += Window_OnClosing;
+        createdWindow.StateChanged += Window_OnStateChanged;
+        if (cachedStatus is not null)
+        {
+            createdWindow.SetStatus(cachedStatus);
+        }
+
+        window = createdWindow;
+        application.MainWindow = createdWindow;
+        return createdWindow;
+    }
+
+    private void SetStatusCore(string text)
+    {
+        cachedStatus = text;
+        window?.SetStatus(text);
+    }
+
+    private static void MinimizeToTray(WpfWindow targetWindow)
+    {
+        targetWindow.ShowInTaskbar = false;
+        targetWindow.Hide();
     }
 
     private void Exit()

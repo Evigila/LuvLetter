@@ -1,6 +1,8 @@
 #pragma once
 
 #include "api/InputBoxApi.h"
+#include "input/FeaturePager.h"
+#include "input/InputHistory.h"
 
 #include <Windows.h>
 #include <d2d1.h>
@@ -88,7 +90,7 @@ private:
 	void ApplyFeatureDpiChange(UINT dpi, const RECT* suggestedRect);
 	HMONITOR CaptureTargetMonitor() const;
 
-	void RenderInput();
+	void RenderInput(bool caretOnly = false);
 	void RenderFeature();
 	void ResetInput();
 	void SubmitInput();
@@ -104,16 +106,21 @@ private:
 	void PasteFromClipboard();
 	void SetCaretFromPoint(LPARAM lParam);
 	void InvalidateInput();
+	void UpdateResponsiveInputHeight();
 	void UpdateImeCompositionWindow();
 	void EnsureCaretVisible();
-	float GetCaretLogicalX();
+	D2D1_POINT_2F GetCaretLogicalPosition();
+	float GetInputLineHeightDip() const;
+	float GetInputWindowHeightDip() const;
+	float GetInputTextWidthDip() const;
+	float GetInputTextTopDip() const;
+	float GetInputTextViewportHeightDip() const;
 	bool HandleInputKeyDown(WPARAM wParam);
 	bool HandleFeatureKeyDown(WPARAM wParam);
 	void ChangeFeaturePage(int direction);
 	void ActivateFeature(size_t indexOnPage);
-	size_t GetFeaturePageCount() const;
-	size_t GetFeaturePageItemCount() const;
 	float GetFeatureWindowWidthDip() const;
+	void GetFeatureSurfaceMetrics(int& width, int& height, float& renderScale) const;
 	int GetInputWindowPixelWidth() const;
 	int GetInputWindowPixelHeight() const;
 	int GetFeatureWindowPixelWidth() const;
@@ -123,8 +130,6 @@ private:
 	LRESULT HandleFeatureMessage(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 	LRESULT DispatchWindowMessage(WindowKind kind, HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam);
 
-	static LuvLetterInputBoxConfig SanitizeConfig(const LuvLetterInputBoxConfig& config);
-	static LuvLetterFeatureWindowConfig SanitizeFeatureConfig(const LuvLetterFeatureWindowConfig& config);
 	static DWORD WINAPI ThreadEntry(LPVOID parameter);
 	static LRESULT DispatchWindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) noexcept;
 	static LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam) noexcept;
@@ -144,23 +149,25 @@ private:
 	bool inputVisible_ = false;
 	bool featureVisible_ = false;
 	bool caretVisible_ = true;
+	bool inputCaretDirtyValid_ = false;
+	bool updatingFeatureWindowGeometry_ = false;
+	RECT inputCaretDirtyRect_{};
 	HMONITOR targetMonitor_ = nullptr;
 	UINT inputDpi_ = 96;
 	UINT featureDpi_ = 96;
 
 	std::wstring text_;
 	size_t caretIndex_ = 0;
-	float horizontalOffset_ = 0.0f;
-	std::vector<std::wstring> history_;
-	int historyIndex_ = -1;
-	std::wstring historyDraft_;
+	int inputLineCapacity_ = 1;
+	float verticalOffset_ = 0.0f;
+	InputHistory inputHistory_;
 	LuvLetterInputBoxConfig config_{};
 	LuvLetterInputSubmittedCallback inputSubmittedCallback_ = nullptr;
 	void* inputSubmittedContext_ = nullptr;
 
 	LuvLetterFeatureWindowConfig featureConfig_{};
 	std::vector<FeatureItem> featureItems_;
-	size_t featurePage_ = 0;
+	FeaturePager featurePager_;
 	LuvLetterFeatureActivatedCallback featureActivatedCallback_ = nullptr;
 	void* featureActivatedContext_ = nullptr;
 
@@ -169,6 +176,7 @@ private:
 
 	Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> inputRenderTarget_;
 	Microsoft::WRL::ComPtr<IDWriteTextFormat> inputTextFormat_;
+	Microsoft::WRL::ComPtr<IDWriteTextLayout> inputTextLayout_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> inputBackgroundBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> inputBorderBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> inputTextBrush_;

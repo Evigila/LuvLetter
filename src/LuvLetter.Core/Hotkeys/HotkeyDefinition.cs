@@ -5,9 +5,6 @@ public sealed record HotkeyDefinition(
     int VirtualKey,
     string KeyName)
 {
-    public static HotkeyDefinition Default { get; } =
-        new(HotkeyModifierKeys.Alt, 0x70, "F1");
-
     public string DisplayText
     {
         get

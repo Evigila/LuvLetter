@@ -1,5 +1,4 @@
 using System.Collections.Concurrent;
-using System.Globalization;
 using System.Runtime.InteropServices;
 using LuvLetter.Core.Configuration;
 using LuvLetter.Core.Features;
@@ -18,33 +17,40 @@ public sealed class InputBoxService : IInputBoxService
     private static readonly ConcurrentBag<Delegate> FailedShutdownCallbackRoots = new();
 
     private readonly object operationSyncRoot = new();
-    private readonly Dictionary<string, ulong> tokensByFeatureId = new(StringComparer.Ordinal);
-    private readonly ConcurrentQueue<CallbackNotification> pendingNotifications = new();
+    private readonly INativeInputBoxApi nativeApi;
+    private readonly FeatureTokenRegistry featureTokenRegistry = new();
+    private readonly BoundedCallbackDispatcher<CallbackNotification> notificationDispatcher;
     private readonly NativeFeatureActivatedCallback featureActivatedCallback;
     private readonly NativeInputSubmittedCallback inputSubmittedCallback;
     private IReadOnlyDictionary<ulong, string> activeFeatureIds = EmptyFeatureMap;
-    private ulong nextFeatureToken = 1;
-    private int pendingNotificationCount;
-    private int notificationDrainScheduled;
     private int disposed;
 
     public InputBoxService()
+        : this(NativeInputBoxApiAdapter.Instance)
     {
-        NativeInputBoxApi.EnsureCompatible();
+    }
+
+    internal InputBoxService(INativeInputBoxApi nativeApi)
+    {
+        ArgumentNullException.ThrowIfNull(nativeApi);
+        this.nativeApi = nativeApi;
+        nativeApi.EnsureCompatible();
+        notificationDispatcher = new(MaximumPendingNotifications, RaiseNotification);
         featureActivatedCallback = HandleNativeFeatureActivated;
         inputSubmittedCallback = HandleNativeInputSubmitted;
 
         try
         {
-            NativeInputBoxApi.ThrowIfFailed(
-                NativeInputBoxApi.SetInputSubmittedCallback(inputSubmittedCallback, IntPtr.Zero),
+            ThrowIfFailed(
+                nativeApi.SetInputSubmittedCallback(inputSubmittedCallback, IntPtr.Zero),
                 "SetInputSubmittedCallback");
-            NativeInputBoxApi.ThrowIfFailed(
-                NativeInputBoxApi.SetFeatureActivatedCallback(featureActivatedCallback, IntPtr.Zero),
+            ThrowIfFailed(
+                nativeApi.SetFeatureActivatedCallback(featureActivatedCallback, IntPtr.Zero),
                 "SetFeatureActivatedCallback");
         }
         catch
         {
+            notificationDispatcher.Dispose();
             var callbacksDetached = TryUnregisterCallbacks();
             var shutdownSucceeded = TryShutdown();
             if (!callbacksDetached && !shutdownSucceeded)
@@ -60,6 +66,8 @@ public sealed class InputBoxService : IInputBoxService
 
     public event Action<string>? FeatureActivated;
 
+    public long DroppedNotificationCount => notificationDispatcher.DroppedCount;
+
     public void ApplyConfiguration(
         InputBoxConfiguration inputBoxConfiguration,
         FeatureWindowConfiguration featureWindowConfiguration)
@@ -68,88 +76,26 @@ public sealed class InputBoxService : IInputBoxService
         ArgumentNullException.ThrowIfNull(inputBoxConfiguration);
         ArgumentNullException.ThrowIfNull(featureWindowConfiguration);
 
-        var normalized = LuvLetterConfigurationStore.Normalize(
-            LuvLetterConfiguration.Default with
-            {
-                InputBox = inputBoxConfiguration,
-                FeatureWindow = featureWindowConfiguration,
-            });
-
-        var inputBox = normalized.InputBox;
-        var nativeInputConfig = new NativeInputBoxConfig
-        {
-            StructSize = checked((uint)Marshal.SizeOf<NativeInputBoxConfig>()),
-            AbiVersion = NativeInputBoxApi.AbiVersion,
-            Width = inputBox.Size.Width,
-            Height = inputBox.Size.Height,
-            CornerRadius = inputBox.Size.CornerRadius,
-            BorderThickness = inputBox.Size.BorderThickness,
-            FontSize = inputBox.Size.FontSize,
-            HorizontalPadding = inputBox.Size.HorizontalPadding,
-            VerticalPadding = inputBox.Size.VerticalPadding,
-            CaretWidth = inputBox.Size.CaretWidth,
-            PositionMode = (int)inputBox.Placement.Mode,
-            OffsetX = inputBox.Placement.OffsetX,
-            OffsetY = inputBox.Placement.OffsetY,
-            BottomMargin = inputBox.Placement.BottomMargin,
-            CustomX = inputBox.Placement.CustomX,
-            CustomY = inputBox.Placement.CustomY,
-            BorderColor = ParseArgb(inputBox.Colors.Border, 0x66FFFFFF),
-            BackgroundColor = ApplyOpacity(
-                ParseArgb(inputBox.Colors.Background, 0x38F5F5F5),
-                inputBox.Colors.BackgroundOpacity),
-            TextColor = ParseArgb(inputBox.Colors.Text, 0xFFFFFFFF),
-            CaretColor = ParseArgb(inputBox.Colors.Caret, 0xFFFFFFFF),
-            SubmitVirtualKey = inputBox.Hotkeys.Submit.VirtualKey,
-            CancelVirtualKey = inputBox.Hotkeys.Cancel.VirtualKey,
-            BackspaceVirtualKey = inputBox.Hotkeys.Backspace.VirtualKey,
-            SubmitModifiers = (int)inputBox.Hotkeys.Submit.Modifiers,
-            CancelModifiers = (int)inputBox.Hotkeys.Cancel.Modifiers,
-            BackspaceModifiers = (int)inputBox.Hotkeys.Backspace.Modifiers,
-        };
-
-        var featureWindow = normalized.FeatureWindow;
-        var nativeFeatureConfig = new NativeFeatureWindowConfig
-        {
-            StructSize = checked((uint)Marshal.SizeOf<NativeFeatureWindowConfig>()),
-            AbiVersion = NativeInputBoxApi.AbiVersion,
-            ItemsPerPage = featureWindow.Layout.ItemsPerPage,
-            CellSize = featureWindow.Layout.CellSize,
-            Gap = featureWindow.Layout.Gap,
-            CornerRadius = featureWindow.Layout.CornerRadius,
-            BorderThickness = featureWindow.Layout.BorderThickness,
-            FontSize = featureWindow.Layout.FontSize,
-            BottomMargin = featureWindow.Layout.BottomMargin,
-            OffsetX = featureWindow.Layout.OffsetX,
-            OffsetY = featureWindow.Layout.OffsetY,
-            BorderColor = ParseArgb(featureWindow.Colors.Border, 0x66FFFFFF),
-            BackgroundColor = ApplyOpacity(
-                ParseArgb(featureWindow.Colors.Background, 0x38F5F5F5),
-                featureWindow.Colors.BackgroundOpacity),
-            TextColor = ParseArgb(featureWindow.Colors.Text, 0xFFFFFFFF),
-            AccentColor = ParseArgb(featureWindow.Colors.Accent, 0xFFFFFFFF),
-            PreviousVirtualKey = featureWindow.Hotkeys.PreviousPage.VirtualKey,
-            NextVirtualKey = featureWindow.Hotkeys.NextPage.VirtualKey,
-            CancelVirtualKey = featureWindow.Hotkeys.Cancel.VirtualKey,
-            FirstItemVirtualKey = featureWindow.Hotkeys.FirstItemVirtualKey,
-            PreviousModifiers = (int)featureWindow.Hotkeys.PreviousPage.Modifiers,
-            NextModifiers = (int)featureWindow.Hotkeys.NextPage.Modifiers,
-            CancelModifiers = (int)featureWindow.Hotkeys.Cancel.Modifiers,
-        };
+        var nativeConfiguration = NativeConfigurationMapper.Map(
+            inputBoxConfiguration,
+            featureWindowConfiguration,
+            nativeApi.AbiVersion);
+        var nativeInputConfig = nativeConfiguration.InputBox;
+        var nativeFeatureConfig = nativeConfiguration.FeatureWindow;
 
         lock (operationSyncRoot)
         {
             ThrowIfDisposed();
-            NativeInputBoxApi.ThrowIfFailed(
-                NativeInputBoxApi.ApplyInputBoxConfig(in nativeInputConfig),
+            ThrowIfFailed(
+                nativeApi.ApplyInputBoxConfig(in nativeInputConfig),
                 "ApplyInputBoxConfig");
-            NativeInputBoxApi.ThrowIfFailed(
-                NativeInputBoxApi.ApplyFeatureWindowConfig(in nativeFeatureConfig),
+            ThrowIfFailed(
+                nativeApi.ApplyFeatureWindowConfig(in nativeFeatureConfig),
                 "ApplyFeatureWindowConfig");
         }
     }
 
-    public void SynchronizeFeatures(IReadOnlyList<FeatureDefinition> features)
+    public void SynchronizeFeatures(IReadOnlyList<FeatureItemSnapshot> features)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(features);
@@ -164,34 +110,36 @@ public sealed class InputBoxService : IInputBoxService
         {
             ThrowIfDisposed();
 
-            var nativeItems = new NativeFeatureItem[features.Count];
-            var allocatedLabels = new IntPtr[features.Count];
-            var nextFeatureIds = new Dictionary<ulong, string>(features.Count);
+            var tokenAssignment = featureTokenRegistry.Prepare(features);
+            var nativeItems = tokenAssignment.Items.Count == 0
+                ? Array.Empty<NativeFeatureItem>()
+                : new NativeFeatureItem[tokenAssignment.Items.Count];
 
             try
             {
-                for (var index = 0; index < features.Count; index++)
+                for (var index = 0; index < tokenAssignment.Items.Count; index++)
                 {
-                    var feature = features[index]
-                        ?? throw new ArgumentException("A feature snapshot cannot contain null.", nameof(features));
-                    var token = GetOrCreateFeatureToken(feature.Id);
-                    var label = NormalizeFeatureLabel(feature.DisplayName);
+                    var item = tokenAssignment.Items[index];
+                    var label = NormalizeFeatureLabel(item.DisplayName);
                     var labelPointer = Marshal.StringToHGlobalUni(label);
-                    allocatedLabels[index] = labelPointer;
                     nativeItems[index] = new NativeFeatureItem
                     {
-                        Token = token,
+                        Token = item.Token,
                         Label = labelPointer,
                     };
-                    nextFeatureIds.Add(token, feature.Id);
                 }
 
+                var nextFeatureIds = tokenAssignment.FeatureIdsByToken;
                 var previousFeatureIds = Volatile.Read(ref activeFeatureIds);
-                Volatile.Write(ref activeFeatureIds, nextFeatureIds);
+                var transitionFeatureIds = FeatureTokenRegistry.CreateTransitionMap(
+                    previousFeatureIds,
+                    nextFeatureIds);
+
+                Volatile.Write(ref activeFeatureIds, transitionFeatureIds);
                 try
                 {
-                    NativeInputBoxApi.ThrowIfFailed(
-                        NativeInputBoxApi.SetFeatureItems(nativeItems, nativeItems.Length),
+                    ThrowIfFailed(
+                        nativeApi.SetFeatureItems(nativeItems, nativeItems.Length),
                         "SetFeatureItems");
                 }
                 catch
@@ -199,14 +147,17 @@ public sealed class InputBoxService : IInputBoxService
                     Volatile.Write(ref activeFeatureIds, previousFeatureIds);
                     throw;
                 }
+
+                Volatile.Write(ref activeFeatureIds, nextFeatureIds);
+                featureTokenRegistry.Commit(tokenAssignment);
             }
             finally
             {
-                foreach (var labelPointer in allocatedLabels)
+                foreach (var nativeItem in nativeItems)
                 {
-                    if (labelPointer != IntPtr.Zero)
+                    if (nativeItem.Label != IntPtr.Zero)
                     {
-                        Marshal.FreeHGlobal(labelPointer);
+                        Marshal.FreeHGlobal(nativeItem.Label);
                     }
                 }
             }
@@ -218,7 +169,7 @@ public sealed class InputBoxService : IInputBoxService
         lock (operationSyncRoot)
         {
             ThrowIfDisposed();
-            NativeInputBoxApi.ThrowIfFailed(NativeInputBoxApi.ShowInputBox(), "ShowInputBox");
+            ThrowIfFailed(nativeApi.ShowInputBox(), "ShowInputBox");
         }
     }
 
@@ -227,7 +178,7 @@ public sealed class InputBoxService : IInputBoxService
         lock (operationSyncRoot)
         {
             ThrowIfDisposed();
-            NativeInputBoxApi.ThrowIfFailed(NativeInputBoxApi.HideInputBox(), "HideInputBox");
+            ThrowIfFailed(nativeApi.HideInputBox(), "HideInputBox");
         }
     }
 
@@ -236,7 +187,7 @@ public sealed class InputBoxService : IInputBoxService
         lock (operationSyncRoot)
         {
             ThrowIfDisposed();
-            NativeInputBoxApi.ThrowIfFailed(NativeInputBoxApi.ToggleInputBox(), "ToggleInputBox");
+            ThrowIfFailed(nativeApi.ToggleInputBox(), "ToggleInputBox");
         }
     }
 
@@ -245,8 +196,8 @@ public sealed class InputBoxService : IInputBoxService
         lock (operationSyncRoot)
         {
             ThrowIfDisposed();
-            NativeInputBoxApi.ThrowIfFailed(
-                NativeInputBoxApi.ShowFeatureWindow(),
+            ThrowIfFailed(
+                nativeApi.ShowFeatureWindow(),
                 "ShowFeatureWindow");
         }
     }
@@ -256,8 +207,8 @@ public sealed class InputBoxService : IInputBoxService
         lock (operationSyncRoot)
         {
             ThrowIfDisposed();
-            NativeInputBoxApi.ThrowIfFailed(
-                NativeInputBoxApi.HideFeatureWindow(),
+            ThrowIfFailed(
+                nativeApi.HideFeatureWindow(),
                 "HideFeatureWindow");
         }
     }
@@ -267,8 +218,8 @@ public sealed class InputBoxService : IInputBoxService
         lock (operationSyncRoot)
         {
             ThrowIfDisposed();
-            NativeInputBoxApi.ThrowIfFailed(
-                NativeInputBoxApi.ToggleFeatureWindow(),
+            ThrowIfFailed(
+                nativeApi.ToggleFeatureWindow(),
                 "ToggleFeatureWindow");
         }
     }
@@ -283,10 +234,7 @@ public sealed class InputBoxService : IInputBoxService
             }
 
             Volatile.Write(ref activeFeatureIds, EmptyFeatureMap);
-            while (pendingNotifications.TryDequeue(out _))
-            {
-                Interlocked.Decrement(ref pendingNotificationCount);
-            }
+            notificationDispatcher.Dispose();
 
             var callbacksDetached = TryUnregisterCallbacks();
             var shutdownSucceeded = TryShutdown();
@@ -299,23 +247,6 @@ public sealed class InputBoxService : IInputBoxService
             }
         }
         GC.SuppressFinalize(this);
-    }
-
-    private ulong GetOrCreateFeatureToken(string featureId)
-    {
-        if (tokensByFeatureId.TryGetValue(featureId, out var token))
-        {
-            return token;
-        }
-
-        token = nextFeatureToken++;
-        if (token == 0)
-        {
-            token = nextFeatureToken++;
-        }
-
-        tokensByFeatureId.Add(featureId, token);
-        return token;
     }
 
     private void HandleNativeInputSubmitted(IntPtr text, int length, IntPtr context)
@@ -367,60 +298,7 @@ public sealed class InputBoxService : IInputBoxService
 
     private void QueueNotification(CallbackNotification notification)
     {
-        if (Volatile.Read(ref disposed) != 0 || !TryReserveNotificationSlot())
-        {
-            return;
-        }
-
-        pendingNotifications.Enqueue(notification);
-        ScheduleNotificationDrain();
-    }
-
-    private bool TryReserveNotificationSlot()
-    {
-        while (true)
-        {
-            var count = Volatile.Read(ref pendingNotificationCount);
-            if (count >= MaximumPendingNotifications)
-            {
-                return false;
-            }
-
-            if (Interlocked.CompareExchange(ref pendingNotificationCount, count + 1, count) == count)
-            {
-                return true;
-            }
-        }
-    }
-
-    private void ScheduleNotificationDrain()
-    {
-        if (Interlocked.CompareExchange(ref notificationDrainScheduled, 1, 0) == 0)
-        {
-            ThreadPool.UnsafeQueueUserWorkItem(
-                static (InputBoxService service) => service.DrainNotifications(),
-                this,
-                preferLocal: false);
-        }
-    }
-
-    private void DrainNotifications()
-    {
-        while (true)
-        {
-            while (pendingNotifications.TryDequeue(out var notification))
-            {
-                Interlocked.Decrement(ref pendingNotificationCount);
-                RaiseNotification(notification);
-            }
-
-            Volatile.Write(ref notificationDrainScheduled, 0);
-            if (pendingNotifications.IsEmpty
-                || Interlocked.CompareExchange(ref notificationDrainScheduled, 1, 0) != 0)
-            {
-                return;
-            }
-        }
+        _ = notificationDispatcher.TryEnqueue(notification);
     }
 
     private void RaiseNotification(CallbackNotification notification)
@@ -454,7 +332,7 @@ public sealed class InputBoxService : IInputBoxService
         var succeeded = true;
         try
         {
-            succeeded &= NativeInputBoxApi.SetInputSubmittedCallback(null, IntPtr.Zero) >= 0;
+            succeeded &= nativeApi.SetInputSubmittedCallback(null, IntPtr.Zero) >= 0;
         }
         catch
         {
@@ -463,7 +341,7 @@ public sealed class InputBoxService : IInputBoxService
 
         try
         {
-            succeeded &= NativeInputBoxApi.SetFeatureActivatedCallback(null, IntPtr.Zero) >= 0;
+            succeeded &= nativeApi.SetFeatureActivatedCallback(null, IntPtr.Zero) >= 0;
         }
         catch
         {
@@ -473,11 +351,11 @@ public sealed class InputBoxService : IInputBoxService
         return succeeded;
     }
 
-    private static bool TryShutdown()
+    private bool TryShutdown()
     {
         try
         {
-            return NativeInputBoxApi.ShutdownInputBox() >= 0;
+            return nativeApi.ShutdownInputBox() >= 0;
         }
         catch
         {
@@ -490,41 +368,22 @@ public sealed class InputBoxService : IInputBoxService
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
     }
 
+    private static void ThrowIfFailed(int result, string operation)
+    {
+        if (result < 0)
+        {
+            throw new ExternalException(
+                $"Native operation '{operation}' failed with HRESULT 0x{result:X8}.",
+                result);
+        }
+    }
+
     private static string NormalizeFeatureLabel(string displayName)
     {
         var label = displayName.Replace('\r', ' ').Replace('\n', ' ').Trim();
         return label.Length <= MaximumFeatureLabelLength
             ? label
             : label[..MaximumFeatureLabelLength];
-    }
-
-    private static uint ParseArgb(string? value, uint fallback)
-    {
-        if (string.IsNullOrWhiteSpace(value))
-        {
-            return fallback;
-        }
-
-        var hex = value.Trim().TrimStart('#');
-        if (hex.Length == 6)
-        {
-            hex = "FF" + hex;
-        }
-
-        return hex.Length == 8
-            && uint.TryParse(
-                hex,
-                NumberStyles.HexNumber,
-                CultureInfo.InvariantCulture,
-                out var parsed)
-            ? parsed
-            : fallback;
-    }
-
-    private static uint ApplyOpacity(uint argb, float opacity)
-    {
-        var alpha = (uint)Math.Round(Math.Clamp(opacity, 0.0f, 1.0f) * 255.0f);
-        return (argb & 0x00FFFFFF) | (alpha << 24);
     }
 
     private readonly record struct CallbackNotification(string Value, bool IsFeature);

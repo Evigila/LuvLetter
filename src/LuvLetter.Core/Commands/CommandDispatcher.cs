@@ -63,6 +63,15 @@ public sealed class CommandDispatcher : ICommandDispatcher
         }
     }
 
+    public bool IsRegistered(string commandName)
+    {
+        var normalizedName = NormalizeCommandName(commandName);
+        lock (handlersLock)
+        {
+            return handlers.ContainsKey(normalizedName);
+        }
+    }
+
     public CommandDispatchResult Dispatch(string commandText)
     {
         ArgumentNullException.ThrowIfNull(commandText);

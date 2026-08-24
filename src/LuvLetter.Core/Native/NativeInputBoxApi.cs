@@ -188,16 +188,6 @@ internal static class NativeInputBoxApi
         EnsureSize<NativeFeatureItem>(16);
     }
 
-    internal static void ThrowIfFailed(int result, string operation)
-    {
-        if (result < 0)
-        {
-            throw new ExternalException(
-                $"Native operation '{operation}' failed with HRESULT 0x{result:X8}.",
-                result);
-        }
-    }
-
     private static void EnsureSize<T>(int expected)
         where T : struct
     {

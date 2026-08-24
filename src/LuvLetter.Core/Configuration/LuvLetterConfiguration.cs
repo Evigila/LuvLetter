@@ -2,7 +2,7 @@ namespace LuvLetter.Core.Configuration;
 
 public sealed record LuvLetterConfiguration
 {
-    public const int CurrentSchemaVersion = 3;
+    public const int CurrentSchemaVersion = 5;
 
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
 

@@ -4,19 +4,19 @@ public sealed record InputBoxSizeOptions
 {
     public const float DefaultHorizontalPadding = 10.0f;
 
-    public const float DefaultVerticalPadding = 6.0f;
+    public const float DefaultVerticalPadding = 4.0f;
 
     public const float DefaultCaretWidth = 2.25f;
 
-    public int Width { get; init; } = 640;
+    public int Width { get; init; } = 560;
 
-    public int Height { get; init; } = 44;
+    public int Height { get; init; } = 32;
 
-    public float CornerRadius { get; init; } = 10.0f;
+    public float CornerRadius { get; init; } = 8.0f;
 
     public float BorderThickness { get; init; } = 1.0f;
 
-    public float FontSize { get; init; } = 20.0f;
+    public float FontSize { get; init; } = 14.0f;
 
     public float HorizontalPadding { get; init; } = DefaultHorizontalPadding;
 

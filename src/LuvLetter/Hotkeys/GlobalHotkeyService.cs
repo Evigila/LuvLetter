@@ -1,13 +1,12 @@
-using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Windows.Threading;
+using LuvLetter.Core.Activation;
 using LuvLetter.Core.Configuration;
 
 namespace LuvLetter.Hotkeys;
 
-public sealed class GlobalHotkeyService : IDisposable
+public sealed class GlobalHotkeyService : IActivationGestureService, IDisposable
 {
-    private const int WhKeyboardLl = 13;
     private const int WmKeyDown = 0x0100;
     private const int WmKeyUp = 0x0101;
     private const int WmSysKeyDown = 0x0104;
@@ -19,16 +18,19 @@ public sealed class GlobalHotkeyService : IDisposable
     private const int KeyboardFlagsOffset = 8;
 
     private readonly Dispatcher dispatcher;
-    private readonly LowLevelKeyboardProc hookCallback;
+    private readonly LowLevelKeyboardHook keyboardHook;
     private readonly DispatcherTimer deadlineTimer;
     private CtrlGestureStateMachine? stateMachine;
-    private IntPtr hookHandle;
     private int disposalStarted;
+    private long activationGeneration;
 
     public GlobalHotkeyService()
     {
         dispatcher = Dispatcher.CurrentDispatcher;
-        hookCallback = HandleLowLevelKeyboardEvent;
+        keyboardHook = new LowLevelKeyboardHook(
+            HandleLowLevelKeyboardEvent,
+            HandleHookCallbackFailure
+        );
         deadlineTimer = new DispatcherTimer(DispatcherPriority.Send, dispatcher);
         deadlineTimer.Tick += HandleDeadlineTimerTick;
     }
@@ -48,6 +50,13 @@ public sealed class GlobalHotkeyService : IDisposable
         ArgumentNullException.ThrowIfNull(options);
         InvokeOnDispatcher(() => UpdateCore(options));
     }
+
+    internal void CancelPendingGestures()
+    {
+        InvokeOnDispatcher(CancelPendingGesturesCore);
+    }
+
+    void IActivationGestureService.CancelPendingGestures() => CancelPendingGestures();
 
     public void Dispose()
     {
@@ -88,39 +97,16 @@ public sealed class GlobalHotkeyService : IDisposable
         ThrowIfDisposed();
         dispatcher.VerifyAccess();
 
-        if (hookHandle != IntPtr.Zero)
+        if (keyboardHook.IsRunning)
         {
             throw new InvalidOperationException("The Ctrl gesture hook is already running.");
         }
 
-        CtrlGestureStateMachine.ValidateOptions(options);
         var nextStateMachine = new CtrlGestureStateMachine(options);
-
-        var moduleHandle = GetModuleHandle(null);
-        if (moduleHandle == IntPtr.Zero)
-        {
-            throw new Win32Exception(
-                Marshal.GetLastWin32Error(),
-                "Cannot resolve the LuvLetter module for the Ctrl gesture hook."
-            );
-        }
-
-        var nextHookHandle = SetWindowsHookEx(
-            WhKeyboardLl,
-            hookCallback,
-            moduleHandle,
-            0
-        );
-        if (nextHookHandle == IntPtr.Zero)
-        {
-            throw new Win32Exception(
-                Marshal.GetLastWin32Error(),
-                "Cannot install the global Ctrl gesture hook."
-            );
-        }
+        keyboardHook.Start();
 
         stateMachine = nextStateMachine;
-        hookHandle = nextHookHandle;
+        Interlocked.Increment(ref activationGeneration);
     }
 
     private void UpdateCore(ActivationGestureOptions options)
@@ -128,7 +114,7 @@ public sealed class GlobalHotkeyService : IDisposable
         ThrowIfDisposed();
         dispatcher.VerifyAccess();
 
-        if (hookHandle == IntPtr.Zero || stateMachine is null)
+        if (!keyboardHook.IsRunning || stateMachine is null)
         {
             // A failed initial hook installation must not make the settings window a
             // dead end. Applying the configuration is also the explicit retry path.
@@ -137,31 +123,34 @@ public sealed class GlobalHotkeyService : IDisposable
         }
 
         stateMachine.Update(options);
+        Interlocked.Increment(ref activationGeneration);
         ScheduleNextDeadline();
     }
 
-    private IntPtr HandleLowLevelKeyboardEvent(
-        int code,
-        IntPtr messagePointer,
-        IntPtr keyboardData
-    )
+    private void CancelPendingGesturesCore()
     {
-        try
-        {
-            if (code >= 0 && Volatile.Read(ref disposalStarted) == 0 && stateMachine is not null)
-            {
-                ProcessKeyboardEvent(unchecked((int)messagePointer.ToInt64()), keyboardData);
-            }
-        }
-        catch
-        {
-            // Exceptions must never cross the unmanaged hook boundary. Resetting the
-            // in-progress gesture prevents a malformed event from triggering later.
-            stateMachine?.Reset();
-            deadlineTimer.Stop();
-        }
+        ThrowIfDisposed();
+        dispatcher.VerifyAccess();
 
-        return CallNextHookEx(IntPtr.Zero, code, messagePointer, keyboardData);
+        stateMachine?.CancelPending();
+        deadlineTimer.Stop();
+        Interlocked.Increment(ref activationGeneration);
+    }
+
+    private void HandleLowLevelKeyboardEvent(int message, IntPtr keyboardData)
+    {
+        if (Volatile.Read(ref disposalStarted) == 0 && stateMachine is not null)
+        {
+            ProcessKeyboardEvent(message, keyboardData);
+        }
+    }
+
+    private void HandleHookCallbackFailure()
+    {
+        // Resetting the in-progress gesture prevents a malformed event from
+        // triggering an activation after callback processing has failed.
+        stateMachine?.Reset();
+        deadlineTimer.Stop();
     }
 
     private void ProcessKeyboardEvent(int message, IntPtr keyboardData)
@@ -186,7 +175,7 @@ public sealed class GlobalHotkeyService : IDisposable
         }
         else
         {
-            stateMachine.HandleOtherKey(timestampMs);
+            stateMachine.HandleOtherKey();
             action = CtrlGestureAction.None;
         }
 
@@ -236,10 +225,15 @@ public sealed class GlobalHotkeyService : IDisposable
             return;
         }
 
+        var queuedGeneration = Volatile.Read(ref activationGeneration);
         _ = dispatcher.BeginInvoke(
             new Action(() =>
             {
-                if (Volatile.Read(ref disposalStarted) != 0 || hookHandle == IntPtr.Zero)
+                if (
+                    Volatile.Read(ref disposalStarted) != 0
+                    || !keyboardHook.IsRunning
+                    || queuedGeneration != Volatile.Read(ref activationGeneration)
+                )
                 {
                     return;
                 }
@@ -262,24 +256,17 @@ public sealed class GlobalHotkeyService : IDisposable
         dispatcher.VerifyAccess();
         deadlineTimer.Stop();
         deadlineTimer.Tick -= HandleDeadlineTimerTick;
+        Interlocked.Increment(ref activationGeneration);
         stateMachine?.Reset();
         stateMachine = null;
 
-        var handle = Interlocked.Exchange(ref hookHandle, IntPtr.Zero);
-        if (handle != IntPtr.Zero)
-        {
-            _ = UnhookWindowsHookEx(handle);
-        }
+        keyboardHook.Dispose();
     }
 
     private void DisposeAfterDispatcherShutdown()
     {
         stateMachine = null;
-        var handle = Interlocked.Exchange(ref hookHandle, IntPtr.Zero);
-        if (handle != IntPtr.Zero)
-        {
-            _ = UnhookWindowsHookEx(handle);
-        }
+        keyboardHook.Dispose();
     }
 
     private void InvokeOnDispatcher(Action action)
@@ -331,33 +318,4 @@ public sealed class GlobalHotkeyService : IDisposable
                 return false;
         }
     }
-
-    private delegate IntPtr LowLevelKeyboardProc(
-        int code,
-        IntPtr messagePointer,
-        IntPtr keyboardData
-    );
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern IntPtr SetWindowsHookEx(
-        int hookId,
-        LowLevelKeyboardProc callback,
-        IntPtr moduleHandle,
-        uint threadId
-    );
-
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool UnhookWindowsHookEx(IntPtr hookHandle);
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr CallNextHookEx(
-        IntPtr hookHandle,
-        int code,
-        IntPtr messagePointer,
-        IntPtr keyboardData
-    );
-
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern IntPtr GetModuleHandle(string? moduleName);
 }

@@ -1,9 +1,13 @@
 using System.Windows;
+using LuvLetter.Core.Activation;
+using LuvLetter.Core.Application;
 using LuvLetter.Core.Commands;
 using LuvLetter.Core.Configuration;
 using LuvLetter.Core.Features;
+using LuvLetter.Core.Modules;
 using LuvLetter.Core.Native;
 using LuvLetter.Hotkeys;
+using LuvLetter.Modules;
 using LuvLetter.Tray;
 using WpfMessageBox = System.Windows.MessageBox;
 
@@ -11,8 +15,6 @@ namespace LuvLetter;
 
 internal static class Program
 {
-    private const int TestFeatureCount = 9;
-
     [STAThread]
     public static void Main()
     {
@@ -62,17 +64,65 @@ internal static class Program
 
         using var inputBoxService = nativeService!;
         using var hotkeyService = new GlobalHotkeyService();
+        var configurationApplicationService = new ConfigurationApplicationService(
+            configurationStore,
+            hotkeyService,
+            inputBoxService);
         var featureRegistry = new FeatureRegistry();
-        var mainWindow = new MainWindow(configurationStore, hotkeyService, inputBoxService);
-        RegisterTestFeatures(featureRegistry);
+        using var trayIconService = new TrayIconService(
+            app,
+            () => new MainWindow(configurationApplicationService));
+        var startupWarnings = new List<string>();
+        ModuleRegistrationResult? moduleRegistration = null;
+        if (configurationStore.InitialLoad.HasWarning
+            && !string.IsNullOrWhiteSpace(configurationStore.InitialLoad.Message))
+        {
+            startupWarnings.Add(configurationStore.InitialLoad.Message);
+        }
 
         try
         {
-            inputBoxService.SynchronizeFeatures(featureRegistry.Snapshot());
+            var moduleDiscovery = ModuleCatalog.Discover([new BuiltInModule()]);
+            moduleRegistration = ModuleRegistrar.Register(
+                moduleDiscovery.Modules,
+                commandDispatcher,
+                featureRegistry,
+                trayIconService.ShowWindow);
+
+            if (moduleDiscovery.Warnings.Count > 0)
+            {
+                startupWarnings.AddRange(moduleDiscovery.Warnings);
+            }
+
+            if (moduleRegistration.Warnings.Count > 0)
+            {
+                startupWarnings.AddRange(moduleRegistration.Warnings);
+            }
         }
         catch (Exception exception)
         {
-            mainWindow.SetStatus($"Cannot register test features: {exception.Message}");
+            WpfMessageBox.Show(
+                $"Cannot register LuvLetter modules.\n\n{exception.Message}",
+                "LuvLetter",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+            return;
+        }
+
+        using var moduleRegistrationLifetime = moduleRegistration;
+
+        try
+        {
+            inputBoxService.SynchronizeFeatures(featureRegistry.ItemSnapshot());
+        }
+        catch (Exception exception)
+        {
+            startupWarnings.Add($"Cannot register features: {exception.Message}");
+        }
+
+        if (startupWarnings.Count > 0)
+        {
+            trayIconService.SetStatus(string.Join(" ", startupWarnings));
         }
 
         inputBoxService.InputSubmitted += HandleInputSubmitted;
@@ -83,7 +133,6 @@ internal static class Program
         hotkeyService.CommandRequested += HandleCommandRequested;
         hotkeyService.FeatureWindowRequested += HandleFeatureWindowRequested;
 
-        using var trayIconService = new TrayIconService(app, mainWindow);
         app.Exit += HandleApplicationExit;
 
         var activationReady = true;
@@ -94,18 +143,16 @@ internal static class Program
         catch (Exception exception)
         {
             activationReady = false;
-            mainWindow.SetStatus($"Cannot start Ctrl gestures: {exception.Message}");
+            trayIconService.SetStatus($"Cannot start Ctrl gestures: {exception.Message}");
         }
 
-        app.MainWindow = mainWindow;
         if (activationReady)
         {
             trayIconService.StartMinimized();
         }
         else
         {
-            mainWindow.Show();
-            mainWindow.Activate();
+            trayIconService.ShowWindow();
         }
 
         app.Run();
@@ -131,20 +178,26 @@ internal static class Program
 
         void HandleFeatureActivated(string featureId)
         {
-            _ = app.Dispatcher.BeginInvoke(() =>
+            _ = ActivateFeatureAsync(featureId);
+        }
+
+        async Task ActivateFeatureAsync(string featureId)
+        {
+            var result = await featureRegistry.ActivateAsync(featureId).ConfigureAwait(false);
+            if (result.Succeeded)
             {
-                if (!featureRegistry.TryActivate(featureId))
-                {
-                    mainWindow.SetStatus($"Cannot activate feature '{featureId}'.");
-                }
-            });
+                return;
+            }
+
+            var detail = result.Exception is null ? result.Status.ToString() : result.Exception.Message;
+            PostStatus($"Cannot activate feature '{featureId}': {detail}");
         }
 
         void HandleFeaturesChanged(object? sender, EventArgs eventArgs)
         {
             try
             {
-                inputBoxService.SynchronizeFeatures(featureRegistry.Snapshot());
+                inputBoxService.SynchronizeFeatures(featureRegistry.ItemSnapshot());
             }
             catch (Exception exception)
             {
@@ -194,7 +247,7 @@ internal static class Program
             }
             catch (Exception exception)
             {
-                mainWindow.SetStatus($"Cannot {operation}: {exception.Message}");
+                trayIconService.SetStatus($"Cannot {operation}: {exception.Message}");
             }
         }
 
@@ -202,25 +255,8 @@ internal static class Program
         {
             if (!app.Dispatcher.HasShutdownStarted && !app.Dispatcher.HasShutdownFinished)
             {
-                _ = app.Dispatcher.BeginInvoke(() => mainWindow.SetStatus(status));
+                trayIconService.SetStatus(status);
             }
-        }
-    }
-
-    private static void RegisterTestFeatures(FeatureRegistry registry)
-    {
-        for (var index = 1; index <= TestFeatureCount; index++)
-        {
-            var featureNumber = index;
-            _ = registry.Register(
-                new FeatureDefinition(
-                    $"test.feature.{featureNumber}",
-                    $"测试功能 {featureNumber}",
-                    () => WpfMessageBox.Show(
-                        $"已激活测试功能 {featureNumber}。",
-                        "LuvLetter",
-                        MessageBoxButton.OK,
-                        MessageBoxImage.Information)));
         }
     }
 }

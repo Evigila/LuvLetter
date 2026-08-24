@@ -4,8 +4,6 @@ namespace LuvLetter.Core.Configuration;
 
 public sealed record InputBoxHotkeyOptions
 {
-    public HotkeyDefinition Activation { get; init; } = HotkeyDefinition.Default;
-
     public HotkeyDefinition Submit { get; init; } =
         new(HotkeyModifierKeys.None, 0x0D, "Enter");
 

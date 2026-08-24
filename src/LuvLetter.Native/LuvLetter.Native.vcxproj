@@ -88,11 +88,17 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="api\InputBoxApi.h" />
+    <ClInclude Include="input\FeaturePager.h" />
+    <ClInclude Include="input\InputHistory.h" />
     <ClInclude Include="input\InputBoxHost.h" />
+    <ClInclude Include="input\NativeConfigurationSanitizer.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="api\InputBoxExports.cpp" />
+    <ClCompile Include="input\FeaturePager.cpp" />
+    <ClCompile Include="input\InputHistory.cpp" />
     <ClCompile Include="input\InputBoxHost.cpp" />
+    <ClCompile Include="input\NativeConfigurationSanitizer.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

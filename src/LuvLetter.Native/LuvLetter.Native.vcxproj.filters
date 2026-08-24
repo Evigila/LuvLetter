@@ -26,7 +26,16 @@
     <ClInclude Include="api\InputBoxApi.h">
       <Filter>Header Files\api</Filter>
     </ClInclude>
+    <ClInclude Include="input\FeaturePager.h">
+      <Filter>Header Files\input</Filter>
+    </ClInclude>
+    <ClInclude Include="input\InputHistory.h">
+      <Filter>Header Files\input</Filter>
+    </ClInclude>
     <ClInclude Include="input\InputBoxHost.h">
+      <Filter>Header Files\input</Filter>
+    </ClInclude>
+    <ClInclude Include="input\NativeConfigurationSanitizer.h">
       <Filter>Header Files\input</Filter>
     </ClInclude>
   </ItemGroup>
@@ -34,7 +43,16 @@
     <ClCompile Include="api\InputBoxExports.cpp">
       <Filter>Source Files\api</Filter>
     </ClCompile>
+    <ClCompile Include="input\FeaturePager.cpp">
+      <Filter>Source Files\input</Filter>
+    </ClCompile>
+    <ClCompile Include="input\InputHistory.cpp">
+      <Filter>Source Files\input</Filter>
+    </ClCompile>
     <ClCompile Include="input\InputBoxHost.cpp">
+      <Filter>Source Files\input</Filter>
+    </ClCompile>
+    <ClCompile Include="input\NativeConfigurationSanitizer.cpp">
       <Filter>Source Files\input</Filter>
     </ClCompile>
   </ItemGroup>
