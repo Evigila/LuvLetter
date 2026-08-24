@@ -20,6 +20,8 @@ Direct2D. The repository intentionally avoids third-party runtime frameworks.
   the only project that renders the command and feature windows.
 - `tests/LuvLetter.Core.Tests`: a zero-NuGet console smoke suite for Core and
   its application/core modules.
+- `tests/LuvLetter.Native.Tests`: a zero-dependency C++ smoke suite for the deterministic
+  input animation module; it tests the source directly without expanding the public C ABI.
 
 The compile-time dependency direction is `LuvLetter -> LuvLetter.Core`. The Native
 DLL is reached only through the versioned C ABI; Native never references a managed
@@ -61,6 +63,9 @@ assembly.
 - `input/FeaturePager`: Win32-independent feature paging and index resolution.
 - `input/InputHistory`: Win32-independent bounded command history, de-duplication,
   draft preservation, and navigation.
+- `input/InputBoxAnimator`: Win32-independent, reversible presentation state for the
+  command input. It owns timing progress, easing, opacity, horizontal expansion, and
+  vertical offset, but does not own clocks, timers, HWNDs, or D2D resources.
 - `input/NativeConfigurationSanitizer`: Native-side defaults and defensive range/
   enum validation for both window configuration structs.
 - `input/InputBoxHost`: ownership of the single Native UI thread and both HWNDs. Input,
@@ -88,6 +93,12 @@ does not suppress keyboard input.
 
 The command input is a rounded, translucent layered window with IME support,
 bounded input history, horizontal text scrolling, and a managed submit callback.
+On entry it rises from below, fades in, and expands from the center; on exit it
+reverses the same path and the HWND is hidden only after the transparent final frame.
+The fixed-size layered surface is retained during animation: Native changes the
+visual bounds inside the bitmap instead of reallocating the HWND and DIB every frame.
+Switching directly to the feature window bypasses the input exit animation so the
+two popup windows remain exclusive and the feature window can receive focus at once.
 
 The feature window is a row of rounded square cells drawn by Native. It displays
 at most seven registered features per page. The default controls are:
@@ -149,4 +160,11 @@ Run the Core smoke suite (currently 15 scenarios) with:
 
 ```powershell
 dotnet run --project tests/LuvLetter.Core.Tests/LuvLetter.Core.Tests.csproj --configuration Release
+```
+
+Run the Native smoke suite with:
+
+```powershell
+MSBuild.exe tests/LuvLetter.Native.Tests/LuvLetter.Native.Tests.vcxproj /m /p:Configuration=Release /p:Platform=x64
+tests/LuvLetter.Native.Tests/bin/x64/Release/LuvLetter.Native.Tests.exe
 ```

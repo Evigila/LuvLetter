@@ -2,6 +2,7 @@
 
 #include "api/InputBoxApi.h"
 #include "input/FeaturePager.h"
+#include "input/InputBoxAnimator.h"
 #include "input/InputHistory.h"
 
 #include <Windows.h>
@@ -79,9 +80,14 @@ private:
 	void UpdateFeatureWindowShape() const;
 	void ShowInputWindowAndFocus();
 	void HideInputWindow();
+	void HideInputWindowImmediately();
+	void ReleaseInputWindowFocus();
+	void SynchronizeInputWindowAnimation();
+	void AdvanceInputWindowAnimation();
+	void CompleteInputWindowHide();
 	void ShowFeatureWindowAndFocus();
 	void HideFeatureWindowOnUiThread();
-	void UpdateInputWindowPosition() const;
+	void UpdateInputWindowPosition(bool applyAnimation = true) const;
 	void UpdateFeatureWindowGeometry();
 	void UpdateFeatureWindowPosition() const;
 	void RefreshInputDpiFromWindow();
@@ -146,9 +152,11 @@ private:
 	WindowContext featureWindowContext_{ this, WindowKind::Feature };
 	HWND inputHwnd_ = nullptr;
 	HWND featureHwnd_ = nullptr;
+	HWND inputPreviousForegroundHwnd_ = nullptr;
 	bool inputVisible_ = false;
 	bool featureVisible_ = false;
 	bool caretVisible_ = true;
+	ULONGLONG inputAnimationTimestamp_ = 0;
 	bool inputCaretDirtyValid_ = false;
 	bool updatingFeatureWindowGeometry_ = false;
 	RECT inputCaretDirtyRect_{};
@@ -160,6 +168,7 @@ private:
 	size_t caretIndex_ = 0;
 	int inputLineCapacity_ = 1;
 	float verticalOffset_ = 0.0f;
+	InputBoxAnimator inputAnimator_;
 	InputHistory inputHistory_;
 	LuvLetterInputBoxConfig config_{};
 	LuvLetterInputSubmittedCallback inputSubmittedCallback_ = nullptr;

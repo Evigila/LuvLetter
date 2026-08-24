@@ -23,7 +23,9 @@ namespace
 	constexpr UINT HostRequestMessage = WM_APP + 40;
 	constexpr UINT HostShutdownMessage = WM_APP + 41;
 	constexpr UINT_PTR CaretTimerId = 1;
+	constexpr UINT_PTR InputAnimationTimerId = 2;
 	constexpr UINT CaretBlinkMs = 530;
+	constexpr UINT InputAnimationFrameMs = 16;
 	constexpr DWORD StartupTimeoutMs = 10000;
 	constexpr DWORD RequestTimeoutMs = 5000;
 	constexpr DWORD ShutdownTimeoutMs = 5000;
@@ -74,11 +76,12 @@ namespace
 		HDC sourceDc,
 		int width,
 		int height,
-		const RECT* dirtyRect = nullptr) noexcept
+		const RECT* dirtyRect = nullptr,
+		BYTE opacity = 255) noexcept
 	{
 		POINT source{ 0, 0 };
 		SIZE size{ width, height };
-		BLENDFUNCTION blend{ AC_SRC_OVER, 0, 255, AC_SRC_ALPHA };
+		BLENDFUNCTION blend{ AC_SRC_OVER, 0, opacity, AC_SRC_ALPHA };
 		if (dirtyRect != nullptr)
 		{
 			UPDATELAYEREDWINDOWINFO update{};
@@ -1015,6 +1018,9 @@ HRESULT InputBoxHost::Run()
 
 	config_ = NativeConfigurationSanitizer::DefaultInputBox();
 	featureConfig_ = NativeConfigurationSanitizer::DefaultFeatureWindow();
+	inputAnimator_.Reset(false);
+	inputAnimationTimestamp_ = 0;
+	inputPreviousForegroundHwnd_ = nullptr;
 	inputSurface_ = std::make_unique<CachedSurface>();
 	featureSurface_ = std::make_unique<CachedSurface>();
 
@@ -1090,6 +1096,9 @@ HRESULT InputBoxHost::Run()
 	featureHwnd_ = nullptr;
 	inputVisible_ = false;
 	featureVisible_ = false;
+	inputAnimator_.Reset(false);
+	inputAnimationTimestamp_ = 0;
+	inputPreviousForegroundHwnd_ = nullptr;
 	text_.clear();
 	featureItems_.clear();
 	featurePager_.Reset(0, static_cast<size_t>(featureConfig_.itemsPerPage));
@@ -1534,37 +1543,158 @@ void InputBoxHost::ApplyFeatureDpiChange(UINT dpi, const RECT* suggestedRect)
 void InputBoxHost::ShowInputWindowAndFocus()
 {
 	if (inputHwnd_ == nullptr) return;
+	SynchronizeInputWindowAnimation();
+	const auto wasPresenting = inputAnimator_.Current().ShouldPresent();
+	const auto foreground = GetForegroundWindow();
+	if (foreground != nullptr && foreground != inputHwnd_ && foreground != featureHwnd_)
+	{
+		inputPreviousForegroundHwnd_ = foreground;
+	}
 	targetMonitor_ = CaptureTargetMonitor();
 	HideFeatureWindowOnUiThread();
+	EnableWindow(inputHwnd_, TRUE);
 	ResetInput();
 	caretVisible_ = true;
 	// The first move enters the target monitor and lets PMv2 deliver authoritative
 	// WM_DPICHANGED data. GetDpiForWindow then verifies it before final placement.
-	UpdateInputWindowPosition();
+	UpdateInputWindowPosition(wasPresenting);
 	RefreshInputDpiFromWindow();
-	UpdateInputWindowPosition();
+	UpdateInputWindowPosition(wasPresenting);
 	UpdateInputWindowShape();
 	inputVisible_ = true;
+	inputAnimator_.Show();
+	inputCaretDirtyValid_ = false;
+	UpdateInputWindowPosition();
+	RenderInput();
 	ShowWindow(inputHwnd_, SW_SHOWNORMAL);
 	SetForegroundWindow(inputHwnd_);
 	SetFocus(inputHwnd_);
 	SetTimer(inputHwnd_, CaretTimerId, CaretBlinkMs, nullptr);
-	RenderInput();
+	inputAnimationTimestamp_ = GetTickCount64();
+	if (inputAnimator_.Current().IsAnimating())
+	{
+		if (SetTimer(inputHwnd_, InputAnimationTimerId, InputAnimationFrameMs, nullptr) == 0)
+		{
+			inputAnimator_.Reset(true);
+			KillTimer(inputHwnd_, InputAnimationTimerId);
+			UpdateInputWindowPosition();
+			RenderInput();
+		}
+	}
+	else
+	{
+		KillTimer(inputHwnd_, InputAnimationTimerId);
+	}
 }
 
 void InputBoxHost::HideInputWindow()
 {
 	if (inputHwnd_ == nullptr) return;
+	SynchronizeInputWindowAnimation();
 	inputVisible_ = false;
 	KillTimer(inputHwnd_, CaretTimerId);
+	caretVisible_ = false;
+	inputAnimator_.Hide();
+	inputCaretDirtyValid_ = false;
+	ReleaseInputWindowFocus();
+	UpdateInputWindowPosition();
+	RenderInput();
+	inputAnimationTimestamp_ = GetTickCount64();
+	if (inputAnimator_.Current().IsAnimating())
+	{
+		if (SetTimer(inputHwnd_, InputAnimationTimerId, InputAnimationFrameMs, nullptr) == 0)
+		{
+			inputAnimator_.Reset(false);
+			UpdateInputWindowPosition();
+			RenderInput();
+			CompleteInputWindowHide();
+			return;
+		}
+		return;
+	}
+	CompleteInputWindowHide();
+}
+
+void InputBoxHost::HideInputWindowImmediately()
+{
+	if (inputHwnd_ == nullptr) return;
+	inputVisible_ = false;
+	caretVisible_ = false;
+	KillTimer(inputHwnd_, CaretTimerId);
+	KillTimer(inputHwnd_, InputAnimationTimerId);
+	inputAnimator_.Reset(false);
+	inputAnimationTimestamp_ = 0;
+	inputCaretDirtyValid_ = false;
+	EnableWindow(inputHwnd_, FALSE);
 	ShowWindow(inputHwnd_, SW_HIDE);
+}
+
+void InputBoxHost::ReleaseInputWindowFocus()
+{
+	if (inputHwnd_ == nullptr) return;
+	const auto inputOwnedFocus = GetForegroundWindow() == inputHwnd_
+		|| GetFocus() == inputHwnd_;
+	EnableWindow(inputHwnd_, FALSE);
+	if (inputOwnedFocus
+		&& inputPreviousForegroundHwnd_ != nullptr
+		&& inputPreviousForegroundHwnd_ != inputHwnd_
+		&& inputPreviousForegroundHwnd_ != featureHwnd_
+		&& IsWindow(inputPreviousForegroundHwnd_))
+	{
+		SetForegroundWindow(inputPreviousForegroundHwnd_);
+	}
+	if (GetFocus() == inputHwnd_)
+	{
+		SetFocus(nullptr);
+	}
+}
+
+void InputBoxHost::SynchronizeInputWindowAnimation()
+{
+	const auto now = GetTickCount64();
+	if (inputAnimationTimestamp_ != 0 && inputAnimator_.Current().IsAnimating())
+	{
+		const auto elapsed = now >= inputAnimationTimestamp_
+			? static_cast<double>(now - inputAnimationTimestamp_)
+			: 0.0;
+		inputAnimator_.Advance(elapsed);
+	}
+	inputAnimationTimestamp_ = now;
+}
+
+void InputBoxHost::AdvanceInputWindowAnimation()
+{
+	if (inputHwnd_ == nullptr) return;
+	SynchronizeInputWindowAnimation();
+	const auto frame = inputAnimator_.Current();
+	UpdateInputWindowPosition();
+	RenderInput();
+	if (frame.IsAnimating()) return;
+	KillTimer(inputHwnd_, InputAnimationTimerId);
+	if (!frame.ShouldPresent())
+	{
+		CompleteInputWindowHide();
+	}
+}
+
+void InputBoxHost::CompleteInputWindowHide()
+{
+	if (inputHwnd_ == nullptr) return;
+	KillTimer(inputHwnd_, InputAnimationTimerId);
+	ShowWindow(inputHwnd_, SW_HIDE);
+	inputAnimationTimestamp_ = 0;
 }
 
 void InputBoxHost::ShowFeatureWindowAndFocus()
 {
 	if (featureHwnd_ == nullptr || featureItems_.empty()) return;
+	const auto foreground = GetForegroundWindow();
+	if (foreground != nullptr && foreground != inputHwnd_ && foreground != featureHwnd_)
+	{
+		inputPreviousForegroundHwnd_ = foreground;
+	}
 	targetMonitor_ = CaptureTargetMonitor();
-	HideInputWindow();
+	HideInputWindowImmediately();
 	// See ShowInputWindowAndFocus: move once to obtain the window's target DPI,
 	// then perform the configured DIP-based placement with that DPI.
 	UpdateFeatureWindowPosition();
@@ -1584,7 +1714,7 @@ void InputBoxHost::HideFeatureWindowOnUiThread()
 	ShowWindow(featureHwnd_, SW_HIDE);
 }
 
-void InputBoxHost::UpdateInputWindowPosition() const
+void InputBoxHost::UpdateInputWindowPosition(bool applyAnimation) const
 {
 	if (inputHwnd_ == nullptr) return;
 	MONITORINFO monitorInfo{};
@@ -1617,6 +1747,10 @@ void InputBoxHost::UpdateInputWindowPosition() const
 	}
 	x += DipToPixels(static_cast<float>(config_.offsetX), inputDpi_);
 	y += DipToPixels(static_cast<float>(config_.offsetY), inputDpi_);
+	if (applyAnimation)
+	{
+		y += DipToPixels(inputAnimator_.Current().verticalOffsetDip, inputDpi_);
+	}
 	SetWindowPos(inputHwnd_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE);
 }
 
@@ -1822,8 +1956,18 @@ void InputBoxHost::SetCaretFromPoint(LPARAM lParam)
 	BOOL trailing = FALSE;
 	BOOL inside = FALSE;
 	DWRITE_HIT_TEST_METRICS metrics{};
+	const auto widthScale = (std::clamp)(
+		inputAnimator_.Current().widthScale,
+		0.0f,
+		1.0f);
+	const auto animatedWidth = (std::max)(1.0f, static_cast<float>(config_.width) * widthScale);
+	const auto animatedLeft = (static_cast<float>(config_.width) - animatedWidth) / 2.0f;
+	const auto horizontalPadding = (std::min)(
+		(std::max)(0.0f, config_.horizontalPadding),
+		(std::max)(0.0f, animatedWidth / 2.0f - 1.0f));
 	const auto x = PixelsToDip(GET_X_LPARAM(lParam), inputDpi_)
-		- (std::max)(0.0f, config_.horizontalPadding);
+		- animatedLeft
+		- horizontalPadding;
 	const auto textTop = GetInputTextTopDip();
 	const auto y = PixelsToDip(GET_Y_LPARAM(lParam), inputDpi_) - textTop + verticalOffset_;
 	if (SUCCEEDED(inputTextLayout_->HitTestPoint(x, y, &trailing, &inside, &metrics)))
@@ -1842,13 +1986,16 @@ void InputBoxHost::SetCaretFromPoint(LPARAM lParam)
 
 void InputBoxHost::InvalidateInput()
 {
-	caretVisible_ = true;
+	caretVisible_ = inputVisible_;
 	UpdateResponsiveInputHeight();
 	EnsureCaretVisible();
 	if (inputHwnd_ != nullptr)
 	{
 		UpdateImeCompositionWindow();
-		SetTimer(inputHwnd_, CaretTimerId, CaretBlinkMs, nullptr);
+		if (inputVisible_)
+		{
+			SetTimer(inputHwnd_, CaretTimerId, CaretBlinkMs, nullptr);
+		}
 		RenderInput();
 	}
 }
@@ -1917,13 +2064,21 @@ void InputBoxHost::UpdateImeCompositionWindow()
 	if (inputHwnd_ == nullptr || FAILED(EnsureInputResources())) return;
 	const auto inputContext = ImmGetContext(inputHwnd_);
 	if (inputContext == nullptr) return;
-	const auto horizontalPadding = (std::max)(0.0f, config_.horizontalPadding);
+	const auto widthScale = (std::clamp)(
+		inputAnimator_.Current().widthScale,
+		0.0f,
+		1.0f);
+	const auto animatedWidth = (std::max)(1.0f, static_cast<float>(config_.width) * widthScale);
+	const auto animatedLeft = (static_cast<float>(config_.width) - animatedWidth) / 2.0f;
+	const auto horizontalPadding = (std::min)(
+		(std::max)(0.0f, config_.horizontalPadding),
+		(std::max)(0.0f, animatedWidth / 2.0f - 1.0f));
 	const auto caret = GetCaretLogicalPosition();
 	const auto textTop = GetInputTextTopDip();
 	COMPOSITIONFORM compositionForm{};
 	compositionForm.dwStyle = CFS_POINT;
 	compositionForm.ptCurrentPos.x = DipToPixels(
-		horizontalPadding + caret.x,
+		animatedLeft + horizontalPadding + caret.x,
 		inputDpi_);
 	compositionForm.ptCurrentPos.y = DipToPixels(
 		textTop + caret.y - verticalOffset_ + config_.fontSize,
@@ -1935,11 +2090,20 @@ void InputBoxHost::UpdateImeCompositionWindow()
 void InputBoxHost::RenderInput(bool caretOnly)
 {
 	if (inputHwnd_ == nullptr || FAILED(EnsureInputResources())) return;
+	const auto animationFrame = inputAnimator_.Current();
+	caretOnly = caretOnly
+		&& animationFrame.state == InputBoxAnimationState::Visible;
 	const auto width = GetInputWindowPixelWidth();
 	const auto height = GetInputWindowPixelHeight();
+	const auto fullWidth = static_cast<float>(config_.width);
+	const auto animatedWidth = (std::max)(
+		1.0f,
+		fullWidth * (std::clamp)(animationFrame.widthScale, 0.0f, 1.0f));
+	const auto animatedLeft = (fullWidth - animatedWidth) / 2.0f;
+	const auto animatedRight = animatedLeft + animatedWidth;
 	const auto horizontalPadding = (std::min)(
 		(std::max)(0.0f, config_.horizontalPadding),
-		config_.width / 2.0f - 1.0f);
+		(std::max)(0.0f, animatedWidth / 2.0f - 1.0f));
 	const auto windowHeight = GetInputWindowHeightDip();
 	const auto verticalPadding = (std::min)(
 		(std::max)(0.0f, config_.verticalPadding),
@@ -1947,8 +2111,8 @@ void InputBoxHost::RenderInput(bool caretOnly)
 	const auto lineHeight = GetInputLineHeightDip();
 	const auto textTop = GetInputTextTopDip();
 	const auto textRect = D2D1::RectF(
-		horizontalPadding, textTop,
-		config_.width - horizontalPadding,
+		animatedLeft + horizontalPadding, textTop,
+		animatedRight - horizontalPadding,
 		(std::min)(windowHeight - verticalPadding, textTop + GetInputTextViewportHeightDip()));
 	const auto caret = GetCaretLogicalPosition();
 	const auto caretX = textRect.left + caret.x;
@@ -2005,9 +2169,9 @@ void InputBoxHost::RenderInput(bool caretOnly)
 		inputRenderTarget_->Clear(D2D1::ColorF(0, 0.0f));
 	}
 	const auto rounded = CreateInsetRoundedRect(
+		animatedLeft,
 		0.0f,
-		0.0f,
-		static_cast<float>(config_.width),
+		animatedRight,
 		GetInputWindowHeightDip(),
 		config_.cornerRadius,
 		config_.borderThickness);
@@ -2062,7 +2226,9 @@ void InputBoxHost::RenderInput(bool caretOnly)
 		inputSurface_->dc,
 		width,
 		height,
-		caretOnly ? &inputCaretDirtyRect_ : nullptr);
+		caretOnly ? &inputCaretDirtyRect_ : nullptr,
+		static_cast<BYTE>(std::lround(
+			(std::clamp)(animationFrame.opacity, 0.0f, 1.0f) * 255.0f)));
 }
 
 float InputBoxHost::GetFeatureWindowWidthDip() const
@@ -2406,8 +2572,11 @@ LRESULT InputBoxHost::HandleInputMessage(HWND hwnd, UINT message, WPARAM wParam,
 	{
 	case WM_ERASEBKGND: return 1;
 	case WM_SETFOCUS:
-		caretVisible_ = true;
-		SetTimer(hwnd, CaretTimerId, CaretBlinkMs, nullptr);
+		caretVisible_ = inputVisible_;
+		if (inputVisible_)
+		{
+			SetTimer(hwnd, CaretTimerId, CaretBlinkMs, nullptr);
+		}
 		UpdateImeCompositionWindow();
 		RenderInput();
 		return 0;
@@ -2417,8 +2586,19 @@ LRESULT InputBoxHost::HandleInputMessage(HWND hwnd, UINT message, WPARAM wParam,
 		RenderInput();
 		return 0;
 	case WM_TIMER:
+		if (wParam == InputAnimationTimerId)
+		{
+			AdvanceInputWindowAnimation();
+			return 0;
+		}
 		if (wParam == CaretTimerId)
 		{
+			if (!inputVisible_)
+			{
+				KillTimer(hwnd, CaretTimerId);
+				caretVisible_ = false;
+				return 0;
+			}
 			caretVisible_ = !caretVisible_;
 			RenderInput(true);
 			return 0;
@@ -2426,25 +2606,32 @@ LRESULT InputBoxHost::HandleInputMessage(HWND hwnd, UINT message, WPARAM wParam,
 		break;
 	case WM_KEYDOWN:
 	case WM_SYSKEYDOWN:
+		if (!inputVisible_) return 0;
 		if (HandleInputKeyDown(wParam)) return 0;
 		break;
 	case WM_CHAR:
+		if (!inputVisible_) return 0;
 		if (wParam == L'\b' || wParam == L'\r' || wParam == L'\n' || wParam == L'\t') return 0;
 		if (wParam >= 0x20) InsertCharacter(static_cast<wchar_t>(wParam));
 		return 0;
 	case WM_SYSCHAR:
 		return 0;
 	case WM_PASTE:
-		PasteFromClipboard();
+		if (inputVisible_) PasteFromClipboard();
 		return 0;
 	case WM_LBUTTONDOWN:
-		SetFocus(hwnd);
-		SetCaretFromPoint(lParam);
+		if (inputVisible_)
+		{
+			SetFocus(hwnd);
+			SetCaretFromPoint(lParam);
+		}
 		return 0;
 	case WM_IME_STARTCOMPOSITION:
+		if (!inputVisible_) return 0;
 		UpdateImeCompositionWindow();
 		break;
 	case WM_IME_COMPOSITION:
+		if (!inputVisible_) return 0;
 		UpdateImeCompositionWindow();
 		if ((lParam & GCS_RESULTSTR) != 0)
 		{
@@ -2484,6 +2671,7 @@ LRESULT InputBoxHost::HandleInputMessage(HWND hwnd, UINT message, WPARAM wParam,
 		return 0;
 	case WM_DESTROY:
 		KillTimer(hwnd, CaretTimerId);
+		KillTimer(hwnd, InputAnimationTimerId);
 		DiscardInputResources(true);
 		inputHwnd_ = nullptr;
 		inputVisible_ = false;

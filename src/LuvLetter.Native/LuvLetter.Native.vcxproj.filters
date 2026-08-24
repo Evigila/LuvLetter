@@ -29,6 +29,9 @@
     <ClInclude Include="input\FeaturePager.h">
       <Filter>Header Files\input</Filter>
     </ClInclude>
+    <ClInclude Include="input\InputBoxAnimator.h">
+      <Filter>Header Files\input</Filter>
+    </ClInclude>
     <ClInclude Include="input\InputHistory.h">
       <Filter>Header Files\input</Filter>
     </ClInclude>
@@ -44,6 +47,9 @@
       <Filter>Source Files\api</Filter>
     </ClCompile>
     <ClCompile Include="input\FeaturePager.cpp">
+      <Filter>Source Files\input</Filter>
+    </ClCompile>
+    <ClCompile Include="input\InputBoxAnimator.cpp">
       <Filter>Source Files\input</Filter>
     </ClCompile>
     <ClCompile Include="input\InputHistory.cpp">
