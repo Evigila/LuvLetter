@@ -7,12 +7,12 @@ using LuvLetter.Core.Modules.QuickActions;
 using LuvLetter.Core.NativeShell;
 using LuvLetter.Core.Plugins;
 
-namespace LuvLetter.Core.Runtime;
+namespace LuvLetter.Core.Application;
 
 /// <summary>
 /// Owns the application-level startup, event wiring and shutdown transaction.
 /// </summary>
-public sealed class LuvLetterRuntime : IHostedService
+public sealed class ApplicationCoordinator : IHostedService
 {
     private readonly ILuvLetterConfigurationStore configurationStore;
     private readonly CommandDispatcher commandDispatcher;
@@ -26,7 +26,7 @@ public sealed class LuvLetterRuntime : IHostedService
     private int stopping;
     private bool eventsSubscribed;
 
-    public LuvLetterRuntime(
+    public ApplicationCoordinator(
         ILuvLetterConfigurationStore configurationStore,
         CommandDispatcher commandDispatcher,
         QuickActionRegistry quickActions,
@@ -49,7 +49,7 @@ public sealed class LuvLetterRuntime : IHostedService
         cancellationToken.ThrowIfCancellationRequested();
         if (Interlocked.Exchange(ref started, 1) != 0)
         {
-            throw new InvalidOperationException("The LuvLetter runtime has already started.");
+            throw new InvalidOperationException("The application coordinator has already started.");
         }
 
         var warnings = new List<string>();
@@ -87,7 +87,6 @@ public sealed class LuvLetterRuntime : IHostedService
             try
             {
                 activationGestures.Start(configuration.ActivationGestures);
-                applicationShell.StartMinimized();
             }
             catch (Exception exception)
             {

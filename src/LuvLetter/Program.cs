@@ -1,4 +1,5 @@
 using LuvLetter.Hosting;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using WpfMessageBox = System.Windows.MessageBox;
 
@@ -23,8 +24,9 @@ internal static class Program
             var builder = Host.CreateApplicationBuilder(args);
             builder.Services.AddLuvLetter(application);
             host = builder.Build();
+            var wpfLifetime = host.Services.GetRequiredService<WpfHostLifetime>();
             host.Start();
-            application.Run();
+            wpfLifetime.Run();
         }
         catch (Exception exception)
         {

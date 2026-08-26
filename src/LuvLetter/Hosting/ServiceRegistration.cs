@@ -7,7 +7,7 @@ using LuvLetter.Core.Modules;
 using LuvLetter.Core.Modules.QuickActions;
 using LuvLetter.Core.Modules.Settings;
 using LuvLetter.Core.NativeShell;
-using LuvLetter.Core.Runtime;
+using LuvLetter.Core.Application;
 using LuvLetter.Platform.Activation;
 using LuvLetter.Platform.Tray;
 using LuvLetter.View.Settings;
@@ -52,10 +52,12 @@ internal static class ServiceRegistration
             provider => provider.GetRequiredService<TrayIconService>());
         services.AddSingleton<IApplicationModule, SettingsModule>();
 
-        services.AddSingleton<LuvLetterRuntime>();
+        services.AddSingleton<ApplicationCoordinator>();
         services.AddHostedService(
-            provider => provider.GetRequiredService<LuvLetterRuntime>());
-        services.AddSingleton<IHostLifetime>(_ => new WpfHostLifetime());
+            provider => provider.GetRequiredService<ApplicationCoordinator>());
+        services.AddSingleton<WpfHostLifetime>();
+        services.AddSingleton<IHostLifetime>(
+            provider => provider.GetRequiredService<WpfHostLifetime>());
         services.Configure<HostOptions>(options =>
         {
             options.ShutdownTimeout = TimeSpan.FromSeconds(5);

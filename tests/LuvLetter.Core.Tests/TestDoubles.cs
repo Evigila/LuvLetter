@@ -4,7 +4,7 @@ using LuvLetter.Core.Configuration;
 using LuvLetter.Core.Modules.Settings;
 using LuvLetter.Core.Modules.QuickActions;
 using LuvLetter.Core.NativeShell;
-using LuvLetter.Core.Runtime;
+using LuvLetter.Core.Application;
 using LuvLetter.Core.Plugins;
 
 namespace LuvLetter.Core.Tests;
@@ -228,13 +228,9 @@ internal sealed class FakeNativeShell : INativeShell
 
 internal sealed class FakeApplicationShell : IApplicationShell
 {
-    public int StartMinimizedCalls { get; private set; }
-
     public int ShowSettingsCalls { get; private set; }
 
     public List<string> Statuses { get; } = [];
-
-    public void StartMinimized() => StartMinimizedCalls++;
 
     public void ShowSettings() => ShowSettingsCalls++;
 

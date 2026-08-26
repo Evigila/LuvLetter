@@ -18,7 +18,7 @@ internal static partial class Program
         ("Native shell service adapter", TestNativeShellServiceAdapter),
         ("Configuration application transaction", TestConfigurationApplicationTransaction),
         ("Settings editor mapping", TestSettingsEditorMapping),
-        ("Hosted runtime lifecycle", TestHostedRuntimeLifecycle),
+        ("Application coordinator lifecycle", TestApplicationCoordinatorLifecycle),
         ("Plugin loading and registration isolation", TestPluginLoader),
         ("Configuration store round-trip and migration", TestConfigurationStore),
     ];

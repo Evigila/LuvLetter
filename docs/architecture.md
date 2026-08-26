@@ -1,19 +1,19 @@
 # LuvLetter Architecture
 
 LuvLetter is a Windows command shell with a WPF presentation shell, a WPF-independent
-Core runtime, and a native Win32/Direct2D renderer. `Microsoft.Extensions.Hosting`
+Core application layer, and a native Win32/Direct2D renderer. `Microsoft.Extensions.Hosting`
 owns dependency composition and service lifecycle.
 
 ## Dependency direction
 
 ```text
 LuvLetter (WPF views + Windows adapters + composition)
-    -> LuvLetter.Core (business modules + runtime contracts)
+    -> LuvLetter.Core (application coordination + business modules + contracts)
     -> LuvLetter.Native (only through the versioned C ABI at runtime)
 ```
 
 Core targets `net10.0` and does not reference WPF or Windows Forms. WPF page code calls
-Core services through interfaces such as `ISettingsService`; Core orchestration calls
+Core services through interfaces such as `ISettingsService`; Core coordination calls
 Windows implementations through `IApplicationShell`, `IActivationGestureService`, and
 `INativeShell`.
 
@@ -26,12 +26,12 @@ Windows implementations through `IApplicationShell`, `IActivationGestureService`
 - `Platform/Activation`: the low-level Windows keyboard hook and Dispatcher adapter.
 - `Platform/Tray`: notification-area UI and settings-view lifetime.
 - `Hosting`: Generic Host registrations and the WPF-specific `IHostLifetime`.
-- `Program`: the STA/single-instance entry point. It builds and starts the Host, runs the
-  WPF dispatcher, then stops and disposes the Host.
+- `Program`: the STA/single-instance entry point. It builds and starts the Host, delegates
+  the WPF dispatcher loop to `WpfHostLifetime`, then stops and disposes the Host.
 
 ### `src/LuvLetter.Core`
 
-- `Runtime/LuvLetterRuntime`: the single application `IHostedService`. It applies the
+- `Application/ApplicationCoordinator`: the single application `IHostedService`. It applies the
   initial configuration, registers built-in modules, loads plugins, synchronizes Quick
   Actions, subscribes runtime events, starts gestures, and performs idempotent shutdown.
 - `Modules/Settings`: one cohesive settings module containing the public service port,
@@ -68,24 +68,27 @@ binary compatible; those names are compatibility wire identifiers, not domain mo
 ## Host lifecycle
 
 The Generic Host is started synchronously on the WPF STA thread before
-`Application.Run()`. This ensures the tray, settings factory, native adapter, and global
-hook are first created on the UI thread. `WpfHostLifetime` leaves interactive lifetime to
-WPF while the Host owns singleton disposal and `IHostedService` start/stop.
+`WpfHostLifetime.Run()` enters the WPF dispatcher loop. This ensures the tray, settings
+factory, native adapter, and global hook are first created on the UI thread.
+`WpfHostLifetime` bridges shutdown in both directions: WPF exit requests Host shutdown,
+while Host shutdown requests WPF dispatcher shutdown. If Host startup fails before the
+dispatcher starts, shutdown completes without waiting for an `Application.Exit` event
+that cannot occur. The Host owns singleton disposal and `IHostedService` start/stop.
 
-`LuvLetterRuntime` is the only hosted business coordinator. Startup order is:
+`ApplicationCoordinator` is the only hosted business coordinator. Startup order is:
 
 1. Apply current InputBox and QuickActions configuration to Native.
 2. Register every built-in `IApplicationModule`.
 3. Discover and load external plugins from `plugins`.
 4. Synchronize the Quick Action snapshot.
 5. Subscribe command, Native, registry, and gesture events.
-6. Start activation gestures and minimize to the tray.
+6. Start activation gestures; the lazily created settings window remains closed.
 
 Plugin and initial-load diagnostics are recoverable warnings. A gesture-hook failure
 opens Settings as a degraded mode. Fatal partial startup executes compensating cleanup.
-Shutdown stops the hook, unsubscribes events, hides both Native windows, and releases the
-plugin session; every step is idempotent and container-owned singletons are disposed by
-the Host afterward.
+Shutdown can be requested by WPF, the tray, or the Host. It stops the hook, unsubscribes
+events, hides both Native windows, and releases the plugin session; every step is
+idempotent and container-owned singletons are disposed by the Host afterward.
 
 ## Configuration compatibility
 

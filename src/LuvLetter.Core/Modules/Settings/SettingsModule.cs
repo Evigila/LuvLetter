@@ -1,6 +1,6 @@
 using LuvLetter.Core.Commands;
 using LuvLetter.Core.Modules.QuickActions;
-using LuvLetter.Core.Runtime;
+using LuvLetter.Core.Application;
 
 namespace LuvLetter.Core.Modules.Settings;
 

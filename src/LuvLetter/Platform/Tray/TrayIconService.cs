@@ -1,7 +1,8 @@
 using System.ComponentModel;
 using System.Windows;
 using LuvLetter.View.Settings;
-using LuvLetter.Core.Runtime;
+using LuvLetter.Core.Application;
+using Microsoft.Extensions.Hosting;
 using Drawing = System.Drawing;
 using Forms = System.Windows.Forms;
 using WpfApplication = System.Windows.Application;
@@ -12,16 +13,19 @@ namespace LuvLetter.Platform.Tray;
 public sealed class TrayIconService : IApplicationShell, IDisposable
 {
     private readonly WpfApplication application;
+    private readonly IHostApplicationLifetime hostLifetime;
     private readonly Func<SettingsWindow> windowFactory;
     private readonly Forms.ContextMenuStrip contextMenu;
     private readonly Forms.NotifyIcon notifyIcon;
     private SettingsWindow? window;
     private string? cachedStatus;
-    private bool isExiting;
-
-    public TrayIconService(WpfApplication application, Func<SettingsWindow> windowFactory)
+    public TrayIconService(
+        WpfApplication application,
+        IHostApplicationLifetime hostLifetime,
+        Func<SettingsWindow> windowFactory)
     {
         this.application = application;
+        this.hostLifetime = hostLifetime;
         this.windowFactory = windowFactory;
 
         contextMenu = CreateContextMenu();
@@ -37,18 +41,10 @@ public sealed class TrayIconService : IApplicationShell, IDisposable
         application.ShutdownMode = ShutdownMode.OnExplicitShutdown;
     }
 
-    public void StartMinimized()
-    {
-        if (window is not null)
-        {
-            MinimizeToTray(window);
-        }
-    }
-
     public void ReportStatus(string text)
     {
         ArgumentNullException.ThrowIfNull(text);
-        if (application.Dispatcher.HasShutdownStarted || application.Dispatcher.HasShutdownFinished)
+        if (IsApplicationStopping())
         {
             return;
         }
@@ -59,13 +55,19 @@ public sealed class TrayIconService : IApplicationShell, IDisposable
         }
         else
         {
-            _ = application.Dispatcher.BeginInvoke(() => ReportStatusCore(text));
+            _ = application.Dispatcher.BeginInvoke(() =>
+            {
+                if (!IsApplicationStopping())
+                {
+                    ReportStatusCore(text);
+                }
+            });
         }
     }
 
     public void ShowSettings()
     {
-        if (application.Dispatcher.HasShutdownStarted || application.Dispatcher.HasShutdownFinished)
+        if (IsApplicationStopping())
         {
             return;
         }
@@ -110,7 +112,7 @@ public sealed class TrayIconService : IApplicationShell, IDisposable
 
     private void Window_OnClosing(object? sender, CancelEventArgs eventArgs)
     {
-        if (isExiting)
+        if (IsApplicationStopping())
         {
             return;
         }
@@ -124,7 +126,7 @@ public sealed class TrayIconService : IApplicationShell, IDisposable
 
     private void Window_OnStateChanged(object? sender, EventArgs eventArgs)
     {
-        if (!isExiting
+        if (!IsApplicationStopping()
             && sender is WpfWindow stateChangedWindow
             && stateChangedWindow.WindowState == WindowState.Minimized)
         {
@@ -134,6 +136,11 @@ public sealed class TrayIconService : IApplicationShell, IDisposable
 
     private void ShowSettingsCore()
     {
+        if (IsApplicationStopping())
+        {
+            return;
+        }
+
         SettingsWindow settingsWindow;
         try
         {
@@ -195,9 +202,13 @@ public sealed class TrayIconService : IApplicationShell, IDisposable
     {
         application.Dispatcher.Invoke(() =>
         {
-            isExiting = true;
             notifyIcon.Visible = false;
-            application.Shutdown();
+            hostLifetime.StopApplication();
         });
     }
+
+    private bool IsApplicationStopping() =>
+        hostLifetime.ApplicationStopping.IsCancellationRequested
+        || application.Dispatcher.HasShutdownStarted
+        || application.Dispatcher.HasShutdownFinished;
 }
