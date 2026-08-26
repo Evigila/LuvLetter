@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using LuvLetter.Core.Hotkeys;
 
 namespace LuvLetter.Core.Configuration;
@@ -8,6 +9,8 @@ namespace LuvLetter.Core.Configuration;
 /// </summary>
 internal static class ConfigurationSchemaMigrator
 {
+    private const string LegacyQuickActionsPropertyName = "FeatureWindow";
+
     internal static bool LooksLikeLegacyHotkey(JsonElement root)
     {
         var hasVirtualKey = false;
@@ -45,6 +48,52 @@ internal static class ConfigurationSchemaMigrator
         return 0;
     }
 
+    internal static JsonObject MigrateDocument(JsonElement root)
+    {
+        ValidateLegacyProperty(
+            root,
+            LegacyQuickActionsPropertyName,
+            nameof(LuvLetterConfiguration.QuickActions),
+            "settings root");
+        var activationProperty = FindSingleProperty(
+            root,
+            nameof(LuvLetterConfiguration.ActivationGestures),
+            "settings root");
+        if (activationProperty is { Value.ValueKind: JsonValueKind.Object })
+        {
+            ValidateLegacyProperty(
+                activationProperty.Value.Value,
+                LegacyQuickActionsPropertyName,
+                nameof(ActivationGestureOptions.QuickActions),
+                "activation gestures");
+        }
+
+        var migrated = JsonNode.Parse(root.GetRawText()) as JsonObject
+            ?? throw new JsonException("The settings root must be a JSON object.");
+
+        RenameLegacyProperty(
+            root,
+            migrated,
+            LegacyQuickActionsPropertyName,
+            nameof(LuvLetterConfiguration.QuickActions),
+            "settings root");
+
+        if (activationProperty is { Value.ValueKind: JsonValueKind.Object }
+            && FindNodeProperty(
+                migrated,
+                nameof(LuvLetterConfiguration.ActivationGestures)) is JsonObject activationNode)
+        {
+            RenameLegacyProperty(
+                activationProperty.Value.Value,
+                activationNode,
+                LegacyQuickActionsPropertyName,
+                nameof(ActivationGestureOptions.QuickActions),
+                "activation gestures");
+        }
+
+        return migrated;
+    }
+
     internal static LuvLetterConfiguration Migrate(
         LuvLetterConfiguration configuration,
         LuvLetterConfiguration defaults)
@@ -74,24 +123,27 @@ internal static class ConfigurationSchemaMigrator
                 };
             }
 
-            var featureWindow = migrated.FeatureWindow;
-            if (featureWindow is not null
-                && featureWindow.Layout is { } featureLayout
-                && featureWindow.Colors is { } featureColors
-                && NearlyEquals(featureLayout.CornerRadius, 12.0f)
-                && NearlyEquals(featureLayout.BorderThickness, 2.0f)
-                && IsLegacyOpaqueWhite(featureColors.Border))
+            var quickActions = migrated.QuickActions;
+            if (quickActions is not null
+                && quickActions.Layout is { } quickActionsLayout
+                && quickActions.Colors is { } quickActionsColors
+                && NearlyEquals(quickActionsLayout.CornerRadius, 12.0f)
+                && NearlyEquals(quickActionsLayout.BorderThickness, 2.0f)
+                && IsLegacyOpaqueWhite(quickActionsColors.Border))
             {
                 migrated = migrated with
                 {
-                    FeatureWindow = featureWindow with
+                    QuickActions = quickActions with
                     {
-                        Layout = featureLayout with
+                        Layout = quickActionsLayout with
                         {
-                            CornerRadius = defaults.FeatureWindow.Layout.CornerRadius,
-                            BorderThickness = defaults.FeatureWindow.Layout.BorderThickness,
+                            CornerRadius = defaults.QuickActions.Layout.CornerRadius,
+                            BorderThickness = defaults.QuickActions.Layout.BorderThickness,
                         },
-                        Colors = featureColors with { Border = defaults.FeatureWindow.Colors.Border },
+                        Colors = quickActionsColors with
+                        {
+                            Border = defaults.QuickActions.Colors.Border,
+                        },
                     },
                 };
             }
@@ -151,4 +203,93 @@ internal static class ConfigurationSchemaMigrator
             color?.Trim().TrimStart('#'),
             expectedArgb,
             StringComparison.OrdinalIgnoreCase);
+
+    private static void RenameLegacyProperty(
+        JsonElement source,
+        JsonObject target,
+        string legacyName,
+        string canonicalName,
+        string location)
+    {
+        var legacy = FindSingleProperty(source, legacyName, location);
+        var canonical = FindSingleProperty(source, canonicalName, location);
+        if (legacy is not null && canonical is not null)
+        {
+            throw new JsonException(
+                $"The {location} cannot contain both '{legacyName}' and '{canonicalName}'.");
+        }
+
+        if (legacy is null)
+        {
+            return;
+        }
+
+        var legacyNode = FindNodeProperty(target, legacy.Value.Name);
+        RemoveNodeProperty(target, legacy.Value.Name);
+        target[canonicalName] = legacyNode?.DeepClone();
+    }
+
+    private static void ValidateLegacyProperty(
+        JsonElement source,
+        string legacyName,
+        string canonicalName,
+        string location)
+    {
+        var legacy = FindSingleProperty(source, legacyName, location);
+        var canonical = FindSingleProperty(source, canonicalName, location);
+        if (legacy is not null && canonical is not null)
+        {
+            throw new JsonException(
+                $"The {location} cannot contain both '{legacyName}' and '{canonicalName}'.");
+        }
+    }
+
+    private static JsonProperty? FindSingleProperty(
+        JsonElement source,
+        string propertyName,
+        string location)
+    {
+        JsonProperty? match = null;
+        foreach (var property in source.EnumerateObject())
+        {
+            if (!property.Name.Equals(propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (match is not null)
+            {
+                throw new JsonException(
+                    $"The {location} contains duplicate '{propertyName}' properties.");
+            }
+
+            match = property;
+        }
+
+        return match;
+    }
+
+    private static JsonNode? FindNodeProperty(JsonObject source, string propertyName)
+    {
+        foreach (var property in source)
+        {
+            if (property.Key.Equals(propertyName, StringComparison.OrdinalIgnoreCase))
+            {
+                return property.Value;
+            }
+        }
+
+        return null;
+    }
+
+    private static void RemoveNodeProperty(JsonObject source, string propertyName)
+    {
+        var actualName = source
+            .Select(static property => property.Key)
+            .FirstOrDefault(name => name.Equals(propertyName, StringComparison.OrdinalIgnoreCase));
+        if (actualName is not null)
+        {
+            source.Remove(actualName);
+        }
+    }
 }

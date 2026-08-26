@@ -36,17 +36,17 @@ internal static class ConfigurationNormalizer
             configuration.ActivationGestures ?? defaults.ActivationGestures,
             defaults.ActivationGestures);
 
-        var featureWindow = configuration.FeatureWindow ?? defaults.FeatureWindow;
-        var featureLayout = NormalizeFeatureLayout(
-            featureWindow.Layout ?? defaults.FeatureWindow.Layout,
-            defaults.FeatureWindow.Layout);
-        var featureColors = NormalizeFeatureColors(
-            featureWindow.Colors ?? defaults.FeatureWindow.Colors,
-            defaults.FeatureWindow.Colors);
-        var featureHotkeys = NormalizeFeatureHotkeys(
-            featureWindow.Hotkeys ?? defaults.FeatureWindow.Hotkeys,
-            defaults.FeatureWindow.Hotkeys,
-            featureLayout.ItemsPerPage);
+        var quickActions = configuration.QuickActions ?? defaults.QuickActions;
+        var quickActionsLayout = NormalizeQuickActionsLayout(
+            quickActions.Layout ?? defaults.QuickActions.Layout,
+            defaults.QuickActions.Layout);
+        var quickActionsColors = NormalizeQuickActionsColors(
+            quickActions.Colors ?? defaults.QuickActions.Colors,
+            defaults.QuickActions.Colors);
+        var quickActionsHotkeys = NormalizeQuickActionsHotkeys(
+            quickActions.Hotkeys ?? defaults.QuickActions.Hotkeys,
+            defaults.QuickActions.Hotkeys,
+            quickActionsLayout.ItemsPerPage);
 
         return configuration with
         {
@@ -70,11 +70,11 @@ internal static class ConfigurationNormalizer
                 Size = size,
             },
             ActivationGestures = gestures,
-            FeatureWindow = featureWindow with
+            QuickActions = quickActions with
             {
-                Layout = featureLayout,
-                Colors = featureColors,
-                Hotkeys = featureHotkeys,
+                Layout = quickActionsLayout,
+                Colors = quickActionsColors,
+                Hotkeys = quickActionsHotkeys,
             },
         };
     }
@@ -170,12 +170,12 @@ internal static class ConfigurationNormalizer
         var inputBoxGesture = Enum.IsDefined(value.InputBox)
             ? value.InputBox
             : fallback.InputBox;
-        var featureWindowGesture = Enum.IsDefined(value.FeatureWindow)
-            ? value.FeatureWindow
-            : fallback.FeatureWindow;
-        if (featureWindowGesture == inputBoxGesture)
+        var quickActionsGesture = Enum.IsDefined(value.QuickActions)
+            ? value.QuickActions
+            : fallback.QuickActions;
+        if (quickActionsGesture == inputBoxGesture)
         {
-            featureWindowGesture = inputBoxGesture == ActivationGestureKind.DoubleControlPress
+            quickActionsGesture = inputBoxGesture == ActivationGestureKind.DoubleControlPress
                 ? ActivationGestureKind.ControlTapThenHold
                 : ActivationGestureKind.DoubleControlPress;
         }
@@ -183,7 +183,7 @@ internal static class ConfigurationNormalizer
         return value with
         {
             InputBox = inputBoxGesture,
-            FeatureWindow = featureWindowGesture,
+            QuickActions = quickActionsGesture,
             TapMaxDurationMs = tapDuration,
             SecondPressTimeoutMs = secondPressTimeout,
             HoldThresholdMs = holdThreshold,
@@ -192,9 +192,9 @@ internal static class ConfigurationNormalizer
         };
     }
 
-    private static FeatureWindowLayoutOptions NormalizeFeatureLayout(
-        FeatureWindowLayoutOptions value,
-        FeatureWindowLayoutOptions fallback)
+    private static QuickActionsLayoutOptions NormalizeQuickActionsLayout(
+        QuickActionsLayoutOptions value,
+        QuickActionsLayoutOptions fallback)
     {
         var cellSize = NormalizeFinite(value.CellSize, fallback.CellSize, 32.0f, 512.0f);
         return value with
@@ -202,7 +202,7 @@ internal static class ConfigurationNormalizer
             ItemsPerPage = Math.Clamp(
                 value.ItemsPerPage,
                 1,
-                FeatureWindowLayoutOptions.MaximumItemsPerPage),
+                QuickActionsLayoutOptions.MaximumItemsPerPage),
             CellSize = cellSize,
             Gap = NormalizeFinite(value.Gap, fallback.Gap, 0.0f, 128.0f),
             CornerRadius = NormalizeFinite(
@@ -222,9 +222,9 @@ internal static class ConfigurationNormalizer
         };
     }
 
-    private static FeatureWindowColorOptions NormalizeFeatureColors(
-        FeatureWindowColorOptions value,
-        FeatureWindowColorOptions fallback)
+    private static QuickActionsColorOptions NormalizeQuickActionsColors(
+        QuickActionsColorOptions value,
+        QuickActionsColorOptions fallback)
     {
         var opacity = NormalizeFinite(value.BackgroundOpacity, fallback.BackgroundOpacity, 0.0f, 1.0f);
         var textOpacity = NormalizeFinite(value.TextOpacity, fallback.TextOpacity, 0.0f, 1.0f);
@@ -241,9 +241,9 @@ internal static class ConfigurationNormalizer
         };
     }
 
-    private static FeatureWindowHotkeyOptions NormalizeFeatureHotkeys(
-        FeatureWindowHotkeyOptions value,
-        FeatureWindowHotkeyOptions fallback,
+    private static QuickActionsHotkeyOptions NormalizeQuickActionsHotkeys(
+        QuickActionsHotkeyOptions value,
+        QuickActionsHotkeyOptions fallback,
         int itemsPerPage)
     {
         var maximumBaseKey = 0x39 - itemsPerPage + 1;
@@ -264,8 +264,8 @@ internal static class ConfigurationNormalizer
             Cancel = cancel,
             FirstItemVirtualKey = firstItemVirtualKey,
         };
-        if (FeatureHotkeyRules.FindConflict(normalizedHotkeys, itemsPerPage)
-            != FeatureHotkeyConflict.None)
+        if (QuickActionHotkeyRules.FindConflict(normalizedHotkeys, itemsPerPage)
+            != QuickActionHotkeyConflict.None)
         {
             // Ambiguous bindings make one action unreachable because Native performs
             // deterministic first-match dispatch. Recover external/legacy JSON as a set.

@@ -11,8 +11,8 @@ public enum ControlKeySide
 public enum CtrlGestureAction
 {
     None,
-    CommandRequested,
-    FeatureWindowRequested,
+    CommandInputRequested,
+    QuickActionsRequested,
 }
 
 public sealed class CtrlGestureStateMachine
@@ -294,12 +294,12 @@ public sealed class CtrlGestureStateMachine
 
         if (
             !IsSupportedGesture(options.InputBox)
-            || !IsSupportedGesture(options.FeatureWindow)
-            || options.InputBox == options.FeatureWindow
+            || !IsSupportedGesture(options.QuickActions)
+            || options.InputBox == options.QuickActions
         )
         {
             throw new ArgumentException(
-                "InputBox and FeatureWindow must use different supported activation gestures.",
+                "InputBox and QuickActions must use different supported activation gestures.",
                 nameof(options)
             );
         }
@@ -347,12 +347,12 @@ public sealed class CtrlGestureStateMachine
     {
         if (options.InputBox == gesture)
         {
-            return CtrlGestureAction.CommandRequested;
+            return CtrlGestureAction.CommandInputRequested;
         }
 
-        if (options.FeatureWindow == gesture)
+        if (options.QuickActions == gesture)
         {
-            return CtrlGestureAction.FeatureWindowRequested;
+            return CtrlGestureAction.QuickActionsRequested;
         }
 
         return CtrlGestureAction.None;

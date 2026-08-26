@@ -12,54 +12,78 @@
     <Filter Include="Header Files\api">
       <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F640001}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Header Files\input">
-      <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F640002}</UniqueIdentifier>
+    <Filter Include="Header Files\configuration">
+      <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F64000B}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\host">
+      <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F640005}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\rendering">
+      <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F640006}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Header Files\windows">
+      <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F640007}</UniqueIdentifier>
     </Filter>
     <Filter Include="Source Files\api">
       <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F640003}</UniqueIdentifier>
     </Filter>
-    <Filter Include="Source Files\input">
-      <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F640004}</UniqueIdentifier>
+    <Filter Include="Source Files\configuration">
+      <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F64000C}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\host">
+      <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F640008}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\rendering">
+      <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F640009}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\windows">
+      <UniqueIdentifier>{97AFEF2E-8AE0-47EF-924A-9E6D2F64000A}</UniqueIdentifier>
     </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="api\InputBoxApi.h">
       <Filter>Header Files\api</Filter>
     </ClInclude>
-    <ClInclude Include="input\FeaturePager.h">
-      <Filter>Header Files\input</Filter>
+    <ClInclude Include="configuration\NativeConfigurationSanitizer.h">
+      <Filter>Header Files\configuration</Filter>
     </ClInclude>
-    <ClInclude Include="input\InputBoxAnimator.h">
-      <Filter>Header Files\input</Filter>
+    <ClInclude Include="rendering\InputBoxAnimator.h">
+      <Filter>Header Files\rendering</Filter>
     </ClInclude>
-    <ClInclude Include="input\InputHistory.h">
-      <Filter>Header Files\input</Filter>
+    <ClInclude Include="host\NativeShellHost.h">
+      <Filter>Header Files\host</Filter>
     </ClInclude>
-    <ClInclude Include="input\InputBoxHost.h">
-      <Filter>Header Files\input</Filter>
+    <ClInclude Include="rendering\LayeredWindowSurface.h">
+      <Filter>Header Files\rendering</Filter>
     </ClInclude>
-    <ClInclude Include="input\NativeConfigurationSanitizer.h">
-      <Filter>Header Files\input</Filter>
+    <ClInclude Include="windows\InputWindow.h">
+      <Filter>Header Files\windows</Filter>
+    </ClInclude>
+    <ClInclude Include="windows\QuickActionsWindow.h">
+      <Filter>Header Files\windows</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="api\InputBoxExports.cpp">
       <Filter>Source Files\api</Filter>
     </ClCompile>
-    <ClCompile Include="input\FeaturePager.cpp">
-      <Filter>Source Files\input</Filter>
+    <ClCompile Include="configuration\NativeConfigurationSanitizer.cpp">
+      <Filter>Source Files\configuration</Filter>
     </ClCompile>
-    <ClCompile Include="input\InputBoxAnimator.cpp">
-      <Filter>Source Files\input</Filter>
+    <ClCompile Include="rendering\InputBoxAnimator.cpp">
+      <Filter>Source Files\rendering</Filter>
     </ClCompile>
-    <ClCompile Include="input\InputHistory.cpp">
-      <Filter>Source Files\input</Filter>
+    <ClCompile Include="host\NativeShellHost.cpp">
+      <Filter>Source Files\host</Filter>
     </ClCompile>
-    <ClCompile Include="input\InputBoxHost.cpp">
-      <Filter>Source Files\input</Filter>
+    <ClCompile Include="rendering\LayeredWindowSurface.cpp">
+      <Filter>Source Files\rendering</Filter>
     </ClCompile>
-    <ClCompile Include="input\NativeConfigurationSanitizer.cpp">
-      <Filter>Source Files\input</Filter>
+    <ClCompile Include="windows\InputWindow.cpp">
+      <Filter>Source Files\windows</Filter>
+    </ClCompile>
+    <ClCompile Include="windows\QuickActionsWindow.cpp">
+      <Filter>Source Files\windows</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

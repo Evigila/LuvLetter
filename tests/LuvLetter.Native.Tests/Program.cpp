@@ -1,4 +1,4 @@
-#include "input/InputBoxAnimator.h"
+#include "rendering/InputBoxAnimator.h"
 
 #include <cmath>
 #include <functional>

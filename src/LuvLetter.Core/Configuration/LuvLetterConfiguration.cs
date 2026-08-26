@@ -2,7 +2,7 @@ namespace LuvLetter.Core.Configuration;
 
 public sealed record LuvLetterConfiguration
 {
-    public const int CurrentSchemaVersion = 5;
+    public const int CurrentSchemaVersion = 6;
 
     public int SchemaVersion { get; init; } = CurrentSchemaVersion;
 
@@ -10,7 +10,7 @@ public sealed record LuvLetterConfiguration
 
     public ActivationGestureOptions ActivationGestures { get; init; } = new();
 
-    public FeatureWindowConfiguration FeatureWindow { get; init; } = new();
+    public QuickActionsConfiguration QuickActions { get; init; } = new();
 
     public static LuvLetterConfiguration Default { get; } = new();
 }

@@ -1,0 +1,341 @@
+<Window
+  x:Class="LuvLetter.View.Settings.SettingsWindow"
+  xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+  Title="LuvLetter"
+  Width="760"
+  Height="760"
+  MinWidth="680"
+  MinHeight="580"
+  WindowStartupLocation="CenterScreen"
+>
+  <Window.Resources>
+    <Style x:Key="ConfigurationTextBoxStyle" TargetType="TextBox">
+      <Setter Property="Height" Value="32" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+      <EventSetter Event="TextChanged" Handler="ConfigurationTextBox_OnTextChanged" />
+    </Style>
+    <Style
+      x:Key="HotkeyTextBoxStyle"
+      BasedOn="{StaticResource ConfigurationTextBoxStyle}"
+      TargetType="TextBox">
+      <Setter Property="IsReadOnly" Value="True" />
+      <Setter Property="ToolTip" Value="Focus this field, then press the desired key combination." />
+      <EventSetter Event="PreviewKeyDown" Handler="HotkeyTextBox_OnPreviewKeyDown" />
+    </Style>
+    <Style x:Key="ConfigurationComboBoxStyle" TargetType="ComboBox">
+      <Setter Property="Height" Value="32" />
+      <EventSetter Event="SelectionChanged" Handler="ConfigurationComboBox_OnSelectionChanged" />
+    </Style>
+  </Window.Resources>
+
+  <DockPanel Margin="24">
+    <StackPanel DockPanel.Dock="Top" Margin="0,0,0,16">
+      <TextBlock FontSize="22" FontWeight="SemiBold" Text="LuvLetter" />
+      <TextBlock
+        Margin="0,4,0,0"
+        Foreground="#666666"
+        Text="Native command and quick actions configuration" />
+    </StackPanel>
+
+    <StackPanel
+      DockPanel.Dock="Bottom"
+      Margin="0,18,0,0"
+      HorizontalAlignment="Right"
+      Orientation="Horizontal">
+      <TextBlock
+        x:Name="StatusTextBlock"
+        Width="380"
+        Margin="0,0,16,0"
+        VerticalAlignment="Center"
+        Foreground="#666666"
+        TextAlignment="Right"
+        TextWrapping="Wrap" />
+      <Button Width="88" Margin="0,0,8,0" Click="ResetButton_OnClick" Content="Reset" />
+      <Button
+        Width="88"
+        Click="ApplyButton_OnClick"
+        Content="Apply"
+        PreviewMouseDown="ApplyButton_OnPreviewMouseDown" />
+    </StackPanel>
+
+    <TabControl>
+      <TabItem Header="Command input">
+        <ScrollViewer Padding="16" VerticalScrollBarVisibility="Auto">
+          <StackPanel>
+            <TextBlock FontWeight="SemiBold" Text="Local hotkeys" />
+            <TextBlock
+              Margin="0,3,0,8"
+              Foreground="#666666"
+              Text="These keys are handled only while the command input is active." />
+            <UniformGrid Columns="3" Margin="0,0,0,20">
+              <StackPanel Margin="0,0,12,0">
+                <TextBlock Text="Submit" />
+                <TextBox x:Name="SubmitHotkeyTextBox" Style="{StaticResource HotkeyTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,12,0">
+                <TextBlock Text="Cancel" />
+                <TextBox x:Name="CancelHotkeyTextBox" Style="{StaticResource HotkeyTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel>
+                <TextBlock Text="Backspace" />
+                <TextBox x:Name="BackspaceHotkeyTextBox" Style="{StaticResource HotkeyTextBoxStyle}" />
+              </StackPanel>
+            </UniformGrid>
+
+            <TextBlock FontWeight="SemiBold" Text="Position" />
+            <UniformGrid Columns="3" Margin="0,8,0,20">
+              <StackPanel Margin="0,0,12,10">
+                <TextBlock Text="Mode" />
+                <ComboBox x:Name="PositionModeComboBox" Style="{StaticResource ConfigurationComboBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,12,10">
+                <TextBlock Text="Offset X" />
+                <TextBox x:Name="OffsetXTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,0,10">
+                <TextBlock Text="Offset Y" />
+                <TextBox x:Name="OffsetYTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,12,0">
+                <TextBlock Text="Bottom margin" />
+                <TextBox x:Name="BottomMarginTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,12,0">
+                <TextBlock Text="Custom X" />
+                <TextBox x:Name="CustomXTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel>
+                <TextBlock Text="Custom Y" />
+                <TextBox x:Name="CustomYTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+            </UniformGrid>
+
+            <TextBlock FontWeight="SemiBold" Text="Colors" />
+            <UniformGrid Columns="2" Margin="0,8,0,20">
+              <StackPanel Margin="0,0,12,10">
+                <TextBlock Text="Border (#RRGGBB or #AARRGGBB)" />
+                <TextBox x:Name="BorderColorTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,0,10">
+                <TextBlock Text="Background (#RRGGBB or #AARRGGBB)" />
+                <TextBox x:Name="BackgroundColorTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,12,10">
+                <TextBlock Text="Background opacity (0-1, background only)" />
+                <TextBox x:Name="BackgroundOpacityTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,0,10">
+                <TextBlock Text="Text (#RRGGBB or #AARRGGBB)" />
+                <TextBox x:Name="TextColorTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,12,0">
+                <TextBlock Text="Text opacity multiplier (0-1)" />
+                <TextBox x:Name="TextOpacityTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel>
+                <TextBlock Text="Caret (#RRGGBB or #AARRGGBB)" />
+                <TextBox x:Name="CaretColorTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+            </UniformGrid>
+
+            <TextBlock FontWeight="SemiBold" Text="Size" />
+            <TextBlock
+              Margin="0,3,0,0"
+              Foreground="#666666"
+              Text="Height is the single-line minimum; the input grows to 2, 4, or 6 visible lines, then scrolls." />
+            <UniformGrid Columns="3" Margin="0,8,0,0">
+              <StackPanel Margin="0,0,12,10">
+                <TextBlock Text="Width" />
+                <TextBox x:Name="WidthTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,12,10">
+                <TextBlock Text="Single-line height" />
+                <TextBox x:Name="HeightTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,0,10">
+                <TextBlock Text="Font size" />
+                <TextBox x:Name="FontSizeTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,12,10">
+                <TextBlock Text="Corner radius" />
+                <TextBox x:Name="CornerRadiusTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,12,10">
+                <TextBlock Text="Border thickness" />
+                <TextBox x:Name="BorderThicknessTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,0,10">
+                <TextBlock Text="Horizontal padding" />
+                <TextBox x:Name="HorizontalPaddingTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,12,0">
+                <TextBlock Text="Vertical padding" />
+                <TextBox x:Name="VerticalPaddingTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,12,0">
+                <TextBlock Text="Caret width" />
+                <TextBox x:Name="CaretWidthTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+            </UniformGrid>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+      <TabItem Header="Activation gestures">
+        <ScrollViewer Padding="16" VerticalScrollBarVisibility="Auto">
+          <StackPanel>
+            <TextBlock FontWeight="SemiBold" Text="Gesture assignment" />
+            <TextBlock
+              Margin="0,3,0,8"
+              Foreground="#666666"
+              Text="Assign a distinct Ctrl gesture to each native window." />
+            <UniformGrid Columns="2" Margin="0,0,0,20">
+              <StackPanel Margin="0,0,12,0">
+                <TextBlock Text="Command input" />
+                <ComboBox
+                  x:Name="InputBoxGestureComboBox"
+                  Style="{StaticResource ConfigurationComboBoxStyle}" />
+              </StackPanel>
+              <StackPanel>
+                <TextBlock Text="Quick actions" />
+                <ComboBox
+                  x:Name="QuickActionsGestureComboBox"
+                  Style="{StaticResource ConfigurationComboBoxStyle}" />
+              </StackPanel>
+            </UniformGrid>
+
+            <TextBlock FontWeight="SemiBold" Text="Timing" />
+            <UniformGrid Columns="3" Margin="0,8,0,20">
+              <StackPanel Margin="0,0,12,0">
+                <TextBlock Text="Tap maximum (ms)" />
+                <TextBox x:Name="TapMaxDurationTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,12,0">
+                <TextBlock Text="Second press timeout (ms)" />
+                <TextBox x:Name="SecondPressTimeoutTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel>
+                <TextBlock Text="Hold threshold (ms)" />
+                <TextBox x:Name="HoldThresholdTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+            </UniformGrid>
+
+            <TextBlock FontWeight="SemiBold" Text="Accepted Ctrl keys" />
+            <StackPanel Margin="0,8,0,0" Orientation="Horizontal">
+              <CheckBox
+                x:Name="AllowLeftControlCheckBox"
+                Margin="0,0,28,0"
+                Click="ConfigurationCheckBox_OnChanged"
+                Content="Left Ctrl" />
+              <CheckBox
+                x:Name="AllowRightControlCheckBox"
+                Click="ConfigurationCheckBox_OnChanged"
+                Content="Right Ctrl" />
+            </StackPanel>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+      <TabItem Header="Quick actions">
+        <ScrollViewer Padding="16" VerticalScrollBarVisibility="Auto">
+          <StackPanel>
+            <TextBlock FontWeight="SemiBold" Text="Layout" />
+            <UniformGrid Columns="3" Margin="0,8,0,20">
+              <StackPanel Margin="0,0,12,10">
+                <TextBlock Text="Items per page (1-7)" />
+                <TextBox x:Name="QuickActionsItemsPerPageTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,12,10">
+                <TextBlock Text="Cell size" />
+                <TextBox x:Name="QuickActionsCellSizeTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,0,10">
+                <TextBlock Text="Gap" />
+                <TextBox x:Name="QuickActionsGapTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,12,10">
+                <TextBlock Text="Corner radius" />
+                <TextBox x:Name="QuickActionsCornerRadiusTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,12,10">
+                <TextBlock Text="Border thickness" />
+                <TextBox x:Name="QuickActionsBorderThicknessTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,0,10">
+                <TextBlock Text="Font size" />
+                <TextBox x:Name="QuickActionsFontSizeTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,12,0">
+                <TextBlock Text="Bottom margin" />
+                <TextBox x:Name="QuickActionsBottomMarginTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,12,0">
+                <TextBlock Text="Offset X" />
+                <TextBox x:Name="QuickActionsOffsetXTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel>
+                <TextBlock Text="Offset Y" />
+                <TextBox x:Name="QuickActionsOffsetYTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+            </UniformGrid>
+
+            <TextBlock FontWeight="SemiBold" Text="Colors" />
+            <UniformGrid Columns="2" Margin="0,8,0,20">
+              <StackPanel Margin="0,0,12,10">
+                <TextBlock Text="Border (#RRGGBB or #AARRGGBB)" />
+                <TextBox x:Name="QuickActionsBorderColorTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,0,10">
+                <TextBlock Text="Accent (#RRGGBB or #AARRGGBB)" />
+                <TextBox x:Name="QuickActionsAccentColorTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,12,10">
+                <TextBlock Text="Background (#RRGGBB or #AARRGGBB)" />
+                <TextBox x:Name="QuickActionsBackgroundColorTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,0,10">
+                <TextBlock Text="Background opacity (0-1, background only)" />
+                <TextBox x:Name="QuickActionsBackgroundOpacityTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,12,0">
+                <TextBlock Text="Text (#RRGGBB or #AARRGGBB)" />
+                <TextBox x:Name="QuickActionsTextColorTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel>
+                <TextBlock Text="Text opacity multiplier (0-1)" />
+                <TextBox x:Name="QuickActionsTextOpacityTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
+              </StackPanel>
+            </UniformGrid>
+
+            <TextBlock FontWeight="SemiBold" Text="Local hotkeys" />
+            <TextBlock
+              Margin="0,3,0,8"
+              Foreground="#666666"
+              Text="Page and item keys are active only while the Quick Actions window is visible." />
+            <UniformGrid Columns="2" Margin="0,0,0,0">
+              <StackPanel Margin="0,0,12,10">
+                <TextBlock Text="Previous page" />
+                <TextBox x:Name="QuickActionsPreviousPageHotkeyTextBox" Style="{StaticResource HotkeyTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,0,10">
+                <TextBlock Text="Next page" />
+                <TextBox x:Name="QuickActionsNextPageHotkeyTextBox" Style="{StaticResource HotkeyTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel Margin="0,0,12,0">
+                <TextBlock Text="Cancel" />
+                <TextBox x:Name="QuickActionsCancelHotkeyTextBox" Style="{StaticResource HotkeyTextBoxStyle}" />
+              </StackPanel>
+              <StackPanel>
+                <TextBlock Text="First item number key" />
+                <ComboBox
+                  x:Name="FirstItemNumberComboBox"
+                  Style="{StaticResource ConfigurationComboBoxStyle}" />
+              </StackPanel>
+            </UniformGrid>
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+    </TabControl>
+  </DockPanel>
+</Window>

@@ -1,8 +1,8 @@
 using System.Reflection;
 using System.Runtime.InteropServices;
 using LuvLetter.Core.Configuration;
-using LuvLetter.Core.Features;
-using LuvLetter.Core.Native;
+using LuvLetter.Core.Modules.QuickActions;
+using LuvLetter.Core.NativeShell;
 
 namespace LuvLetter.Core.Tests;
 
@@ -13,7 +13,7 @@ internal static partial class Program
         var assembly = typeof(LuvLetterConfiguration).Assembly;
         AssertNativeLayout(
             assembly,
-            "LuvLetter.Core.Native.NativeInputBoxConfig",
+            "LuvLetter.Core.NativeShell.NativeInputBoxConfig",
             104,
             [
                 "StructSize", "AbiVersion", "Width", "Height", "CornerRadius",
@@ -25,7 +25,7 @@ internal static partial class Program
             ]);
         AssertNativeLayout(
             assembly,
-            "LuvLetter.Core.Native.NativeFeatureWindowConfig",
+            "LuvLetter.Core.NativeShell.NativeFeatureWindowConfig",
             88,
             [
                 "StructSize", "AbiVersion", "ItemsPerPage", "CellSize", "Gap",
@@ -36,7 +36,7 @@ internal static partial class Program
             ]);
         AssertNativeLayout(
             assembly,
-            "LuvLetter.Core.Native.NativeFeatureItem",
+            "LuvLetter.Core.NativeShell.NativeFeatureItem",
             16,
             ["Token", "Label"]);
 
@@ -47,6 +47,8 @@ internal static partial class Program
     {
         using var consumerEntered = new ManualResetEventSlim();
         using var releaseConsumer = new ManualResetEventSlim();
+        using var failingConsumerEntered = new ManualResetEventSlim();
+        using var releaseFailingConsumer = new ManualResetEventSlim();
         var received = new List<int>();
         using var dispatcher = new BoundedCallbackDispatcher<int>(
             capacity: 1,
@@ -61,6 +63,13 @@ internal static partial class Program
                 {
                     consumerEntered.Set();
                     releaseConsumer.Wait(TimeSpan.FromSeconds(2));
+                }
+
+                if (value == 4)
+                {
+                    failingConsumerEntered.Set();
+                    releaseFailingConsumer.Wait(TimeSpan.FromSeconds(2));
+                    throw new InvalidOperationException("simulated callback consumer failure");
                 }
             });
 
@@ -92,65 +101,95 @@ internal static partial class Program
             Assert.SequenceEqual([1, 2], received);
         }
 
+        Assert.True(dispatcher.TryEnqueue(4));
+        Assert.True(
+            failingConsumerEntered.Wait(TimeSpan.FromSeconds(2)),
+            "The callback dispatcher did not start the failing consumer.");
+        Assert.True(dispatcher.TryEnqueue(5));
+        releaseFailingConsumer.Set();
+        Assert.True(
+            SpinWait.SpinUntil(
+                () =>
+                {
+                    lock (received)
+                    {
+                        return received.Count == 4;
+                    }
+                },
+                TimeSpan.FromSeconds(2)),
+            "A consumer exception terminated the callback queue drain.");
+
+        lock (received)
+        {
+            Assert.SequenceEqual([1, 2, 4, 5], received);
+        }
+
+        dispatcher.Dispose();
+        Assert.False(dispatcher.TryEnqueue(6));
+        Assert.Equal(
+            1L,
+            dispatcher.DroppedCount,
+            "Disposal rejections must not be counted as capacity drops.");
+
         return Task.CompletedTask;
     }
 
-    private static async Task TestInputBoxServiceAdapter()
+    private static async Task TestNativeShellServiceAdapter()
     {
-        var nativeApi = new FakeNativeInputBoxApi();
-        var service = new InputBoxService(nativeApi);
+        var nativeApi = new FakeNativeShellApi();
+        var service = new NativeShellService(nativeApi);
         try
         {
             Assert.Equal(1, nativeApi.CompatibilityChecks);
             Assert.NotNull(nativeApi.InputSubmittedCallback);
-            Assert.NotNull(nativeApi.FeatureActivatedCallback);
+            Assert.NotNull(nativeApi.QuickActionActivatedCallback);
 
             service.ApplyConfiguration(
                 LuvLetterConfiguration.Default.InputBox,
-                LuvLetterConfiguration.Default.FeatureWindow);
+                LuvLetterConfiguration.Default.QuickActions);
             Assert.Equal(nativeApi.AbiVersion, nativeApi.LastInputBoxConfig?.AbiVersion);
-            Assert.Equal(nativeApi.AbiVersion, nativeApi.LastFeatureWindowConfig?.AbiVersion);
+            Assert.Equal(nativeApi.AbiVersion, nativeApi.LastQuickActionsConfig?.AbiVersion);
             Assert.Equal(560, nativeApi.LastInputBoxConfig?.Width);
 
-            service.SynchronizeFeatures(
+            service.SynchronizeQuickActions(
             [
-                new FeatureItemSnapshot("alpha", "  Alpha\r\nfeature  "),
+                new QuickActionSnapshot("alpha", "  Alpha\r\nquick action  "),
             ]);
-            Assert.Equal(1, nativeApi.FeatureItems.Count);
-            Assert.Equal("Alpha  feature", nativeApi.FeatureItems[0].Label);
-            var alphaToken = nativeApi.FeatureItems[0].Token;
+            Assert.Equal(1, nativeApi.QuickActionItems.Count);
+            Assert.Equal("Alpha  quick action", nativeApi.QuickActionItems[0].Label);
+            var alphaToken = nativeApi.QuickActionItems[0].Token;
 
-            var featureActivated = new TaskCompletionSource<string>(
+            var quickActionActivated = new TaskCompletionSource<string>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
-            service.FeatureActivated += featureActivated.SetResult;
+            service.QuickActionActivated += quickActionActivated.SetResult;
             nativeApi.RaiseFeatureActivated(alphaToken);
             Assert.Equal(
                 "alpha",
-                await featureActivated.Task.WaitAsync(TimeSpan.FromSeconds(2)));
+                await quickActionActivated.Task.WaitAsync(TimeSpan.FromSeconds(2)));
 
             nativeApi.SetFeatureItemsResult = unchecked((int)0x80004005);
             Assert.Throws<ExternalException>(
-                () => service.SynchronizeFeatures(
+                () => service.SynchronizeQuickActions(
                 [
-                    new FeatureItemSnapshot("beta", "Beta"),
+                    new QuickActionSnapshot("beta", "Beta"),
                 ]));
-            var failedBetaToken = nativeApi.FeatureItems[0].Token;
+            var failedBetaToken = nativeApi.QuickActionItems[0].Token;
 
-            var restoredFeatureActivated = new TaskCompletionSource<string>(
+            var restoredQuickActionActivated = new TaskCompletionSource<string>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
-            service.FeatureActivated += restoredFeatureActivated.SetResult;
+            service.QuickActionActivated += restoredQuickActionActivated.SetResult;
             nativeApi.RaiseFeatureActivated(alphaToken);
             Assert.Equal(
                 "alpha",
-                await restoredFeatureActivated.Task.WaitAsync(TimeSpan.FromSeconds(2)));
+                await restoredQuickActionActivated.Task.WaitAsync(TimeSpan.FromSeconds(2)));
             nativeApi.SetFeatureItemsResult = 0;
-            service.SynchronizeFeatures(
+            service.SynchronizeQuickActions(
             [
-                new FeatureItemSnapshot("gamma", "Gamma"),
+                new QuickActionSnapshot("gamma", "Gamma"),
             ]);
             Assert.NotEqual(
                 failedBetaToken,
-                nativeApi.FeatureItems[0].Token,
+                nativeApi.QuickActionItems[0].Token,
                 "A token observed by a failed Native synchronization must not be reused.");
 
             var inputSubmitted = new TaskCompletionSource<string>(
@@ -161,15 +200,15 @@ internal static partial class Program
                 "hello native",
                 await inputSubmitted.Task.WaitAsync(TimeSpan.FromSeconds(2)));
 
-            service.Show();
-            service.Hide();
-            service.ToggleFeatureWindow();
+            service.ShowCommandInput();
+            service.HideCommandInput();
+            service.ToggleQuickActions();
             Assert.Equal(1, nativeApi.ShowInputBoxCalls);
             Assert.Equal(1, nativeApi.HideInputBoxCalls);
-            Assert.Equal(1, nativeApi.ToggleFeatureWindowCalls);
+            Assert.Equal(1, nativeApi.ToggleQuickActionsCalls);
 
             nativeApi.ToggleInputBoxResult = unchecked((int)0x80004005);
-            Assert.Throws<ExternalException>(service.Toggle);
+            Assert.Throws<ExternalException>(service.ToggleCommandInput);
         }
         finally
         {
@@ -178,7 +217,7 @@ internal static partial class Program
 
         Assert.Equal(1, nativeApi.ShutdownCalls);
         Assert.True(nativeApi.InputSubmittedCallback is null);
-        Assert.True(nativeApi.FeatureActivatedCallback is null);
+        Assert.True(nativeApi.QuickActionActivatedCallback is null);
     }
 
     private static void AssertNativeLayout(

@@ -1,168 +1,118 @@
 # LuvLetter Architecture
 
-LuvLetter is a Windows-only command shell whose hot path stays in Win32 and
-Direct2D. The repository intentionally avoids third-party runtime frameworks.
+LuvLetter is a Windows command shell with a WPF presentation shell, a WPF-independent
+Core runtime, and a native Win32/Direct2D renderer. `Microsoft.Extensions.Hosting`
+owns dependency composition and service lifecycle.
 
-## Projects
+## Dependency direction
 
-- `src/LuvLetter`: the WPF configuration center and Windows process shell. It owns
-  views, control binding, the tray icon, the low-level keyboard-hook adapter, the
-  built-in UI module, process composition, and user-facing error reporting. WPF
-  does not contain gesture recognition, configuration persistence, plug-in loading,
-  native drawing, or text-input logic.
-- `src/LuvLetter.Core`: application and core logic. It owns activation gesture
-  recognition, configuration application and rollback, configuration persistence,
-  feature registration, bounded command dispatch, module discovery/registration,
-  and the managed/native interop adapter. Registry changes are copied to Native as
-  immutable snapshots.
-- `src/LuvLetter.Native`: the C++ Win32/D2D shell. One dedicated UI thread owns
-  both native windows, all HWND state, D2D/DWrite resources, and input state. It is
-  the only project that renders the command and feature windows.
-- `tests/LuvLetter.Core.Tests`: a zero-NuGet console smoke suite for Core and
-  its application/core modules.
-- `tests/LuvLetter.Native.Tests`: a zero-dependency C++ smoke suite for the deterministic
-  input animation module; it tests the source directly without expanding the public C ABI.
+```text
+LuvLetter (WPF views + Windows adapters + composition)
+    -> LuvLetter.Core (business modules + runtime contracts)
+    -> LuvLetter.Native (only through the versioned C ABI at runtime)
+```
 
-The compile-time dependency direction is `LuvLetter -> LuvLetter.Core`. The Native
-DLL is reached only through the versioned C ABI; Native never references a managed
-assembly.
+Core targets `net10.0` and does not reference WPF or Windows Forms. WPF page code calls
+Core services through interfaces such as `ISettingsService`; Core orchestration calls
+Windows implementations through `IApplicationShell`, `IActivationGestureService`, and
+`INativeShell`.
 
-## Module boundaries
+## Project layout
 
-### LuvLetter
+### `src/LuvLetter`
 
-- `Settings`: WPF control mapping, editor input models, value parsing, hotkey capture,
-  and one parser per configuration section. `MainWindow` only coordinates view events
-  and the Core application service.
-- `Hotkeys`: the Windows low-level keyboard hook and WPF Dispatcher adapter. Gesture
-  recognition itself lives in Core.
-- `Tray`: notification-area UI and settings-window lifetime.
-- `Modules`: UI-specific built-in modules.
-- `Program`: the composition root. It creates services and connects events, but does
-  not implement configuration, command, feature, or gesture policy.
+- `View/Settings`: the settings page, control binding, and keyboard-event capture only.
+  Parsing, validation, immutable mapping, apply, persistence, and rollback live in Core.
+- `Platform/Activation`: the low-level Windows keyboard hook and Dispatcher adapter.
+- `Platform/Tray`: notification-area UI and settings-view lifetime.
+- `Hosting`: Generic Host registrations and the WPF-specific `IHostLifetime`.
+- `Program`: the STA/single-instance entry point. It builds and starts the Host, runs the
+  WPF dispatcher, then stops and disposes the Host.
 
-### LuvLetter.Core
+### `src/LuvLetter.Core`
 
-- `Activation`: the deterministic Ctrl gesture state machine and the activation-service
-  port implemented by the Windows shell.
-- `Application`: use-case orchestration such as applying a configuration across Native,
-  gesture recognition, and persistent storage with compensating rollback.
-- `Commands`: command registration plus bounded, serial asynchronous dispatch.
-- `Configuration`: immutable models plus separate normalizer, schema migrator, JSON
-  repository, and current-snapshot store.
-- `Features`: feature definitions, registration, snapshots, and activation.
-- `Modules`: public module contract, assembly discovery, deferred registration context,
-  per-module failure isolation, and successful `IDisposable` module lifetime ownership.
-  Modules receive only minimal command/feature registrar capabilities.
-- `Native`: managed ABI declarations, configuration mapping, feature token mapping,
-  bounded callback delivery, and Native-session lifecycle. No rendering occurs here.
+- `Runtime/LuvLetterRuntime`: the single application `IHostedService`. It applies the
+  initial configuration, registers built-in modules, loads plugins, synchronizes Quick
+  Actions, subscribes runtime events, starts gestures, and performs idempotent shutdown.
+- `Modules/Settings`: one cohesive settings module containing the public service port,
+  editor DTOs, validation/mapping, transactional apply/rollback, and built-in settings
+  command/Quick Action registration.
+- `Modules/QuickActions`: Quick Action definitions, snapshots, registrar capability,
+  registry, and activation results.
+- `Plugins`: dynamic assembly discovery and lifetime ownership. External extensions
+  implement `ILuvLetterPlugin`; the default directory is `plugins`.
+- `Commands`: bounded, serial command registration and dispatch.
+- `Activation`: the deterministic Ctrl-gesture state machine and platform port.
+- `Configuration`: immutable models, schema migration, normalization, JSON persistence,
+  and current-snapshot ownership.
+- `NativeShell`: the `INativeShell` port plus the managed ABI adapter, token mapping, and
+  bounded callback delivery. Rendering remains in the Native project.
 
-### LuvLetter.Native
+`Modules` means built-in product functionality, with one folder per capability.
+`Plugins` exclusively means dynamically discovered external assemblies. There is no
+generic `Features` layer and no dynamic `Modules` loader.
 
-- `api`: the stable exported C ABI and exception boundary.
-- `input/FeaturePager`: Win32-independent feature paging and index resolution.
-- `input/InputHistory`: Win32-independent bounded command history, de-duplication,
-  draft preservation, and navigation.
-- `input/InputBoxAnimator`: Win32-independent, reversible presentation state for the
-  command input. It owns timing progress, easing, opacity, horizontal expansion, and
-  vertical offset, but does not own clocks, timers, HWNDs, or D2D resources.
-- `input/NativeConfigurationSanitizer`: Native-side defaults and defensive range/
-  enum validation for both window configuration structs.
-- `input/InputBoxHost`: ownership of the single Native UI thread and both HWNDs. Input,
-  IME, D2D resource, and window-controller responsibilities should continue to move
-  into focused collaborators without changing the ABI or thread-ownership model.
+### `src/LuvLetter.Native`
 
-Modules may depend inward on public Core contracts. Core must not reference WPF,
-Windows Forms, or application views. Native must not know module implementations or
-managed delegates; it receives only configuration structs, display snapshots, and
-opaque feature tokens.
+- `api`: the stable C ABI and exception boundary.
+- `configuration`: native defaults and defensive ABI validation.
+- `host/NativeShellHost`: the Native UI-thread owner and request serializer.
+- `windows/InputWindow`: input editing, history, IME, animation driving, and rendering.
+- `windows/QuickActionsWindow`: Quick Action paging, hotkeys, geometry, and rendering.
+- `rendering`: shared animation and layered-window surface primitives.
 
-## Activation
+The internal Native vocabulary is `QuickActions`. ABI v1 deliberately retains its
+historic `Feature*` struct and export names so existing managed/native pairs remain
+binary compatible; those names are compatibility wire identifiers, not domain modules.
 
-The default gestures are:
+## Host lifecycle
 
-- tap and release Ctrl twice to toggle the command input;
-- tap and release Ctrl once, then press and hold the same Ctrl key to toggle the
-  feature window.
+The Generic Host is started synchronously on the WPF STA thread before
+`Application.Run()`. This ensures the tray, settings factory, native adapter, and global
+hook are first created on the UI thread. `WpfHostLifetime` leaves interactive lifetime to
+WPF while the Host owns singleton disposal and `IHostedService` start/stop.
 
-The tap duration, second-press timeout, hold threshold, permitted Ctrl sides,
-and gesture-to-window mapping are configurable. The low-level hook observes but
-does not suppress keyboard input.
+`LuvLetterRuntime` is the only hosted business coordinator. Startup order is:
 
-## Native windows
+1. Apply current InputBox and QuickActions configuration to Native.
+2. Register every built-in `IApplicationModule`.
+3. Discover and load external plugins from `plugins`.
+4. Synchronize the Quick Action snapshot.
+5. Subscribe command, Native, registry, and gesture events.
+6. Start activation gestures and minimize to the tray.
 
-The command input is a rounded, translucent layered window with IME support,
-bounded input history, horizontal text scrolling, and a managed submit callback.
-On entry it rises from below, fades in, and expands from the center; on exit it
-reverses the same path and the HWND is hidden only after the transparent final frame.
-The fixed-size layered surface is retained during animation: Native changes the
-visual bounds inside the bitmap instead of reallocating the HWND and DIB every frame.
-Switching directly to the feature window bypasses the input exit animation so the
-two popup windows remain exclusive and the feature window can receive focus at once.
+Plugin and initial-load diagnostics are recoverable warnings. A gesture-hook failure
+opens Settings as a degraded mode. Fatal partial startup executes compensating cleanup.
+Shutdown stops the hook, unsubscribes events, hides both Native windows, and releases the
+plugin session; every step is idempotent and container-owned singletons are disposed by
+the Host afterward.
 
-The feature window is a row of rounded square cells drawn by Native. It displays
-at most seven registered features per page. The default controls are:
+## Configuration compatibility
 
-- `1` through `7`: activate the corresponding cell on the current page;
-- `-` / `=`: previous or next page, wrapping at either end;
-- `Escape`: close the feature window.
+Configuration is stored in `%AppData%\LuvLetter\settings.json`. Schema 6 writes the
+canonical groups `InputBox`, `ActivationGestures`, and `QuickActions`. Older settings
+using `FeatureWindow` at the root or inside `ActivationGestures` are migrated before
+deserialization. A document containing both legacy and canonical names is rejected as
+ambiguous instead of silently choosing one value.
 
-Cell count, size, gap, colors, font, placement, paging keys, cancel key, and the
-first numeric activation key are configurable. Showing either native window
-hides the other one.
+Writes use a same-directory temporary file, flush it, atomically replace the old file,
+and only then publish the new in-memory snapshot.
 
-Both layered windows are Per-Monitor-V2 aware. Configuration geometry is stored
-as 96-DPI device-independent units; Native scales the window, cached DIB,
-regions, placement, mouse hit testing, and IME position for the target monitor.
+## Build and tests
 
-The current translucent style uses a per-pixel-alpha layered window. Acrylic or
-blur is not currently implemented.
-
-## Managed/native boundary
-
-The native ABI is versioned. Every configuration structure carries `structSize`
-and `abiVersion`, and both sides validate their expected layout before use.
-Configuration, feature snapshots, and callback registration are synchronously
-marshalled onto the Native UI thread. Display commands are posted asynchronously.
-
-Native callbacks expose borrowed memory only for the duration of the callback.
-Managed code immediately copies input text or feature tokens and queues business
-work away from the Native UI thread. Exceptions are contained on both sides of
-the ABI.
-
-## Configuration
-
-Configuration is stored in `%AppData%\LuvLetter\settings.json` with an explicit
-schema version. The configuration module repairs missing/null sections, normalizes
-finite ranges, and migrates supported historical visual defaults. The obsolete
-top-level activation-hotkey format is rejected and replaced with the default Ctrl
-gestures. The JSON repository writes to a same-directory temporary file, flushes it,
-and atomically replaces the old settings file before the Store publishes the new
-in-memory snapshot.
-
-The top-level groups are `InputBox`, `ActivationGestures`, and `FeatureWindow`.
-
-## Build and publish
-
-The C++ project requires the full Visual Studio MSBuild; the .NET CLI MSBuild
-cannot build a `.vcxproj` directly. From a Visual Studio Developer PowerShell,
-build the complete solution with:
+The C++ project requires full Visual Studio MSBuild:
 
 ```powershell
 MSBuild.exe LuvLetter.slnx /m /p:Configuration=Release
 ```
 
-Publishing `src/LuvLetter/LuvLetter.csproj` with the same MSBuild automatically
-builds the x64 Native project and includes `LuvLetter.Native.dll`. Native uses the
-static MSVC runtime, so the published DLL has no VC++ Redistributable dependency.
-
-Run the Core smoke suite (currently 15 scenarios) with:
+Run the 17 Core smoke scenarios with:
 
 ```powershell
-dotnet run --project tests/LuvLetter.Core.Tests/LuvLetter.Core.Tests.csproj --configuration Release
+dotnet run --project tests/LuvLetter.Core.Tests/LuvLetter.Core.Tests.csproj -c Release
 ```
 
-Run the Native smoke suite with:
+Run the Native suite with:
 
 ```powershell
 MSBuild.exe tests/LuvLetter.Native.Tests/LuvLetter.Native.Tests.vcxproj /m /p:Configuration=Release /p:Platform=x64

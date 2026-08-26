@@ -61,7 +61,9 @@ internal sealed class JsonConfigurationRepository
                     $"Settings schema {serializedVersion} is newer than supported schema {LuvLetterConfiguration.CurrentSchemaVersion}.");
             }
 
-            var configuration = document.RootElement.Deserialize<LuvLetterConfiguration>(
+            var migratedDocument = ConfigurationSchemaMigrator.MigrateDocument(
+                document.RootElement);
+            var configuration = migratedDocument.Deserialize<LuvLetterConfiguration>(
                 SerializerOptions);
             return configuration is null
                 ? InvalidConfiguration("The settings document did not contain a configuration.")

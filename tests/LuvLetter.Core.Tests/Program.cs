@@ -11,13 +11,15 @@ internal static partial class Program
         ("Ctrl gesture side and auto-repeat handling", TestCtrlGestureSidesAndAutoRepeat),
         ("Ctrl gesture configurable mapping", TestCtrlGestureConfigurableMapping),
         ("Configuration normalization", TestConfigurationNormalization),
-        ("Feature registry", TestFeatureRegistry),
+        ("Quick-action registry", TestQuickActionRegistry),
         ("Asynchronous command dispatch", TestCommandDispatcher),
         ("Managed native ABI layout", TestManagedNativeAbiLayout),
         ("Bounded native callback dispatcher", TestBoundedCallbackDispatcher),
-        ("Native service adapter", TestInputBoxServiceAdapter),
+        ("Native shell service adapter", TestNativeShellServiceAdapter),
         ("Configuration application transaction", TestConfigurationApplicationTransaction),
-        ("Module discovery and registration isolation", TestModuleCatalog),
+        ("Settings editor mapping", TestSettingsEditorMapping),
+        ("Hosted runtime lifecycle", TestHostedRuntimeLifecycle),
+        ("Plugin loading and registration isolation", TestPluginLoader),
         ("Configuration store round-trip and migration", TestConfigurationStore),
     ];
 

@@ -1,7 +1,37 @@
 namespace LuvLetter.Core.Configuration;
 
+public interface ILuvLetterConfigurationStore
+{
+    ConfigurationLoadResult InitialLoad { get; }
+
+    LuvLetterConfiguration Current { get; }
+
+    LuvLetterConfiguration Update(LuvLetterConfiguration configuration);
+}
+
+public enum ConfigurationLoadStatus
+{
+    Loaded,
+    NotFound,
+    Invalid,
+    UnsupportedVersion,
+    IoFailure,
+}
+
+public sealed record ConfigurationLoadResult(
+    LuvLetterConfiguration Configuration,
+    ConfigurationLoadStatus Status,
+    string? Message = null,
+    Exception? Exception = null)
+{
+    public bool HasWarning => Status is
+        ConfigurationLoadStatus.Invalid
+        or ConfigurationLoadStatus.UnsupportedVersion
+        or ConfigurationLoadStatus.IoFailure;
+}
+
 /// <summary>
-/// Owns the current configuration snapshot and coordinates persistence and change publication.
+/// Owns the current configuration snapshot and coordinates persistence.
 /// </summary>
 public sealed class LuvLetterConfigurationStore : ILuvLetterConfigurationStore
 {
@@ -37,8 +67,6 @@ public sealed class LuvLetterConfigurationStore : ILuvLetterConfigurationStore
         }
     }
 
-    public event EventHandler<LuvLetterConfiguration>? Changed;
-
     /// <summary>
     /// Validates and atomically persists a configuration, then publishes the exact
     /// normalized instance that became current. If persistence fails, Current is unchanged.
@@ -54,7 +82,6 @@ public sealed class LuvLetterConfigurationStore : ILuvLetterConfigurationStore
             current = normalized;
         }
 
-        RaiseChanged(normalized);
         return normalized;
     }
 
@@ -70,24 +97,4 @@ public sealed class LuvLetterConfigurationStore : ILuvLetterConfigurationStore
         return Path.Combine(appData, "LuvLetter", "settings.json");
     }
 
-    private void RaiseChanged(LuvLetterConfiguration configuration)
-    {
-        var handlers = Changed;
-        if (handlers is null)
-        {
-            return;
-        }
-
-        foreach (EventHandler<LuvLetterConfiguration> handler in handlers.GetInvocationList())
-        {
-            try
-            {
-                handler(this, configuration);
-            }
-            catch
-            {
-                // A saved configuration remains current regardless of listeners.
-            }
-        }
-    }
 }

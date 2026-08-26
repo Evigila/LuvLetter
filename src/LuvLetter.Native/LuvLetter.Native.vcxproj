@@ -88,19 +88,21 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="api\InputBoxApi.h" />
-    <ClInclude Include="input\FeaturePager.h" />
-    <ClInclude Include="input\InputBoxAnimator.h" />
-    <ClInclude Include="input\InputHistory.h" />
-    <ClInclude Include="input\InputBoxHost.h" />
-    <ClInclude Include="input\NativeConfigurationSanitizer.h" />
+    <ClInclude Include="configuration\NativeConfigurationSanitizer.h" />
+    <ClInclude Include="host\NativeShellHost.h" />
+    <ClInclude Include="rendering\InputBoxAnimator.h" />
+    <ClInclude Include="rendering\LayeredWindowSurface.h" />
+    <ClInclude Include="windows\QuickActionsWindow.h" />
+    <ClInclude Include="windows\InputWindow.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="api\InputBoxExports.cpp" />
-    <ClCompile Include="input\FeaturePager.cpp" />
-    <ClCompile Include="input\InputBoxAnimator.cpp" />
-    <ClCompile Include="input\InputHistory.cpp" />
-    <ClCompile Include="input\InputBoxHost.cpp" />
-    <ClCompile Include="input\NativeConfigurationSanitizer.cpp" />
+    <ClCompile Include="configuration\NativeConfigurationSanitizer.cpp" />
+    <ClCompile Include="host\NativeShellHost.cpp" />
+    <ClCompile Include="rendering\InputBoxAnimator.cpp" />
+    <ClCompile Include="rendering\LayeredWindowSurface.cpp" />
+    <ClCompile Include="windows\QuickActionsWindow.cpp" />
+    <ClCompile Include="windows\InputWindow.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

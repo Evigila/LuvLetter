@@ -15,8 +15,8 @@ internal static partial class Program
             "The command input box must default to double Ctrl.");
         Assert.Equal(
             ActivationGestureKind.ControlTapThenHold,
-            defaults.FeatureWindow,
-            "The feature window must default to tap Ctrl, then hold Ctrl.");
+            defaults.QuickActions,
+            "The quick actions must default to tap Ctrl, then hold Ctrl.");
         Assert.True(defaults.AllowLeftControl, "Left Ctrl should be enabled by default.");
         Assert.True(defaults.AllowRightControl, "Right Ctrl should be enabled by default.");
 
@@ -33,10 +33,10 @@ internal static partial class Program
         Assert.Equal("#80F5F5F5", configuration.InputBox.Colors.Background);
         Assert.Equal(0.5f, configuration.InputBox.Colors.BackgroundOpacity);
         Assert.Equal(1.0f, configuration.InputBox.Colors.TextOpacity);
-        Assert.Equal(1.0f, configuration.FeatureWindow.Layout.BorderThickness);
-        Assert.Equal(16.0f, configuration.FeatureWindow.Layout.CornerRadius);
-        Assert.Equal("#66FFFFFF", configuration.FeatureWindow.Colors.Border);
-        Assert.Equal(1.0f, configuration.FeatureWindow.Colors.TextOpacity);
+        Assert.Equal(1.0f, configuration.QuickActions.Layout.BorderThickness);
+        Assert.Equal(16.0f, configuration.QuickActions.Layout.CornerRadius);
+        Assert.Equal("#66FFFFFF", configuration.QuickActions.Colors.Border);
+        Assert.Equal(1.0f, configuration.QuickActions.Colors.TextOpacity);
 
         return Task.CompletedTask;
     }
@@ -62,7 +62,7 @@ internal static partial class Program
             machine.HandleControlDown(ControlKeySide.Left, secondPressAt),
             "The second press exactly at its configured timeout must remain valid.");
         Assert.Equal(
-            CtrlGestureAction.CommandRequested,
+            CtrlGestureAction.CommandInputRequested,
             machine.HandleControlUp(ControlKeySide.Left, secondReleaseAt),
             "The default double-Ctrl gesture must request the command input box.");
 
@@ -98,11 +98,11 @@ internal static partial class Program
         Assert.Equal(
             CtrlGestureAction.None,
             machine.HandleTimeout(holdDeadline.Value - 1),
-            "Holding just below the threshold must not activate a feature.");
+            "Holding just below the threshold must not activate Quick Actions.");
         Assert.Equal(
-            CtrlGestureAction.FeatureWindowRequested,
+            CtrlGestureAction.QuickActionsRequested,
             machine.HandleTimeout(holdDeadline.Value),
-            "The default tap-then-hold gesture must request the feature window at the threshold.");
+            "The default tap-then-hold gesture must request the quick actions at the threshold.");
         Assert.Equal(
             CtrlGestureAction.None,
             machine.HandleTimeout(holdDeadline.Value + 1_000),
@@ -199,7 +199,7 @@ internal static partial class Program
             machine.HandleControlDown(ControlKeySide.Left, 6_160),
             "Auto-repeat during the second press must not trigger early.");
         Assert.Equal(
-            CtrlGestureAction.CommandRequested,
+            CtrlGestureAction.CommandInputRequested,
             machine.HandleControlUp(ControlKeySide.Left, 6_180));
 
         machine.Reset();
@@ -219,7 +219,7 @@ internal static partial class Program
         var swapped = LuvLetterConfiguration.Default.ActivationGestures with
         {
             InputBox = ActivationGestureKind.ControlTapThenHold,
-            FeatureWindow = ActivationGestureKind.DoubleControlPress,
+            QuickActions = ActivationGestureKind.DoubleControlPress,
         };
         var machine = new CtrlGestureStateMachine(swapped);
 
@@ -227,15 +227,15 @@ internal static partial class Program
         machine.HandleControlUp(ControlKeySide.Left, 7_020);
         machine.HandleControlDown(ControlKeySide.Left, 7_100);
         Assert.Equal(
-            CtrlGestureAction.FeatureWindowRequested,
+            CtrlGestureAction.QuickActionsRequested,
             machine.HandleControlUp(ControlKeySide.Left, 7_120),
-            "Swapping the mapping must make double Ctrl open the feature window.");
+            "Swapping the mapping must make double Ctrl open the quick actions.");
 
         machine.HandleControlDown(ControlKeySide.Left, 8_000);
         machine.HandleControlUp(ControlKeySide.Left, 8_020);
         machine.HandleControlDown(ControlKeySide.Left, 8_100);
         Assert.Equal(
-            CtrlGestureAction.CommandRequested,
+            CtrlGestureAction.CommandInputRequested,
             machine.HandleTimeout(8_100 + swapped.HoldThresholdMs),
             "Swapping the mapping must make tap-then-hold open the command input box.");
 

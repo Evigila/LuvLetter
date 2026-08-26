@@ -15,6 +15,7 @@ internal static partial class Program
         CommandInvocation? invocation = null;
         var callbackThreadId = 0;
         var callerThreadId = Environment.CurrentManagedThreadId;
+        var completedCount = 0;
 
         Assert.True(
             dispatcher.Register(
@@ -25,6 +26,7 @@ internal static partial class Program
                     invocation = value;
                     callbackStarted.Set();
                     releaseCallback.Wait(TimeSpan.FromSeconds(10));
+                    Interlocked.Increment(ref completedCount);
                     callbackCompleted.Set();
                 }));
 
@@ -50,6 +52,16 @@ internal static partial class Program
             Assert.Equal("EcHo\t alpha beta", captured.Text);
             Assert.Equal("EcHo", captured.CommandName);
             Assert.Equal("alpha beta", captured.Arguments);
+
+            Assert.Equal(
+                CommandDispatchResult.Accepted,
+                dispatcher.Dispatch("echo queued-one"));
+            Assert.Equal(
+                CommandDispatchResult.Accepted,
+                dispatcher.Dispatch("echo queued-two"));
+            Assert.Equal(
+                CommandDispatchResult.QueueFull,
+                dispatcher.Dispatch("echo rejected"));
         }
         finally
         {
@@ -59,6 +71,11 @@ internal static partial class Program
         Assert.True(
             callbackCompleted.Wait(TimeSpan.FromSeconds(5)),
             "The command handler did not finish after release.");
+        Assert.True(
+            SpinWait.SpinUntil(
+                () => Volatile.Read(ref completedCount) == 3,
+                TimeSpan.FromSeconds(5)),
+            "The dispatcher did not drain accepted commands serially.");
         Assert.Equal(
             CommandDispatchResult.RejectedEmpty,
             dispatcher.Dispatch(" \t\r\n "));
@@ -67,6 +84,50 @@ internal static partial class Program
         Assert.Equal(
             CommandDispatchResult.Disposed,
             dispatcher.Dispatch("echo after-dispose"));
+
+        using var notificationDispatcher = new CommandDispatcher();
+        using var failedRaised = new ManualResetEventSlim();
+        using var unhandledRaised = new ManualResetEventSlim();
+        CommandInvocation? failedInvocation = null;
+        CommandInvocation? unhandledInvocation = null;
+        Exception? capturedException = null;
+
+        notificationDispatcher.Failed += (_, _) =>
+            throw new InvalidOperationException("simulated failed-event subscriber failure");
+        notificationDispatcher.Failed += (value, exception) =>
+        {
+            failedInvocation = value;
+            capturedException = exception;
+            failedRaised.Set();
+        };
+        notificationDispatcher.Unhandled += _ =>
+            throw new InvalidOperationException("simulated unhandled-event subscriber failure");
+        notificationDispatcher.Unhandled += value =>
+        {
+            unhandledInvocation = value;
+            unhandledRaised.Set();
+        };
+
+        Assert.True(
+            notificationDispatcher.Register(
+                "fail",
+                _ => throw new InvalidOperationException("simulated command failure")));
+        Assert.Equal(
+            CommandDispatchResult.Accepted,
+            notificationDispatcher.Dispatch("fail now"));
+        Assert.True(
+            failedRaised.Wait(TimeSpan.FromSeconds(5)),
+            "A throwing command did not publish its failure.");
+        Assert.Equal("fail", Assert.NotNull(failedInvocation).CommandName);
+        Assert.Equal("simulated command failure", Assert.NotNull(capturedException).Message);
+
+        Assert.Equal(
+            CommandDispatchResult.Accepted,
+            notificationDispatcher.Dispatch("missing argument"));
+        Assert.True(
+            unhandledRaised.Wait(TimeSpan.FromSeconds(5)),
+            "The queue stopped after an event subscriber threw.");
+        Assert.Equal("missing", Assert.NotNull(unhandledInvocation).CommandName);
 
         return Task.CompletedTask;
     }

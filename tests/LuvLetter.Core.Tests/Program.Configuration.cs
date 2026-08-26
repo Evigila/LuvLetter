@@ -3,7 +3,7 @@ using System.Text.Json;
 using LuvLetter.Core.Activation;
 using LuvLetter.Core.Configuration;
 using LuvLetter.Core.Hotkeys;
-using LuvLetter.Core.Native;
+using LuvLetter.Core.NativeShell;
 
 namespace LuvLetter.Core.Tests;
 
@@ -16,7 +16,7 @@ internal static partial class Program
             ActivationGestures = new ActivationGestureOptions
             {
                 InputBox = ActivationGestureKind.DoubleControlPress,
-                FeatureWindow = ActivationGestureKind.DoubleControlPress,
+                QuickActions = ActivationGestureKind.DoubleControlPress,
                 TapMaxDurationMs = -1,
                 SecondPressTimeoutMs = -1,
                 HoldThresholdMs = -1,
@@ -45,9 +45,9 @@ internal static partial class Program
                     TextOpacity = float.PositiveInfinity,
                 },
             },
-            FeatureWindow = new FeatureWindowConfiguration
+            QuickActions = new QuickActionsConfiguration
             {
-                Layout = new FeatureWindowLayoutOptions
+                Layout = new QuickActionsLayoutOptions
                 {
                     ItemsPerPage = 99,
                     CellSize = float.NaN,
@@ -58,7 +58,7 @@ internal static partial class Program
                     OffsetX = int.MaxValue,
                     OffsetY = int.MinValue,
                 },
-                Colors = new FeatureWindowColorOptions
+                Colors = new QuickActionsColorOptions
                 {
                     BackgroundOpacity = float.PositiveInfinity,
                     TextOpacity = float.NaN,
@@ -68,10 +68,10 @@ internal static partial class Program
 
         var normalized = LuvLetterConfigurationStore.Normalize(invalid);
         var inputSize = normalized.InputBox.Size;
-        var layout = normalized.FeatureWindow.Layout;
+        var layout = normalized.QuickActions.Layout;
 
         Assert.Equal(
-            FeatureWindowLayoutOptions.MaximumItemsPerPage,
+            QuickActionsLayoutOptions.MaximumItemsPerPage,
             layout.ItemsPerPage,
             "A page must never contain more than seven features.");
         Assert.AllFinite(
@@ -88,8 +88,8 @@ internal static partial class Program
             layout.CornerRadius,
             layout.BorderThickness,
             layout.FontSize,
-            normalized.FeatureWindow.Colors.BackgroundOpacity,
-            normalized.FeatureWindow.Colors.TextOpacity);
+            normalized.QuickActions.Colors.BackgroundOpacity,
+            normalized.QuickActions.Colors.TextOpacity);
 
         Assert.Equal(32768, normalized.InputBox.Placement.OffsetX);
         Assert.Equal(-32768, normalized.InputBox.Placement.OffsetY);
@@ -98,11 +98,11 @@ internal static partial class Program
 
         Assert.NotEqual(
             normalized.ActivationGestures.InputBox,
-            normalized.ActivationGestures.FeatureWindow,
+            normalized.ActivationGestures.QuickActions,
             "The two Ctrl gestures must remain mutually exclusive.");
         Assert.Equal(
             ActivationGestureKind.ControlTapThenHold,
-            normalized.ActivationGestures.FeatureWindow);
+            normalized.ActivationGestures.QuickActions);
         Assert.True(normalized.ActivationGestures.AllowLeftControl);
         Assert.True(normalized.ActivationGestures.AllowRightControl);
         Assert.True(
@@ -112,8 +112,8 @@ internal static partial class Program
             normalized.ActivationGestures.HoldThresholdMs
                 > normalized.ActivationGestures.TapMaxDurationMs);
 
-        var numpadConflict = FeatureHotkeyRules.FindConflict(
-            LuvLetterConfiguration.Default.FeatureWindow.Hotkeys with
+        var numpadConflict = QuickActionHotkeyRules.FindConflict(
+            LuvLetterConfiguration.Default.QuickActions.Hotkeys with
             {
                 PreviousPage = new HotkeyDefinition(
                     HotkeyModifierKeys.None,
@@ -123,9 +123,9 @@ internal static partial class Program
             },
             itemsPerPage: 7);
         Assert.Equal(
-            FeatureHotkeyConflict.ItemActivationKey,
+            QuickActionHotkeyConflict.ItemActivationKey,
             numpadConflict,
-            "Numpad aliases must obey the same feature activation conflict rules.");
+            "Numpad aliases must obey the same Quick Action activation conflict rules.");
 
         var independentTextOpacity = LuvLetterConfigurationStore.Normalize(
             LuvLetterConfiguration.Default with
@@ -170,9 +170,6 @@ internal static partial class Program
             var settingsPath = Path.Combine(temporaryDirectory, "settings.json");
             var store = new LuvLetterConfigurationStore(settingsPath);
             Assert.Equal(ConfigurationLoadStatus.NotFound, store.InitialLoad.Status);
-            var changedCount = 0;
-            store.Changed += static (_, _) => throw new InvalidOperationException("listener failure");
-            store.Changed += (_, _) => changedCount++;
 
             var requested = LuvLetterConfiguration.Default with
             {
@@ -183,9 +180,9 @@ internal static partial class Program
                         Width = 777,
                     },
                 },
-                FeatureWindow = LuvLetterConfiguration.Default.FeatureWindow with
+                QuickActions = LuvLetterConfiguration.Default.QuickActions with
                 {
-                    Layout = LuvLetterConfiguration.Default.FeatureWindow.Layout with
+                    Layout = LuvLetterConfiguration.Default.QuickActions.Layout with
                     {
                         ItemsPerPage = 5,
                         OffsetX = 23,
@@ -197,10 +194,10 @@ internal static partial class Program
             var firstSaved = store.Update(requested);
             Assert.True(File.Exists(settingsPath));
             Assert.True(ReferenceEquals(firstSaved, store.Current));
-            Assert.Equal(1, changedCount);
-            using (JsonDocument.Parse(File.ReadAllText(settingsPath)))
+            using (var savedDocument = JsonDocument.Parse(File.ReadAllText(settingsPath)))
             {
-                // Parsing proves the completed file contains a whole JSON document.
+                Assert.True(savedDocument.RootElement.TryGetProperty("QuickActions", out _));
+                Assert.False(savedDocument.RootElement.TryGetProperty("FeatureWindow", out _));
             }
 
             var secondSaved = store.Update(
@@ -211,7 +208,6 @@ internal static partial class Program
                         Size = firstSaved.InputBox.Size with { Width = 888 },
                     },
                 });
-            Assert.Equal(2, changedCount);
             Assert.Equal(888, secondSaved.InputBox.Size.Width);
 
             var reloadedStore = new LuvLetterConfigurationStore(settingsPath);
@@ -219,9 +215,9 @@ internal static partial class Program
             var reloaded = reloadedStore.Current;
             Assert.Equal(LuvLetterConfiguration.CurrentSchemaVersion, reloaded.SchemaVersion);
             Assert.Equal(888, reloaded.InputBox.Size.Width);
-            Assert.Equal(5, reloaded.FeatureWindow.Layout.ItemsPerPage);
-            Assert.Equal(23, reloaded.FeatureWindow.Layout.OffsetX);
-            Assert.Equal(-17, reloaded.FeatureWindow.Layout.OffsetY);
+            Assert.Equal(5, reloaded.QuickActions.Layout.ItemsPerPage);
+            Assert.Equal(23, reloaded.QuickActions.Layout.OffsetX);
+            Assert.Equal(-17, reloaded.QuickActions.Layout.OffsetY);
             Assert.Empty(
                 Directory.EnumerateFiles(temporaryDirectory, "*.tmp"),
                 "Atomic persistence left a temporary file behind.");
@@ -287,6 +283,10 @@ internal static partial class Program
                     "Size": { "CornerRadius": 8, "BorderThickness": 2 },
                     "Colors": { "Border": "#FFFFFFFF" }
                   },
+                  "ActivationGestures": {
+                    "InputBox": 0,
+                    "FeatureWindow": 1
+                  },
                   "FeatureWindow": {
                     "Layout": { "CornerRadius": 12, "BorderThickness": 2 },
                     "Colors": { "Border": "FFFFFF" }
@@ -300,10 +300,13 @@ internal static partial class Program
             Assert.Equal(8.0f, migratedVisual.InputBox.Size.CornerRadius);
             Assert.Equal("#66FFFFFF", migratedVisual.InputBox.Colors.Border);
             Assert.Equal(1.0f, migratedVisual.InputBox.Colors.TextOpacity);
-            Assert.Equal(1.0f, migratedVisual.FeatureWindow.Layout.BorderThickness);
-            Assert.Equal(16.0f, migratedVisual.FeatureWindow.Layout.CornerRadius);
-            Assert.Equal("#66FFFFFF", migratedVisual.FeatureWindow.Colors.Border);
-            Assert.Equal(1.0f, migratedVisual.FeatureWindow.Colors.TextOpacity);
+            Assert.Equal(1.0f, migratedVisual.QuickActions.Layout.BorderThickness);
+            Assert.Equal(16.0f, migratedVisual.QuickActions.Layout.CornerRadius);
+            Assert.Equal("#66FFFFFF", migratedVisual.QuickActions.Colors.Border);
+            Assert.Equal(1.0f, migratedVisual.QuickActions.Colors.TextOpacity);
+            Assert.Equal(
+                ActivationGestureKind.ControlTapThenHold,
+                migratedVisual.ActivationGestures.QuickActions);
 
             var customizedVisualPath = Path.Combine(temporaryDirectory, "customized-visual-v2.json");
             File.WriteAllText(
@@ -335,9 +338,39 @@ internal static partial class Program
                 }
                 """);
             var currentSchemaVisual = new LuvLetterConfigurationStore(currentSchemaVisualPath).Current;
-            Assert.Equal(12.0f, currentSchemaVisual.FeatureWindow.Layout.CornerRadius);
-            Assert.Equal(2.0f, currentSchemaVisual.FeatureWindow.Layout.BorderThickness);
-            Assert.Equal("#FFFFFFFF", currentSchemaVisual.FeatureWindow.Colors.Border);
+            Assert.Equal(12.0f, currentSchemaVisual.QuickActions.Layout.CornerRadius);
+            Assert.Equal(2.0f, currentSchemaVisual.QuickActions.Layout.BorderThickness);
+            Assert.Equal("#FFFFFFFF", currentSchemaVisual.QuickActions.Colors.Border);
+
+            var conflictingNamesPath = Path.Combine(
+                temporaryDirectory,
+                "conflicting-quick-actions-v5.json");
+            File.WriteAllText(
+                conflictingNamesPath,
+                """
+                {
+                  "SchemaVersion": 5,
+                  "QuickActions": {},
+                  "FeatureWindow": {}
+                }
+                """);
+            var conflictingNames = new LuvLetterConfigurationStore(conflictingNamesPath);
+            Assert.Equal(ConfigurationLoadStatus.Invalid, conflictingNames.InitialLoad.Status);
+
+            var duplicateCanonicalPath = Path.Combine(
+                temporaryDirectory,
+                "duplicate-quick-actions-v6.json");
+            File.WriteAllText(
+                duplicateCanonicalPath,
+                """
+                {
+                  "SchemaVersion": 6,
+                  "QuickActions": {},
+                  "QuickActions": {}
+                }
+                """);
+            var duplicateCanonical = new LuvLetterConfigurationStore(duplicateCanonicalPath);
+            Assert.Equal(ConfigurationLoadStatus.Invalid, duplicateCanonical.InitialLoad.Status);
 
             var previousInputDefaultsPath = Path.Combine(
                 temporaryDirectory,

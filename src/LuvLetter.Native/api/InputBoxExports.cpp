@@ -1,5 +1,5 @@
 #include "api/InputBoxApi.h"
-#include "input/InputBoxHost.h"
+#include "host/NativeShellHost.h"
 
 #include <Windows.h>
 
@@ -13,7 +13,7 @@ int LUVLETTER_NATIVE_CALL ApplyInputBoxConfig(const LuvLetterInputBoxConfig* con
 	if (config == nullptr) return E_INVALIDARG;
 	try
 	{
-		return InputBoxHost::Instance().ApplyConfig(*config);
+		return NativeShellHost::Instance().ApplyConfig(*config);
 	}
 	catch (...)
 	{
@@ -27,7 +27,7 @@ int LUVLETTER_NATIVE_CALL SetInputSubmittedCallback(
 {
 	try
 	{
-		return InputBoxHost::Instance().SetInputSubmittedCallback(callback, context);
+		return NativeShellHost::Instance().SetInputSubmittedCallback(callback, context);
 	}
 	catch (...)
 	{
@@ -37,19 +37,19 @@ int LUVLETTER_NATIVE_CALL SetInputSubmittedCallback(
 
 int LUVLETTER_NATIVE_CALL ShowInputBox()
 {
-	try { return InputBoxHost::Instance().Show(); }
+	try { return NativeShellHost::Instance().Show(); }
 	catch (...) { return E_FAIL; }
 }
 
 int LUVLETTER_NATIVE_CALL HideInputBox()
 {
-	try { return InputBoxHost::Instance().Hide(); }
+	try { return NativeShellHost::Instance().Hide(); }
 	catch (...) { return E_FAIL; }
 }
 
 int LUVLETTER_NATIVE_CALL ToggleInputBox()
 {
-	try { return InputBoxHost::Instance().Toggle(); }
+	try { return NativeShellHost::Instance().Toggle(); }
 	catch (...) { return E_FAIL; }
 }
 
@@ -58,7 +58,7 @@ int LUVLETTER_NATIVE_CALL ApplyFeatureWindowConfig(const LuvLetterFeatureWindowC
 	if (config == nullptr) return E_INVALIDARG;
 	try
 	{
-		return InputBoxHost::Instance().ApplyFeatureConfig(*config);
+		return NativeShellHost::Instance().ApplyQuickActionsConfig(*config);
 	}
 	catch (...)
 	{
@@ -70,7 +70,7 @@ int LUVLETTER_NATIVE_CALL SetFeatureItems(const LuvLetterFeatureItem* items, int
 {
 	try
 	{
-		return InputBoxHost::Instance().SetFeatureItems(items, count);
+		return NativeShellHost::Instance().SetQuickActions(items, count);
 	}
 	catch (...)
 	{
@@ -84,7 +84,7 @@ int LUVLETTER_NATIVE_CALL SetFeatureActivatedCallback(
 {
 	try
 	{
-		return InputBoxHost::Instance().SetFeatureActivatedCallback(callback, context);
+		return NativeShellHost::Instance().SetQuickActionActivatedCallback(callback, context);
 	}
 	catch (...)
 	{
@@ -94,24 +94,24 @@ int LUVLETTER_NATIVE_CALL SetFeatureActivatedCallback(
 
 int LUVLETTER_NATIVE_CALL ShowFeatureWindow()
 {
-	try { return InputBoxHost::Instance().ShowFeatureWindow(); }
+	try { return NativeShellHost::Instance().ShowQuickActionsWindow(); }
 	catch (...) { return E_FAIL; }
 }
 
 int LUVLETTER_NATIVE_CALL HideFeatureWindow()
 {
-	try { return InputBoxHost::Instance().HideFeatureWindow(); }
+	try { return NativeShellHost::Instance().HideQuickActionsWindow(); }
 	catch (...) { return E_FAIL; }
 }
 
 int LUVLETTER_NATIVE_CALL ToggleFeatureWindow()
 {
-	try { return InputBoxHost::Instance().ToggleFeatureWindow(); }
+	try { return NativeShellHost::Instance().ToggleQuickActionsWindow(); }
 	catch (...) { return E_FAIL; }
 }
 
 int LUVLETTER_NATIVE_CALL ShutdownInputBox()
 {
-	try { return InputBoxHost::Instance().Shutdown(); }
+	try { return NativeShellHost::Instance().Shutdown(); }
 	catch (...) { return E_FAIL; }
 }

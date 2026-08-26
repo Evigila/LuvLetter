@@ -1,33 +1,47 @@
-using System.Collections.Concurrent;
+using LuvLetter.Core.Concurrency;
 
 namespace LuvLetter.Core.Commands;
+
+public enum CommandRegistrationMode
+{
+    RejectDuplicate,
+    ReplaceExisting,
+}
+
+public enum CommandDispatchResult
+{
+    Accepted,
+    RejectedEmpty,
+    QueueFull,
+    Disposed,
+}
+
+public sealed record CommandInvocation(
+    string Text,
+    string CommandName,
+    string Arguments);
 
 /// <summary>
 /// A bounded, single-consumer command dispatcher. Dispatch never invokes user code
 /// inline; one ThreadPool work item drains each burst of submitted commands.
 /// </summary>
-public sealed class CommandDispatcher : ICommandDispatcher
+public sealed class CommandDispatcher : ICommandRegistrar, IDisposable
 {
     private const int DefaultCapacity = 64;
 
     private readonly object handlersLock = new();
     private readonly Dictionary<string, Action<CommandInvocation>> handlers =
         new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentQueue<string> pending = new();
-    private readonly int capacity;
-    private int pendingCount;
-    private int drainScheduled;
-    private int disposed;
+    private readonly BoundedSerialQueue<string> dispatchQueue;
 
     public CommandDispatcher(int capacity = DefaultCapacity)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(capacity, 1);
-        this.capacity = capacity;
+        dispatchQueue = new(capacity, Process);
     }
 
-    public event EventHandler<CommandInvocationEventArgs>? Unhandled;
+    public event Action<CommandInvocation>? Unhandled;
 
-    public event EventHandler<CommandDispatchFailedEventArgs>? Failed;
+    public event Action<CommandInvocation, Exception>? Failed;
 
     public bool Register(
         string commandName,
@@ -75,7 +89,7 @@ public sealed class CommandDispatcher : ICommandDispatcher
     public CommandDispatchResult Dispatch(string commandText)
     {
         ArgumentNullException.ThrowIfNull(commandText);
-        if (Volatile.Read(ref disposed) != 0)
+        if (dispatchQueue.IsDisposed)
         {
             return CommandDispatchResult.Disposed;
         }
@@ -89,81 +103,23 @@ public sealed class CommandDispatcher : ICommandDispatcher
         // Own the submitted memory before returning to a native callback boundary.
         var ownedText = new string(trimmedText);
 
-        if (!TryReserveQueueSlot())
+        if (!dispatchQueue.TryEnqueue(ownedText))
         {
-            return CommandDispatchResult.QueueFull;
+            return dispatchQueue.IsDisposed
+                ? CommandDispatchResult.Disposed
+                : CommandDispatchResult.QueueFull;
         }
 
-        pending.Enqueue(ownedText);
-        ScheduleDrain();
         return CommandDispatchResult.Accepted;
     }
 
     public void Dispose()
     {
-        if (Interlocked.Exchange(ref disposed, 1) != 0)
-        {
-            return;
-        }
-
-        while (pending.TryDequeue(out _))
-        {
-            Interlocked.Decrement(ref pendingCount);
-        }
+        dispatchQueue.Dispose();
 
         lock (handlersLock)
         {
             handlers.Clear();
-        }
-    }
-
-    private bool TryReserveQueueSlot()
-    {
-        while (true)
-        {
-            var count = Volatile.Read(ref pendingCount);
-            if (count >= capacity)
-            {
-                return false;
-            }
-
-            if (Interlocked.CompareExchange(ref pendingCount, count + 1, count) == count)
-            {
-                return true;
-            }
-        }
-    }
-
-    private void ScheduleDrain()
-    {
-        if (Interlocked.CompareExchange(ref drainScheduled, 1, 0) == 0)
-        {
-            ThreadPool.UnsafeQueueUserWorkItem(
-                static (CommandDispatcher dispatcher) => dispatcher.Drain(),
-                this,
-                preferLocal: false);
-        }
-    }
-
-    private void Drain()
-    {
-        while (true)
-        {
-            while (pending.TryDequeue(out var commandText))
-            {
-                Interlocked.Decrement(ref pendingCount);
-                if (Volatile.Read(ref disposed) == 0)
-                {
-                    Process(commandText);
-                }
-            }
-
-            Volatile.Write(ref drainScheduled, 0);
-            if (pending.IsEmpty
-                || Interlocked.CompareExchange(ref drainScheduled, 1, 0) != 0)
-            {
-                return;
-            }
         }
     }
 
@@ -182,7 +138,7 @@ public sealed class CommandDispatcher : ICommandDispatcher
 
         if (handler is null)
         {
-            RaiseSafely(Unhandled, new CommandInvocationEventArgs(invocation));
+            RaiseSafely(Unhandled, invocation);
             return;
         }
 
@@ -192,7 +148,7 @@ public sealed class CommandDispatcher : ICommandDispatcher
         }
         catch (Exception exception)
         {
-            RaiseSafely(Failed, new CommandDispatchFailedEventArgs(invocation, exception));
+            RaiseSafely(Failed, invocation, exception);
         }
     }
 
@@ -223,19 +179,38 @@ public sealed class CommandDispatcher : ICommandDispatcher
         return -1;
     }
 
-    private void RaiseSafely<TEventArgs>(EventHandler<TEventArgs>? handlers, TEventArgs args)
-        where TEventArgs : EventArgs
+    private static void RaiseSafely<T>(Action<T>? handlers, T value)
     {
         if (handlers is null)
         {
             return;
         }
 
-        foreach (EventHandler<TEventArgs> handler in handlers.GetInvocationList())
+        foreach (Action<T> handler in handlers.GetInvocationList())
         {
             try
             {
-                handler(this, args);
+                handler(value);
+            }
+            catch
+            {
+                // Notification consumers cannot terminate the dispatcher drain.
+            }
+        }
+    }
+
+    private static void RaiseSafely<T1, T2>(Action<T1, T2>? handlers, T1 first, T2 second)
+    {
+        if (handlers is null)
+        {
+            return;
+        }
+
+        foreach (Action<T1, T2> handler in handlers.GetInvocationList())
+        {
+            try
+            {
+                handler(first, second);
             }
             catch
             {

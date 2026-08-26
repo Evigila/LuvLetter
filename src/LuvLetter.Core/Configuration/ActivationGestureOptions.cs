@@ -1,11 +1,17 @@
 namespace LuvLetter.Core.Configuration;
 
+public enum ActivationGestureKind
+{
+    DoubleControlPress = 0,
+    ControlTapThenHold = 1,
+}
+
 public sealed record ActivationGestureOptions
 {
     public ActivationGestureKind InputBox { get; init; } =
         ActivationGestureKind.DoubleControlPress;
 
-    public ActivationGestureKind FeatureWindow { get; init; } =
+    public ActivationGestureKind QuickActions { get; init; } =
         ActivationGestureKind.ControlTapThenHold;
 
     public int TapMaxDurationMs { get; init; } = 250;
