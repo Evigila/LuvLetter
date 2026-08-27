@@ -32,92 +32,92 @@ namespace
 	}
 }
 
-bool InputBoxAnimationFrame::IsAnimating() const noexcept
+bool PopupAnimationFrame::IsAnimating() const noexcept
 {
-	return state == InputBoxAnimationState::Showing
-		|| state == InputBoxAnimationState::Hiding;
+	return state == PopupAnimationState::Showing
+		|| state == PopupAnimationState::Hiding;
 }
 
-bool InputBoxAnimationFrame::ShouldPresent() const noexcept
+bool PopupAnimationFrame::ShouldPresent() const noexcept
 {
-	return state != InputBoxAnimationState::Hidden;
+	return state != PopupAnimationState::Hidden;
 }
 
-InputBoxAnimator::InputBoxAnimator(const InputBoxAnimationSettings& settings) noexcept
+PopupAnimator::PopupAnimator(const PopupAnimationSettings& settings) noexcept
 	: settings_(Sanitize(settings))
 {
 }
 
-void InputBoxAnimator::Configure(const InputBoxAnimationSettings& settings) noexcept
+void PopupAnimator::Configure(const PopupAnimationSettings& settings) noexcept
 {
 	settings_ = Sanitize(settings);
-	if (state_ == InputBoxAnimationState::Showing
+	if (state_ == PopupAnimationState::Showing
 		&& settings_.showDurationMilliseconds <= 0.0)
 	{
 		Reset(true);
 	}
-	else if (state_ == InputBoxAnimationState::Hiding
+	else if (state_ == PopupAnimationState::Hiding
 		&& settings_.hideDurationMilliseconds <= 0.0)
 	{
 		Reset(false);
 	}
 }
 
-void InputBoxAnimator::Show() noexcept
+void PopupAnimator::Show() noexcept
 {
 	SetTargetVisible(true);
 }
 
-void InputBoxAnimator::Hide() noexcept
+void PopupAnimator::Hide() noexcept
 {
 	SetTargetVisible(false);
 }
 
-void InputBoxAnimator::Toggle() noexcept
+void PopupAnimator::Toggle() noexcept
 {
 	SetTargetVisible(!TargetVisible());
 }
 
-void InputBoxAnimator::Reset(bool visible) noexcept
+void PopupAnimator::Reset(bool visible) noexcept
 {
 	progress_ = visible ? 1.0 : 0.0;
 	state_ = visible
-		? InputBoxAnimationState::Visible
-		: InputBoxAnimationState::Hidden;
+		? PopupAnimationState::Visible
+		: PopupAnimationState::Hidden;
 }
 
-InputBoxAnimationFrame InputBoxAnimator::Advance(double elapsedMilliseconds) noexcept
+PopupAnimationFrame PopupAnimator::Advance(double elapsedMilliseconds) noexcept
 {
 	if (!std::isfinite(elapsedMilliseconds) || elapsedMilliseconds <= 0.0)
 	{
 		return Current();
 	}
 
-	if (state_ == InputBoxAnimationState::Showing)
+	if (state_ == PopupAnimationState::Showing)
 	{
 		const auto step = elapsedMilliseconds / settings_.showDurationMilliseconds;
 		progress_ = (std::min)(1.0, progress_ + step);
 		if (progress_ >= 1.0)
 		{
 			progress_ = 1.0;
-			state_ = InputBoxAnimationState::Visible;
+			state_ = PopupAnimationState::Visible;
 		}
 	}
-	else if (state_ == InputBoxAnimationState::Hiding)
+	else if (state_ == PopupAnimationState::Hiding)
 	{
 		const auto step = elapsedMilliseconds / settings_.hideDurationMilliseconds;
 		progress_ = (std::max)(0.0, progress_ - step);
 		if (progress_ <= 0.0)
 		{
 			progress_ = 0.0;
-			state_ = InputBoxAnimationState::Hidden;
+			state_ = PopupAnimationState::Hidden;
 		}
 	}
 
 	return Current();
 }
 
-InputBoxAnimationFrame InputBoxAnimator::Current() const noexcept
+PopupAnimationFrame PopupAnimator::Current() const noexcept
 {
 	const auto progress = (std::clamp)(progress_, 0.0, 1.0);
 	const auto motionProgress = EaseOutCubic(progress);
@@ -125,7 +125,7 @@ InputBoxAnimationFrame InputBoxAnimator::Current() const noexcept
 	const auto widthScale = settings_.hiddenWidthScale
 		+ ((1.0f - settings_.hiddenWidthScale) * static_cast<float>(widthProgress));
 
-	InputBoxAnimationFrame frame{};
+	PopupAnimationFrame frame{};
 	frame.state = state_;
 	frame.linearProgress = progress;
 	frame.motionProgress = motionProgress;
@@ -136,22 +136,22 @@ InputBoxAnimationFrame InputBoxAnimator::Current() const noexcept
 	return frame;
 }
 
-const InputBoxAnimationSettings& InputBoxAnimator::Settings() const noexcept
+const PopupAnimationSettings& PopupAnimator::Settings() const noexcept
 {
 	return settings_;
 }
 
-bool InputBoxAnimator::TargetVisible() const noexcept
+bool PopupAnimator::TargetVisible() const noexcept
 {
-	return state_ == InputBoxAnimationState::Showing
-		|| state_ == InputBoxAnimationState::Visible;
+	return state_ == PopupAnimationState::Showing
+		|| state_ == PopupAnimationState::Visible;
 }
 
-InputBoxAnimationSettings InputBoxAnimator::Sanitize(
-	const InputBoxAnimationSettings& settings) noexcept
+PopupAnimationSettings PopupAnimator::Sanitize(
+	const PopupAnimationSettings& settings) noexcept
 {
-	const InputBoxAnimationSettings defaults{};
-	InputBoxAnimationSettings sanitized{};
+	const PopupAnimationSettings defaults{};
+	PopupAnimationSettings sanitized{};
 	sanitized.showDurationMilliseconds = (std::clamp)(
 		FiniteOr(settings.showDurationMilliseconds, defaults.showDurationMilliseconds),
 		0.0,
@@ -166,32 +166,32 @@ InputBoxAnimationSettings InputBoxAnimator::Sanitize(
 		1.0f);
 	sanitized.hiddenVerticalOffsetDip = (std::clamp)(
 		FiniteOr(settings.hiddenVerticalOffsetDip, defaults.hiddenVerticalOffsetDip),
-		0.0f,
+		-MaximumVerticalOffsetDip,
 		MaximumVerticalOffsetDip);
 	return sanitized;
 }
 
-void InputBoxAnimator::SetTargetVisible(bool visible) noexcept
+void PopupAnimator::SetTargetVisible(bool visible) noexcept
 {
 	if (visible)
 	{
 		if (progress_ >= 1.0 || settings_.showDurationMilliseconds <= 0.0)
 		{
 			progress_ = 1.0;
-			state_ = InputBoxAnimationState::Visible;
+			state_ = PopupAnimationState::Visible;
 			return;
 		}
 
-		state_ = InputBoxAnimationState::Showing;
+		state_ = PopupAnimationState::Showing;
 		return;
 	}
 
 	if (progress_ <= 0.0 || settings_.hideDurationMilliseconds <= 0.0)
 	{
 		progress_ = 0.0;
-		state_ = InputBoxAnimationState::Hidden;
+		state_ = PopupAnimationState::Hidden;
 		return;
 	}
 
-	state_ = InputBoxAnimationState::Hiding;
+	state_ = PopupAnimationState::Hiding;
 }

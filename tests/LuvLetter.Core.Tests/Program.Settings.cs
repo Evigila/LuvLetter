@@ -20,16 +20,17 @@ internal static partial class Program
         Assert.Equal(defaults.InputBox.Size.Width, mapped.InputBox.Size.Width);
         Assert.Equal(defaults.QuickActions.Layout.ItemsPerPage, mapped.QuickActions.Layout.ItemsPerPage);
 
-        var duplicateGestureInput = input with
+        var noControlKeyInput = input with
         {
             ActivationGestures = input.ActivationGestures with
             {
-                QuickActionsGesture = input.ActivationGestures.InputBoxGesture,
+                AllowLeftControl = false,
+                AllowRightControl = false,
             },
         };
         Assert.False(
-            service.TryMap(defaults, duplicateGestureInput, out _, out _),
-            "The editor accepted duplicate activation gestures.");
+            service.TryMap(defaults, noControlKeyInput, out _, out _),
+            "The editor accepted a double-Ctrl shortcut with no enabled Ctrl key.");
 
         var nonFiniteInput = input with
         {
@@ -80,11 +81,8 @@ internal static partial class Program
                 Invariant(input.Size.VerticalPadding),
                 Invariant(input.Size.CaretWidth)),
             new(
-                gestures.InputBox,
-                gestures.QuickActions,
                 Invariant(gestures.TapMaxDurationMs),
                 Invariant(gestures.SecondPressTimeoutMs),
-                Invariant(gestures.HoldThresholdMs),
                 gestures.AllowLeftControl,
                 gestures.AllowRightControl),
             new(

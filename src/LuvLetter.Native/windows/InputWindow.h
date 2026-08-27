@@ -94,7 +94,7 @@ private:
 	size_t caretIndex_ = 0;
 	int lineCapacity_ = 1;
 	float verticalOffset_ = 0.0f;
-	InputBoxAnimator animator_;
+	PopupAnimator animator_;
 	std::vector<std::wstring> historyEntries_;
 	std::wstring historyDraft_;
 	int historyNavigationIndex_ = -1;

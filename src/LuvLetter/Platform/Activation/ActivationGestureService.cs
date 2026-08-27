@@ -14,6 +14,14 @@ public sealed class ActivationGestureService : IActivationGestureService, IDispo
     private const uint VkControl = 0x11;
     private const uint VkLeftControl = 0xA2;
     private const uint VkRightControl = 0xA3;
+    private const uint VkMenu = 0x12;
+    private const uint VkLeftMenu = 0xA4;
+    private const uint VkRightMenu = 0xA5;
+    private const uint VkEscape = 0x1B;
+    private const uint VkF1 = 0x70;
+    private const int VkShift = 0x10;
+    private const int VkLeftWindows = 0x5B;
+    private const int VkRightWindows = 0x5C;
     private const int LlkhfExtended = 0x01;
     private const int KeyboardFlagsOffset = 8;
 
@@ -36,6 +44,8 @@ public sealed class ActivationGestureService : IActivationGestureService, IDispo
     }
 
     public event EventHandler? CommandInputRequested;
+
+    public event EventHandler? PopupsDismissRequested;
 
     public event EventHandler? QuickActionsRequested;
 
@@ -175,6 +185,24 @@ public sealed class ActivationGestureService : IActivationGestureService, IDispo
                 ? stateMachine!.HandleControlDown(side, timestampMs)
                 : stateMachine!.HandleControlUp(side, timestampMs);
         }
+        else if (TryGetAltSide(virtualKey, keyboardData, out side))
+        {
+            action = isKeyDown
+                ? stateMachine.HandleAltDown(side)
+                : stateMachine.HandleAltUp(side);
+        }
+        else if (virtualKey == VkF1)
+        {
+            action = isKeyDown
+                ? stateMachine.HandleFunctionOneDown(HasAdditionalHotkeyModifier())
+                : stateMachine.HandleFunctionOneUp();
+        }
+        else if (virtualKey == VkEscape)
+        {
+            action = isKeyDown
+                ? stateMachine.HandleEscapeDown()
+                : stateMachine.HandleEscapeUp();
+        }
         else
         {
             stateMachine.HandleOtherKey();
@@ -244,7 +272,11 @@ public sealed class ActivationGestureService : IActivationGestureService, IDispo
                 {
                     CommandInputRequested?.Invoke(this, EventArgs.Empty);
                 }
-                else
+                else if (action == CtrlGestureAction.PopupsDismissRequested)
+                {
+                    PopupsDismissRequested?.Invoke(this, EventArgs.Empty);
+                }
+                else if (action == CtrlGestureAction.QuickActionsRequested)
                 {
                     QuickActionsRequested?.Invoke(this, EventArgs.Empty);
                 }
@@ -326,4 +358,41 @@ public sealed class ActivationGestureService : IActivationGestureService, IDispo
                 return false;
         }
     }
+
+    private static bool TryGetAltSide(
+        uint virtualKey,
+        IntPtr keyboardData,
+        out ControlKeySide side
+    )
+    {
+        switch (virtualKey)
+        {
+            case VkLeftMenu:
+                side = ControlKeySide.Left;
+                return true;
+            case VkRightMenu:
+                side = ControlKeySide.Right;
+                return true;
+            case VkMenu:
+                var flags = Marshal.ReadInt32(keyboardData, KeyboardFlagsOffset);
+                side = (flags & LlkhfExtended) != 0
+                    ? ControlKeySide.Right
+                    : ControlKeySide.Left;
+                return true;
+            default:
+                side = default;
+                return false;
+        }
+    }
+
+    private static bool HasAdditionalHotkeyModifier() =>
+        IsAsyncKeyDown(VkShift)
+        || IsAsyncKeyDown(VkLeftWindows)
+        || IsAsyncKeyDown(VkRightWindows);
+
+    private static bool IsAsyncKeyDown(int virtualKey) =>
+        (GetAsyncKeyState(virtualKey) & 0x8000) != 0;
+
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int virtualKey);
 }

@@ -284,24 +284,6 @@ public sealed partial class SettingsService
         configuration = baseline;
         error = string.Empty;
 
-        if (input.InputBoxGesture is not { } inputBoxGesture)
-        {
-            error = "Select a command input activation gesture.";
-            return false;
-        }
-
-        if (input.QuickActionsGesture is not { } quickActionsGesture)
-        {
-            error = "Select a quick actions activation gesture.";
-            return false;
-        }
-
-        if (inputBoxGesture == quickActionsGesture)
-        {
-            error = "Command input and quick actions must use different gestures.";
-            return false;
-        }
-
         if (!input.AllowLeftControl && !input.AllowRightControl)
         {
             error = "Enable at least one Ctrl key.";
@@ -321,30 +303,23 @@ public sealed partial class SettingsService
                 out var secondPressTimeout,
                 out error
             )
-            || !TryParseInt(
-                input.HoldThreshold,
-                "Hold threshold",
-                out var holdThreshold,
-                out error
-            )
         )
         {
             return false;
         }
 
-        if (tapMaxDuration <= 0 || secondPressTimeout <= 0 || holdThreshold <= 0)
+        if (tapMaxDuration <= 0 || secondPressTimeout <= 0)
         {
-            error = "Gesture timings must be greater than zero milliseconds.";
+            error = "Double-Ctrl timings must be greater than zero milliseconds.";
             return false;
         }
 
         configuration = baseline with
         {
-            InputBox = inputBoxGesture,
-            QuickActions = quickActionsGesture,
+            InputBox = ActivationGestureKind.DoubleControlPress,
+            QuickActions = ActivationGestureKind.ControlTapThenHold,
             TapMaxDurationMs = tapMaxDuration,
             SecondPressTimeoutMs = secondPressTimeout,
-            HoldThresholdMs = holdThreshold,
             AllowLeftControl = input.AllowLeftControl,
             AllowRightControl = input.AllowRightControl,
         };
@@ -406,7 +381,7 @@ public sealed partial class SettingsService
             )
             || !TryParseInt(
                 input.BottomMargin,
-                "QuickActions bottom margin",
+                "QuickActions top margin",
                 out var bottomMargin,
                 out error
             )

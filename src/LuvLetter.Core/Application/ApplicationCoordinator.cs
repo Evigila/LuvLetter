@@ -2,7 +2,6 @@ using Microsoft.Extensions.Hosting;
 using LuvLetter.Core.Activation;
 using LuvLetter.Core.Commands;
 using LuvLetter.Core.Configuration;
-using LuvLetter.Core.Modules;
 using LuvLetter.Core.Modules.QuickActions;
 using LuvLetter.Core.NativeShell;
 using LuvLetter.Core.Plugins;
@@ -17,7 +16,7 @@ public sealed class ApplicationCoordinator : IHostedService
     private readonly ILuvLetterConfigurationStore configurationStore;
     private readonly CommandDispatcher commandDispatcher;
     private readonly QuickActionRegistry quickActions;
-    private readonly IReadOnlyList<IApplicationModule> modules;
+    private readonly IReadOnlyList<ILuvLetterPlugin> builtInPlugins;
     private readonly IActivationGestureService activationGestures;
     private readonly INativeShell nativeShell;
     private readonly IApplicationShell applicationShell;
@@ -30,7 +29,7 @@ public sealed class ApplicationCoordinator : IHostedService
         ILuvLetterConfigurationStore configurationStore,
         CommandDispatcher commandDispatcher,
         QuickActionRegistry quickActions,
-        IEnumerable<IApplicationModule> modules,
+        IEnumerable<ILuvLetterPlugin> builtInPlugins,
         IActivationGestureService activationGestures,
         INativeShell nativeShell,
         IApplicationShell applicationShell)
@@ -38,7 +37,7 @@ public sealed class ApplicationCoordinator : IHostedService
         this.configurationStore = configurationStore;
         this.commandDispatcher = commandDispatcher;
         this.quickActions = quickActions;
-        this.modules = modules.ToArray();
+        this.builtInPlugins = builtInPlugins.ToArray();
         this.activationGestures = activationGestures;
         this.nativeShell = nativeShell;
         this.applicationShell = applicationShell;
@@ -58,13 +57,11 @@ public sealed class ApplicationCoordinator : IHostedService
             var configuration = configurationStore.Current;
             nativeShell.ApplyConfiguration(configuration.InputBox, configuration.QuickActions);
 
-            foreach (var module in modules)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                module.Register(commandDispatcher, quickActions);
-            }
-
-            pluginSession = PluginLoader.Load([], commandDispatcher, quickActions);
+            cancellationToken.ThrowIfCancellationRequested();
+            pluginSession = PluginLoader.Load(
+                builtInPlugins,
+                commandDispatcher,
+                quickActions);
             warnings.AddRange(pluginSession.Warnings);
 
             try
@@ -124,6 +121,7 @@ public sealed class ApplicationCoordinator : IHostedService
         commandDispatcher.Unhandled += HandleUnhandledCommand;
         commandDispatcher.Failed += HandleFailedCommand;
         activationGestures.CommandInputRequested += HandleCommandInputRequested;
+        activationGestures.PopupsDismissRequested += HandlePopupsDismissRequested;
         activationGestures.QuickActionsRequested += HandleQuickActionsRequested;
         eventsSubscribed = true;
     }
@@ -137,6 +135,7 @@ public sealed class ApplicationCoordinator : IHostedService
 
         activationGestures.QuickActionsRequested -= HandleQuickActionsRequested;
         activationGestures.CommandInputRequested -= HandleCommandInputRequested;
+        activationGestures.PopupsDismissRequested -= HandlePopupsDismissRequested;
         commandDispatcher.Failed -= HandleFailedCommand;
         commandDispatcher.Unhandled -= HandleUnhandledCommand;
         quickActions.Changed -= HandleQuickActionsChanged;
@@ -227,6 +226,13 @@ public sealed class ApplicationCoordinator : IHostedService
         _ = sender;
         _ = eventArgs;
         TryNativeAction(nativeShell.ToggleCommandInput, "toggle the command input");
+    }
+
+    private void HandlePopupsDismissRequested(object? sender, EventArgs eventArgs)
+    {
+        _ = sender;
+        _ = eventArgs;
+        TryNativeAction(nativeShell.HidePopups, "hide popups");
     }
 
     private void HandleQuickActionsRequested(object? sender, EventArgs eventArgs)

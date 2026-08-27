@@ -6,6 +6,8 @@ public interface IActivationGestureService
 {
     event EventHandler? CommandInputRequested;
 
+    event EventHandler? PopupsDismissRequested;
+
     event EventHandler? QuickActionsRequested;
 
     void Start(ActivationGestureOptions options);

@@ -1,3 +1,4 @@
+#include "api/InputBoxApi.h"
 #include "rendering/InputBoxAnimator.h"
 
 #include <cmath>
@@ -74,6 +75,14 @@ namespace
 		AssertNear(0.0f, frame.opacity, "Initial opacity must be zero.");
 		AssertNear(settings.hiddenWidthScale, frame.widthScale, "Initial width must be constrained.");
 		AssertNear(settings.hiddenVerticalOffsetDip, frame.verticalOffsetDip, "Initial offset must be below the final position.");
+	}
+
+	void TestAbiContract()
+	{
+		Assert(LUVLETTER_NATIVE_ABI_VERSION == 2, "Native ABI must expose atomic popup dismissal.");
+		Assert(sizeof(LuvLetterInputBoxConfig) == 104, "Input config ABI size changed unexpectedly.");
+		Assert(sizeof(LuvLetterFeatureWindowConfig) == 88, "Quick Actions config ABI size changed unexpectedly.");
+		Assert(sizeof(LuvLetterFeatureItem) == 16, "Quick Action item ABI size changed unexpectedly.");
 	}
 
 	void TestShowHideEndpointsAndRepeatedDirection()
@@ -231,6 +240,12 @@ namespace
 		AssertNear(1.0f, clamped.Settings().hiddenWidthScale, "Hidden width scale must clamp to one.");
 		AssertNear(4'096.0f, clamped.Settings().hiddenVerticalOffsetDip, "Vertical offset must clamp to the maximum.");
 
+		InputBoxAnimationSettings upward{};
+		upward.hiddenVerticalOffsetDip = -8'000.0f;
+		InputBoxAnimator upwardClamped(upward);
+		AssertNear(-4'096.0f, upwardClamped.Settings().hiddenVerticalOffsetDip,
+			"Negative vertical offset must support an upward hidden position and clamp to the minimum.");
+
 		InputBoxAnimationSettings nonFinite{};
 		nonFinite.showDurationMilliseconds = std::numeric_limits<double>::quiet_NaN();
 		nonFinite.hideDurationMilliseconds = std::numeric_limits<double>::infinity();
@@ -276,6 +291,7 @@ int main()
 {
 	const std::vector<std::pair<std::string, std::function<void()>>> tests
 	{
+		{ "Native ABI contract", TestAbiContract },
 		{ "Initial hidden state", TestInitialState },
 		{ "Show/hide endpoints and repeated direction", TestShowHideEndpointsAndRepeatedDirection },
 		{ "Bidirectional reversal continuity", TestBidirectionalReversalContinuity },

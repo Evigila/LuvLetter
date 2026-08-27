@@ -14,6 +14,8 @@ using namespace LuvLetterNative;
 namespace
 {
 	constexpr int64_t MaxSurfacePixels = 16LL * 1024LL * 1024LL;
+	constexpr UINT_PTR AnimationTimerId = 1;
+	constexpr UINT AnimationFrameMs = 15;
 }
 
 QuickActionsWindow::QuickActionsWindow(
@@ -190,27 +192,118 @@ void QuickActionsWindow::ApplyDpiChange(UINT dpi, const RECT* suggestedRect)
 	if (visible_) Render();
 }
 
-void QuickActionsWindow::Show(HMONITOR targetMonitor)
+void QuickActionsWindow::Show(HMONITOR targetMonitor, HWND previousForegroundWindow)
 {
 	if (hwnd_ == nullptr || items_.empty()) return;
+	SynchronizeAnimation();
+	const auto wasPresenting = animator_.Current().ShouldPresent();
+	previousForegroundHwnd_ = previousForegroundWindow;
 	targetMonitor_ = targetMonitor;
+	EnableWindow(hwnd_, TRUE);
 	// See ShowInputWindowAndFocus: move once to obtain the window's target DPI,
 	// then perform the configured DIP-based placement with that DPI.
-	UpdatePosition();
+	UpdatePosition(wasPresenting);
 	RefreshDpiFromWindow();
 	UpdateGeometry();
 	visible_ = true;
+	animator_.Show();
+	UpdatePosition();
+	Render();
 	ShowWindow(hwnd_, SW_SHOWNORMAL);
 	SetForegroundWindow(hwnd_);
 	SetFocus(hwnd_);
-	Render();
+	animationTimestamp_ = GetTickCount64();
+	if (animator_.Current().IsAnimating())
+	{
+		if (SetTimer(hwnd_, AnimationTimerId, AnimationFrameMs, nullptr) == 0)
+		{
+			animator_.Reset(true);
+			UpdatePosition();
+			Render();
+		}
+	}
+	else
+	{
+		KillTimer(hwnd_, AnimationTimerId);
+	}
 }
 
 void QuickActionsWindow::Hide()
 {
 	if (hwnd_ == nullptr) return;
+	if (!visible_ && !animator_.TargetVisible())
+	{
+		if (IsWindowEnabled(hwnd_)) EnableWindow(hwnd_, FALSE);
+		return;
+	}
+	SynchronizeAnimation();
 	visible_ = false;
+	animator_.Hide();
+	ReleaseFocus();
+	UpdatePosition();
+	Render();
+	animationTimestamp_ = GetTickCount64();
+	if (animator_.Current().IsAnimating())
+	{
+		if (SetTimer(hwnd_, AnimationTimerId, AnimationFrameMs, nullptr) == 0)
+		{
+			animator_.Reset(false);
+			CompleteHide();
+		}
+		return;
+	}
+	CompleteHide();
+}
+
+void QuickActionsWindow::ReleaseFocus()
+{
+	if (hwnd_ == nullptr) return;
+	const auto ownsFocus = GetForegroundWindow() == hwnd_ || GetFocus() == hwnd_;
+	EnableWindow(hwnd_, FALSE);
+	if (!ownsFocus) return;
+	if (peerHwnd_ != nullptr && IsWindowVisible(peerHwnd_) && IsWindowEnabled(peerHwnd_))
+	{
+		SetForegroundWindow(peerHwnd_);
+		SetFocus(peerHwnd_);
+	}
+	else if (previousForegroundHwnd_ != nullptr && IsWindow(previousForegroundHwnd_))
+	{
+		SetForegroundWindow(previousForegroundHwnd_);
+	}
+}
+
+void QuickActionsWindow::SynchronizeAnimation()
+{
+	const auto now = GetTickCount64();
+	if (animationTimestamp_ != 0 && animator_.Current().IsAnimating())
+	{
+		const auto elapsed = now >= animationTimestamp_
+			? static_cast<double>(now - animationTimestamp_)
+			: 0.0;
+		animator_.Advance(elapsed);
+	}
+	animationTimestamp_ = now;
+}
+
+void QuickActionsWindow::AdvanceAnimation()
+{
+	if (hwnd_ == nullptr) return;
+	SynchronizeAnimation();
+	const auto frame = animator_.Current();
+	UpdatePosition();
+	Render();
+	if (frame.IsAnimating()) return;
+	KillTimer(hwnd_, AnimationTimerId);
+	if (!frame.ShouldPresent()) CompleteHide();
+}
+
+void QuickActionsWindow::CompleteHide()
+{
+	if (hwnd_ == nullptr) return;
+	KillTimer(hwnd_, AnimationTimerId);
+	EnableWindow(hwnd_, FALSE);
 	ShowWindow(hwnd_, SW_HIDE);
+	animationTimestamp_ = 0;
 }
 
 void QuickActionsWindow::UpdateGeometry()
@@ -222,7 +315,7 @@ void QuickActionsWindow::UpdateGeometry()
 	updatingGeometry_ = false;
 }
 
-void QuickActionsWindow::UpdatePosition() const
+void QuickActionsWindow::UpdatePosition(bool applyAnimation) const
 {
 	if (hwnd_ == nullptr) return;
 	MONITORINFO monitorInfo{};
@@ -238,10 +331,14 @@ void QuickActionsWindow::UpdatePosition() const
 	(void)renderScale;
 	const auto workWidth = monitorInfo.rcWork.right - monitorInfo.rcWork.left;
 	LONG x = monitorInfo.rcWork.left + ((std::max)(0L, workWidth - static_cast<LONG>(width)) / 2);
-	LONG y = monitorInfo.rcWork.bottom - height
-		- DipToPixels(static_cast<float>(config_.bottomMargin), dpi_);
+	LONG y = monitorInfo.rcWork.top
+		+ DipToPixels(static_cast<float>(config_.bottomMargin), dpi_);
 	x += DipToPixels(static_cast<float>(config_.offsetX), dpi_);
 	y += DipToPixels(static_cast<float>(config_.offsetY), dpi_);
+	if (applyAnimation)
+	{
+		y += DipToPixels(animator_.Current().verticalOffsetDip, dpi_);
+	}
 	SetWindowPos(hwnd_, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE);
 }
 
@@ -399,7 +496,13 @@ void QuickActionsWindow::Render()
 	}
 	if (SUCCEEDED(endResult))
 	{
-		surface_->Present(hwnd_, width, height);
+		surface_->Present(
+			hwnd_,
+			width,
+			height,
+			nullptr,
+			static_cast<BYTE>(std::lround(
+				(std::clamp)(animator_.Current().opacity, 0.0f, 1.0f) * 255.0f)));
 	}
 }
 
@@ -467,8 +570,16 @@ LRESULT QuickActionsWindow::HandleMessage(HWND window, UINT message, WPARAM wPar
 	switch (message)
 	{
 	case WM_ERASEBKGND: return 1;
+	case WM_TIMER:
+		if (wParam == AnimationTimerId)
+		{
+			AdvanceAnimation();
+			return 0;
+		}
+		break;
 	case WM_KEYDOWN:
 	case WM_SYSKEYDOWN:
+		if (!visible_) return 0;
 		if ((lParam & (1LL << 30)) != 0) return 0;
 		if (HandleKeyDown(wParam)) return 0;
 		break;
@@ -476,6 +587,7 @@ LRESULT QuickActionsWindow::HandleMessage(HWND window, UINT message, WPARAM wPar
 		return 0;
 	case WM_LBUTTONDOWN:
 	{
+		if (!visible_) return 0;
 		SetFocus(hwnd_);
 		int width = 0;
 		int height = 0;
@@ -512,6 +624,7 @@ LRESULT QuickActionsWindow::HandleMessage(HWND window, UINT message, WPARAM wPar
 		Hide();
 		return 0;
 	case WM_DESTROY:
+		KillTimer(hwnd_, AnimationTimerId);
 		DiscardResources(true);
 		hwnd_ = nullptr;
 		visible_ = false;

@@ -10,7 +10,7 @@ internal static class Program
     [STAThread]
     public static void Main(string[] args)
     {
-        using var mutex = new Mutex(true, "app.LuvLetter.AcksheedSys", out var isNewInstance);
+        using var mutex = new Mutex(true, "app.LuvLetter.ArkheideSystem", out var isNewInstance);
         if (!isNewInstance)
         {
             WpfMessageBox.Show("LuvLetter is already running.", "LuvLetter");

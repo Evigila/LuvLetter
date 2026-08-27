@@ -32,25 +32,25 @@ Windows implementations through `IApplicationShell`, `IActivationGestureService`
 ### `src/LuvLetter.Core`
 
 - `Application/ApplicationCoordinator`: the single application `IHostedService`. It applies the
-  initial configuration, registers built-in modules, loads plugins, synchronizes Quick
+  initial configuration, loads built-in and external plugins, synchronizes Quick
   Actions, subscribes runtime events, starts gestures, and performs idempotent shutdown.
-- `Modules/Settings`: one cohesive settings module containing the public service port,
-  editor DTOs, validation/mapping, transactional apply/rollback, and built-in settings
-  command/Quick Action registration.
+- `Modules/Settings`: one cohesive settings capability containing the public service port,
+  editor DTOs, validation/mapping, transactional apply/rollback, and the non-removable
+  built-in settings plugin.
 - `Modules/QuickActions`: Quick Action definitions, snapshots, registrar capability,
   registry, and activation results.
 - `Plugins`: dynamic assembly discovery and lifetime ownership. External extensions
   implement `ILuvLetterPlugin`; the default directory is `plugins`.
 - `Commands`: bounded, serial command registration and dispatch.
-- `Activation`: the deterministic Ctrl-gesture state machine and platform port.
+- `Activation`: the deterministic global-shortcut state machine and platform port.
 - `Configuration`: immutable models, schema migration, normalization, JSON persistence,
   and current-snapshot ownership.
 - `NativeShell`: the `INativeShell` port plus the managed ABI adapter, token mapping, and
   bounded callback delivery. Rendering remains in the Native project.
 
-`Modules` means built-in product functionality, with one folder per capability.
-`Plugins` exclusively means dynamically discovered external assemblies. There is no
-generic `Features` layer and no dynamic `Modules` loader.
+Built-in product functionality implements the same plugin contract as dynamically
+discovered extensions. The built-in settings plugin is always supplied by dependency
+composition and cannot be removed; optional assemblies are discovered from `plugins`.
 
 ### `src/LuvLetter.Native`
 
@@ -58,12 +58,14 @@ generic `Features` layer and no dynamic `Modules` loader.
 - `configuration`: native defaults and defensive ABI validation.
 - `host/NativeShellHost`: the Native UI-thread owner and request serializer.
 - `windows/InputWindow`: input editing, history, IME, animation driving, and rendering.
-- `windows/QuickActionsWindow`: Quick Action paging, hotkeys, geometry, and rendering.
+- `windows/QuickActionsWindow`: top-aligned Quick Action paging, hotkeys, animation,
+  geometry, and rendering.
 - `rendering`: shared animation and layered-window surface primitives.
 
-The internal Native vocabulary is `QuickActions`. ABI v1 deliberately retains its
-historic `Feature*` struct and export names so existing managed/native pairs remain
-binary compatible; those names are compatibility wire identifiers, not domain modules.
+The internal Native vocabulary is `QuickActions`. ABI v2 deliberately retains its
+historic `Feature*` struct names and layouts; those names are compatibility wire
+identifiers, not domain modules. The v2 version gate advertises the required atomic
+`HidePopups` export so a new Managed assembly cannot silently pair with an older DLL.
 
 ## Host lifecycle
 
@@ -78,11 +80,10 @@ that cannot occur. The Host owns singleton disposal and `IHostedService` start/s
 `ApplicationCoordinator` is the only hosted business coordinator. Startup order is:
 
 1. Apply current InputBox and QuickActions configuration to Native.
-2. Register every built-in `IApplicationModule`.
-3. Discover and load external plugins from `plugins`.
-4. Synchronize the Quick Action snapshot.
-5. Subscribe command, Native, registry, and gesture events.
-6. Start activation gestures; the lazily created settings window remains closed.
+2. Load the mandatory built-in plugins, then discover external plugins from `plugins`.
+3. Synchronize the Quick Action snapshot.
+4. Subscribe command, Native, registry, and gesture events.
+5. Start activation gestures; the lazily created settings window remains closed.
 
 Plugin and initial-load diagnostics are recoverable warnings. A gesture-hook failure
 opens Settings as a degraded mode. Fatal partial startup executes compensating cleanup.
@@ -92,11 +93,25 @@ idempotent and container-owned singletons are disposed by the Host afterward.
 
 ## Configuration compatibility
 
-Configuration is stored in `%AppData%\LuvLetter\settings.json`. Schema 6 writes the
+Configuration is stored in `%AppData%\LuvLetter\settings.json`. Schema 9 writes the
 canonical groups `InputBox`, `ActivationGestures`, and `QuickActions`. Older settings
 using `FeatureWindow` at the root or inside `ActivationGestures` are migrated before
 deserialization. A document containing both legacy and canonical names is rejected as
 ambiguous instead of silently choosing one value.
+
+InputBox and QuickActions share the same default surface tokens: an opaque silver
+background (`#FFC0C0C0`), white border (`#FFFFFFFF`), dark-gray content
+(`#FF3F3F3F`), 8-pixel corner radius, and 1-pixel border. Core owns the canonical
+configuration defaults, while Native mirrors the same values for ABI fallback and
+defensive sanitization. Schema migration upgrades fields that still match the previous
+default theme and preserves customized values. Schema 9 also recognizes the historical
+640-by-44 dark InputBox preset as one atomic theme, replacing its black surface and
+foreground together so it cannot become a low-contrast hybrid after migration.
+
+The command input shortcut is fixed to double Ctrl, Quick Actions is fixed to Alt+F1,
+and Escape globally dismisses both popups through one serialized Native request. The
+two Native popups have independent visibility: command input is bottom-centered and
+enters upward, while Quick Actions is top-centered and enters downward.
 
 Writes use a same-directory temporary file, flush it, atomically replace the old file,
 and only then publish the new in-memory snapshot.

@@ -75,7 +75,7 @@ internal delegate void NativeInputSubmittedCallback(IntPtr text, int length, Int
 
 internal sealed class NativeShellApi : INativeShellApi
 {
-    private const uint CurrentAbiVersion = 1;
+    private const uint CurrentAbiVersion = 2;
 
     internal static INativeShellApi Instance { get; } = new NativeShellApi();
 
@@ -179,6 +179,13 @@ internal sealed class NativeShellApi : INativeShellApi
 
         [DllImport(
             "LuvLetter.Native.dll",
+            EntryPoint = "HidePopups",
+            ExactSpelling = true,
+            CallingConvention = CallingConvention.StdCall)]
+        internal static extern int HidePopups();
+
+        [DllImport(
+            "LuvLetter.Native.dll",
             EntryPoint = "ShutdownInputBox",
             ExactSpelling = true,
             CallingConvention = CallingConvention.StdCall)]
@@ -215,6 +222,8 @@ internal sealed class NativeShellApi : INativeShellApi
     public int HideFeatureWindow() => NativeMethods.HideFeatureWindow();
 
     public int ToggleFeatureWindow() => NativeMethods.ToggleFeatureWindow();
+
+    public int HidePopups() => NativeMethods.HidePopups();
 
     public int ShutdownInputBox() => NativeMethods.ShutdownInputBox();
 

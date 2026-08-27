@@ -110,6 +110,12 @@ int LUVLETTER_NATIVE_CALL ToggleFeatureWindow()
 	catch (...) { return E_FAIL; }
 }
 
+int LUVLETTER_NATIVE_CALL HidePopups()
+{
+	try { return NativeShellHost::Instance().HidePopups(); }
+	catch (...) { return E_FAIL; }
+}
+
 int LUVLETTER_NATIVE_CALL ShutdownInputBox()
 {
 	try { return NativeShellHost::Instance().Shutdown(); }

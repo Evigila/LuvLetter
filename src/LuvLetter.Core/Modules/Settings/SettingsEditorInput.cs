@@ -32,11 +32,8 @@ public sealed record InputBoxSettingsInput(
 );
 
 public sealed record ActivationGestureSettingsInput(
-    ActivationGestureKind? InputBoxGesture,
-    ActivationGestureKind? QuickActionsGesture,
     string TapMaxDuration,
     string SecondPressTimeout,
-    string HoldThreshold,
     bool AllowLeftControl,
     bool AllowRightControl
 );

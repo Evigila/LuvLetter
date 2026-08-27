@@ -13,11 +13,6 @@ namespace LuvLetter.View.Settings;
 public partial class SettingsWindow : Window
 {
     private readonly ISettingsService settingsService;
-    private readonly IReadOnlyList<SettingsChoice<ActivationGestureKind>> gestureChoices =
-    [
-        new(ActivationGestureKind.DoubleControlPress, "Double-tap Ctrl"),
-        new(ActivationGestureKind.ControlTapThenHold, "Tap Ctrl, then hold Ctrl"),
-    ];
     private readonly ObservableCollection<SettingsChoice<int>> firstItemKeyChoices =
         new(
             Enumerable.Range(0, 10).Select(
@@ -41,8 +36,6 @@ public partial class SettingsWindow : Window
 
         InitializeComponent();
         PositionModeComboBox.ItemsSource = Enum.GetValues<InputBoxPositionMode>();
-        InputBoxGestureComboBox.ItemsSource = gestureChoices;
-        QuickActionsGestureComboBox.ItemsSource = gestureChoices;
         FirstItemNumberComboBox.ItemsSource = firstItemKeyChoices;
         hotkeyFields = new Dictionary<WpfTextBox, SettingsHotkeyField>
         {

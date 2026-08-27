@@ -21,9 +21,9 @@ public sealed record QuickActionsLayoutOptions
 
     public float Gap { get; init; } = 12.0f;
 
-    public float CornerRadius { get; init; } = 16.0f;
+    public float CornerRadius { get; init; } = SurfaceStyleDefaults.CornerRadius;
 
-    public float BorderThickness { get; init; } = 1.0f;
+    public float BorderThickness { get; init; } = SurfaceStyleDefaults.BorderThickness;
 
     public float FontSize { get; init; } = 16.0f;
 
@@ -36,17 +36,17 @@ public sealed record QuickActionsLayoutOptions
 
 public sealed record QuickActionsColorOptions
 {
-    public string Border { get; init; } = "#66FFFFFF";
+    public string Border { get; init; } = SurfaceStyleDefaults.Border;
 
-    public string Background { get; init; } = "#38F5F5F5";
+    public string Background { get; init; } = SurfaceStyleDefaults.Background;
 
-    public float BackgroundOpacity { get; init; } = 0.22f;
+    public float BackgroundOpacity { get; init; } = SurfaceStyleDefaults.BackgroundOpacity;
 
-    public string Text { get; init; } = "#FFFFFFFF";
+    public string Text { get; init; } = SurfaceStyleDefaults.Content;
 
-    public float TextOpacity { get; init; } = 1.0f;
+    public float TextOpacity { get; init; } = SurfaceStyleDefaults.ContentOpacity;
 
-    public string Accent { get; init; } = "#FFFFFFFF";
+    public string Accent { get; init; } = SurfaceStyleDefaults.Content;
 }
 
 public sealed record QuickActionsHotkeyOptions

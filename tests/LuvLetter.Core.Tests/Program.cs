@@ -6,10 +6,10 @@ internal static partial class Program
     [
         ("Default activation gestures", TestDefaultActivationGestures),
         ("Ctrl gesture default double tap", TestCtrlGestureDefaultDoubleTap),
-        ("Ctrl gesture default tap then hold", TestCtrlGestureDefaultTapThenHold),
+        ("Legacy Ctrl hold is inactive", TestCtrlGestureHoldIsInactive),
         ("Ctrl gesture cancellation boundaries", TestCtrlGestureCancellationBoundaries),
         ("Ctrl gesture side and auto-repeat handling", TestCtrlGestureSidesAndAutoRepeat),
-        ("Ctrl gesture configurable mapping", TestCtrlGestureConfigurableMapping),
+        ("Global Alt+F1 and Escape shortcuts", TestGlobalShortcuts),
         ("Configuration normalization", TestConfigurationNormalization),
         ("Quick-action registry", TestQuickActionRegistry),
         ("Asynchronous command dispatch", TestCommandDispatcher),

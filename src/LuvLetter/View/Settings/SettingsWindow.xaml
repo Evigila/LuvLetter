@@ -185,28 +185,15 @@
       <TabItem Header="Activation gestures">
         <ScrollViewer Padding="16" VerticalScrollBarVisibility="Auto">
           <StackPanel>
-            <TextBlock FontWeight="SemiBold" Text="Gesture assignment" />
+            <TextBlock FontWeight="SemiBold" Text="Global shortcuts" />
             <TextBlock
-              Margin="0,3,0,8"
+              Margin="0,3,0,20"
               Foreground="#666666"
-              Text="Assign a distinct Ctrl gesture to each native window." />
-            <UniformGrid Columns="2" Margin="0,0,0,20">
-              <StackPanel Margin="0,0,12,0">
-                <TextBlock Text="Command input" />
-                <ComboBox
-                  x:Name="InputBoxGestureComboBox"
-                  Style="{StaticResource ConfigurationComboBoxStyle}" />
-              </StackPanel>
-              <StackPanel>
-                <TextBlock Text="Quick actions" />
-                <ComboBox
-                  x:Name="QuickActionsGestureComboBox"
-                  Style="{StaticResource ConfigurationComboBoxStyle}" />
-              </StackPanel>
-            </UniformGrid>
+              Text="Double-tap Ctrl toggles command input. Alt+F1 toggles Quick Actions. Escape hides both popups even when neither has focus."
+              TextWrapping="Wrap" />
 
-            <TextBlock FontWeight="SemiBold" Text="Timing" />
-            <UniformGrid Columns="3" Margin="0,8,0,20">
+            <TextBlock FontWeight="SemiBold" Text="Double-Ctrl timing" />
+            <UniformGrid Columns="2" Margin="0,8,0,20">
               <StackPanel Margin="0,0,12,0">
                 <TextBlock Text="Tap maximum (ms)" />
                 <TextBox x:Name="TapMaxDurationTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
@@ -214,10 +201,6 @@
               <StackPanel Margin="0,0,12,0">
                 <TextBlock Text="Second press timeout (ms)" />
                 <TextBox x:Name="SecondPressTimeoutTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
-              </StackPanel>
-              <StackPanel>
-                <TextBlock Text="Hold threshold (ms)" />
-                <TextBox x:Name="HoldThresholdTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
               </StackPanel>
             </UniformGrid>
 
@@ -267,7 +250,7 @@
                 <TextBox x:Name="QuickActionsFontSizeTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
               </StackPanel>
               <StackPanel Margin="0,0,12,0">
-                <TextBlock Text="Bottom margin" />
+                <TextBlock Text="Top margin" />
                 <TextBox x:Name="QuickActionsBottomMarginTextBox" Style="{StaticResource ConfigurationTextBoxStyle}" />
               </StackPanel>
               <StackPanel Margin="0,0,12,0">

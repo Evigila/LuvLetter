@@ -28,5 +28,7 @@ internal interface INativeShellApi
 
     int ToggleFeatureWindow();
 
+    int HidePopups();
+
     int ShutdownInputBox();
 }

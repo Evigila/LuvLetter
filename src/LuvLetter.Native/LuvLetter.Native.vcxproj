@@ -92,6 +92,7 @@
     <ClInclude Include="host\NativeShellHost.h" />
     <ClInclude Include="rendering\InputBoxAnimator.h" />
     <ClInclude Include="rendering\LayeredWindowSurface.h" />
+    <ClInclude Include="rendering\SurfaceStyleDefaults.h" />
     <ClInclude Include="windows\QuickActionsWindow.h" />
     <ClInclude Include="windows\InputWindow.h" />
   </ItemGroup>

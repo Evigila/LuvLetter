@@ -16,7 +16,7 @@ internal static partial class Program
         Assert.Equal(
             ActivationGestureKind.ControlTapThenHold,
             defaults.QuickActions,
-            "The quick actions must default to tap Ctrl, then hold Ctrl.");
+            "The legacy serialized value remains stable even though Alt+F1 now activates Quick Actions.");
         Assert.True(defaults.AllowLeftControl, "Left Ctrl should be enabled by default.");
         Assert.True(defaults.AllowRightControl, "Right Ctrl should be enabled by default.");
 
@@ -29,13 +29,25 @@ internal static partial class Program
         Assert.Equal(10.0f, configuration.InputBox.Size.HorizontalPadding);
         Assert.Equal(4.0f, configuration.InputBox.Size.VerticalPadding);
         Assert.Equal(2.25f, configuration.InputBox.Size.CaretWidth);
-        Assert.Equal("#66FFFFFF", configuration.InputBox.Colors.Border);
-        Assert.Equal("#80F5F5F5", configuration.InputBox.Colors.Background);
-        Assert.Equal(0.5f, configuration.InputBox.Colors.BackgroundOpacity);
+        Assert.Equal(SurfaceStyleDefaults.Border, configuration.InputBox.Colors.Border);
+        Assert.Equal(SurfaceStyleDefaults.Background, configuration.InputBox.Colors.Background);
+        Assert.Equal(
+            SurfaceStyleDefaults.BackgroundOpacity,
+            configuration.InputBox.Colors.BackgroundOpacity);
+        Assert.Equal(SurfaceStyleDefaults.Content, configuration.InputBox.Colors.Text);
+        Assert.Equal(SurfaceStyleDefaults.Content, configuration.InputBox.Colors.Caret);
         Assert.Equal(1.0f, configuration.InputBox.Colors.TextOpacity);
         Assert.Equal(1.0f, configuration.QuickActions.Layout.BorderThickness);
-        Assert.Equal(16.0f, configuration.QuickActions.Layout.CornerRadius);
-        Assert.Equal("#66FFFFFF", configuration.QuickActions.Colors.Border);
+        Assert.Equal(8.0f, configuration.QuickActions.Layout.CornerRadius);
+        Assert.Equal(SurfaceStyleDefaults.Border, configuration.QuickActions.Colors.Border);
+        Assert.Equal(
+            SurfaceStyleDefaults.Background,
+            configuration.QuickActions.Colors.Background);
+        Assert.Equal(
+            SurfaceStyleDefaults.BackgroundOpacity,
+            configuration.QuickActions.Colors.BackgroundOpacity);
+        Assert.Equal(SurfaceStyleDefaults.Content, configuration.QuickActions.Colors.Text);
+        Assert.Equal(SurfaceStyleDefaults.Content, configuration.QuickActions.Colors.Accent);
         Assert.Equal(1.0f, configuration.QuickActions.Colors.TextOpacity);
 
         return Task.CompletedTask;
@@ -74,7 +86,7 @@ internal static partial class Program
         return Task.CompletedTask;
     }
 
-    private static Task TestCtrlGestureDefaultTapThenHold()
+    private static Task TestCtrlGestureHoldIsInactive()
     {
         var options = LuvLetterConfiguration.Default.ActivationGestures;
         var machine = new CtrlGestureStateMachine(options);
@@ -100,9 +112,9 @@ internal static partial class Program
             machine.HandleTimeout(holdDeadline.Value - 1),
             "Holding just below the threshold must not activate Quick Actions.");
         Assert.Equal(
-            CtrlGestureAction.QuickActionsRequested,
+            CtrlGestureAction.None,
             machine.HandleTimeout(holdDeadline.Value),
-            "The default tap-then-hold gesture must request the quick actions at the threshold.");
+            "The retired tap-then-hold gesture must not request Quick Actions.");
         Assert.Equal(
             CtrlGestureAction.None,
             machine.HandleTimeout(holdDeadline.Value + 1_000),
@@ -214,30 +226,49 @@ internal static partial class Program
         return Task.CompletedTask;
     }
 
-    private static Task TestCtrlGestureConfigurableMapping()
+    private static Task TestGlobalShortcuts()
     {
-        var swapped = LuvLetterConfiguration.Default.ActivationGestures with
-        {
-            InputBox = ActivationGestureKind.ControlTapThenHold,
-            QuickActions = ActivationGestureKind.DoubleControlPress,
-        };
-        var machine = new CtrlGestureStateMachine(swapped);
+        var machine = new CtrlGestureStateMachine(
+            LuvLetterConfiguration.Default.ActivationGestures);
 
-        machine.HandleControlDown(ControlKeySide.Left, 7_000);
-        machine.HandleControlUp(ControlKeySide.Left, 7_020);
-        machine.HandleControlDown(ControlKeySide.Left, 7_100);
+        machine.HandleAltDown(ControlKeySide.Left);
         Assert.Equal(
             CtrlGestureAction.QuickActionsRequested,
-            machine.HandleControlUp(ControlKeySide.Left, 7_120),
-            "Swapping the mapping must make double Ctrl open the quick actions.");
-
-        machine.HandleControlDown(ControlKeySide.Left, 8_000);
-        machine.HandleControlUp(ControlKeySide.Left, 8_020);
-        machine.HandleControlDown(ControlKeySide.Left, 8_100);
+            machine.HandleFunctionOneDown(),
+            "Alt+F1 must request Quick Actions.");
         Assert.Equal(
-            CtrlGestureAction.CommandInputRequested,
-            machine.HandleTimeout(8_100 + swapped.HoldThresholdMs),
-            "Swapping the mapping must make tap-then-hold open the command input box.");
+            CtrlGestureAction.None,
+            machine.HandleFunctionOneDown(),
+            "F1 auto-repeat must not toggle Quick Actions repeatedly.");
+        machine.HandleFunctionOneUp();
+        machine.HandleAltUp(ControlKeySide.Left);
+
+        machine.HandleAltDown(ControlKeySide.Left);
+        Assert.Equal(
+            CtrlGestureAction.None,
+            machine.HandleFunctionOneDown(hasAdditionalModifier: true),
+            "Alt+F1 with Shift or Win held must not activate Quick Actions.");
+        machine.HandleFunctionOneUp();
+        machine.HandleAltUp(ControlKeySide.Left);
+
+        Assert.Equal(
+            CtrlGestureAction.None,
+            machine.HandleFunctionOneDown(),
+            "F1 without Alt must not activate Quick Actions.");
+        machine.HandleFunctionOneUp();
+
+        Assert.Equal(
+            CtrlGestureAction.PopupsDismissRequested,
+            machine.HandleEscapeDown(),
+            "Escape must request global popup dismissal.");
+        Assert.Equal(
+            CtrlGestureAction.None,
+            machine.HandleEscapeDown(),
+            "Escape auto-repeat must request dismissal only once per press.");
+        machine.HandleEscapeUp();
+        Assert.Equal(
+            CtrlGestureAction.PopupsDismissRequested,
+            machine.HandleEscapeDown());
 
         return Task.CompletedTask;
     }

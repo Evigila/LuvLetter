@@ -284,6 +284,11 @@ void InputWindow::Show(HMONITOR targetMonitor, HWND previousForegroundWindow)
 void InputWindow::Hide()
 {
 	if (hwnd_ == nullptr) return;
+	if (!visible_ && !animator_.TargetVisible())
+	{
+		if (IsWindowEnabled(hwnd_)) EnableWindow(hwnd_, FALSE);
+		return;
+	}
 	SynchronizeAnimation();
 	visible_ = false;
 	KillTimer(hwnd_, CaretTimerId);
@@ -330,6 +335,14 @@ void InputWindow::ReleaseFocus()
 		|| GetFocus() == hwnd_;
 	EnableWindow(hwnd_, FALSE);
 	if (inputOwnedFocus
+		&& peerHwnd_ != nullptr
+		&& IsWindowVisible(peerHwnd_)
+		&& IsWindowEnabled(peerHwnd_))
+	{
+		SetForegroundWindow(peerHwnd_);
+		SetFocus(peerHwnd_);
+	}
+	else if (inputOwnedFocus
 		&& previousForegroundHwnd_ != nullptr
 		&& previousForegroundHwnd_ != hwnd_
 		&& previousForegroundHwnd_ != peerHwnd_
@@ -721,7 +734,7 @@ void InputWindow::Render(bool caretOnly)
 	if (hwnd_ == nullptr || FAILED(EnsureResources())) return;
 	const auto animationFrame = animator_.Current();
 	caretOnly = caretOnly
-		&& animationFrame.state == InputBoxAnimationState::Visible;
+		&& animationFrame.state == PopupAnimationState::Visible;
 	const auto width = PixelWidth();
 	const auto height = PixelHeight();
 	const auto fullWidth = static_cast<float>(config_.width);

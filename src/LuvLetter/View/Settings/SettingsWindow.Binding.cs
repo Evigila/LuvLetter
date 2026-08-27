@@ -13,19 +13,10 @@ public partial class SettingsWindow
             ApplyHotkeysToControls(configuration);
 
             var gestures = configuration.ActivationGestures;
-            InputBoxGestureComboBox.SelectedItem = gestureChoices.First(
-                choice => choice.Value == gestures.InputBox
-            );
-            QuickActionsGestureComboBox.SelectedItem = gestureChoices.First(
-                choice => choice.Value == gestures.QuickActions
-            );
             TapMaxDurationTextBox.Text = gestures.TapMaxDurationMs.ToString(
                 CultureInfo.InvariantCulture
             );
             SecondPressTimeoutTextBox.Text = gestures.SecondPressTimeoutMs.ToString(
-                CultureInfo.InvariantCulture
-            );
-            HoldThresholdTextBox.Text = gestures.HoldThresholdMs.ToString(
                 CultureInfo.InvariantCulture
             );
             AllowLeftControlCheckBox.IsChecked = gestures.AllowLeftControl;
@@ -198,17 +189,8 @@ public partial class SettingsWindow
                 CaretWidthTextBox.Text
             ),
             new ActivationGestureSettingsInput(
-                (
-                    InputBoxGestureComboBox.SelectedItem
-                    as SettingsChoice<ActivationGestureKind>
-                )?.Value,
-                (
-                    QuickActionsGestureComboBox.SelectedItem
-                    as SettingsChoice<ActivationGestureKind>
-                )?.Value,
                 TapMaxDurationTextBox.Text,
                 SecondPressTimeoutTextBox.Text,
-                HoldThresholdTextBox.Text,
                 AllowLeftControlCheckBox.IsChecked == true,
                 AllowRightControlCheckBox.IsChecked == true
             ),

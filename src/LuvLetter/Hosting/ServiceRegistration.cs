@@ -3,11 +3,11 @@ using Microsoft.Extensions.Hosting;
 using LuvLetter.Core.Activation;
 using LuvLetter.Core.Commands;
 using LuvLetter.Core.Configuration;
-using LuvLetter.Core.Modules;
 using LuvLetter.Core.Modules.QuickActions;
 using LuvLetter.Core.Modules.Settings;
 using LuvLetter.Core.NativeShell;
 using LuvLetter.Core.Application;
+using LuvLetter.Core.Plugins;
 using LuvLetter.Platform.Activation;
 using LuvLetter.Platform.Tray;
 using LuvLetter.View.Settings;
@@ -50,7 +50,7 @@ internal static class ServiceRegistration
         services.AddSingleton<TrayIconService>();
         services.AddSingleton<IApplicationShell>(
             provider => provider.GetRequiredService<TrayIconService>());
-        services.AddSingleton<IApplicationModule, SettingsModule>();
+        services.AddSingleton<ILuvLetterPlugin, SettingsPlugin>();
 
         services.AddSingleton<ApplicationCoordinator>();
         services.AddHostedService(

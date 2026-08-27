@@ -42,6 +42,7 @@ namespace
 		ShowQuickActions,
 		HideQuickActions,
 		ToggleQuickActions,
+		HidePopups,
 	};
 }
 
@@ -257,6 +258,12 @@ HRESULT NativeShellHost::HideQuickActionsWindow()
 HRESULT NativeShellHost::ToggleQuickActionsWindow()
 {
 	auto* request = new (std::nothrow) HostRequest(RequestKind::ToggleQuickActions, false);
+	return request == nullptr ? E_OUTOFMEMORY : DispatchRequest(request, false);
+}
+
+HRESULT NativeShellHost::HidePopups()
+{
+	auto* request = new (std::nothrow) HostRequest(RequestKind::HidePopups, false);
 	return request == nullptr ? E_OUTOFMEMORY : DispatchRequest(request, false);
 }
 
@@ -502,7 +509,6 @@ HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 	{
 		CapturePreviousForegroundWindow();
 		const auto monitor = CaptureTargetMonitor();
-		quickActionsWindow_->Hide();
 		inputWindow_->Show(monitor, previousForegroundHwnd_);
 		return S_OK;
 	}
@@ -518,7 +524,6 @@ HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 		{
 			CapturePreviousForegroundWindow();
 			const auto monitor = CaptureTargetMonitor();
-			quickActionsWindow_->Hide();
 			inputWindow_->Show(monitor, previousForegroundHwnd_);
 		}
 		return S_OK;
@@ -537,8 +542,7 @@ HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 		CapturePreviousForegroundWindow();
 		{
 			const auto monitor = CaptureTargetMonitor();
-			inputWindow_->HideImmediately();
-			quickActionsWindow_->Show(monitor);
+			quickActionsWindow_->Show(monitor, previousForegroundHwnd_);
 		}
 		return S_OK;
 	case RequestKind::HideQuickActions:
@@ -553,9 +557,12 @@ HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 		{
 			CapturePreviousForegroundWindow();
 			const auto monitor = CaptureTargetMonitor();
-			inputWindow_->HideImmediately();
-			quickActionsWindow_->Show(monitor);
+			quickActionsWindow_->Show(monitor, previousForegroundHwnd_);
 		}
+		return S_OK;
+	case RequestKind::HidePopups:
+		inputWindow_->Hide();
+		quickActionsWindow_->Hide();
 		return S_OK;
 	default:
 		return E_INVALIDARG;
@@ -797,6 +804,7 @@ HRESULT NativeShellHost::CreateWindows()
 	}
 
 	inputWindow_->SetPeerWindow(quickActionsWindow_->WindowHandle());
+	quickActionsWindow_->SetPeerWindow(inputWindow_->WindowHandle());
 	return S_OK;
 }
 
@@ -869,11 +877,7 @@ void NativeShellHost::DestroyWindows() noexcept
 HMONITOR NativeShellHost::CaptureTargetMonitor() const
 {
 	const auto foreground = GetForegroundWindow();
-	const auto input = inputWindow_ == nullptr ? nullptr : inputWindow_->WindowHandle();
-	const auto quickActions = quickActionsWindow_ == nullptr
-		? nullptr
-		: quickActionsWindow_->WindowHandle();
-	if (foreground != nullptr && foreground != input && foreground != quickActions)
+	if (foreground != nullptr)
 	{
 		return MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST);
 	}

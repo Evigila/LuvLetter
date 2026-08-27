@@ -12,6 +12,7 @@ public enum CtrlGestureAction
 {
     None,
     CommandInputRequested,
+    PopupsDismissRequested,
     QuickActionsRequested,
 }
 
@@ -33,6 +34,10 @@ public sealed class CtrlGestureStateMachine
     private long deadlineAtMs;
     private bool leftControlDown;
     private bool rightControlDown;
+    private bool leftAltDown;
+    private bool rightAltDown;
+    private bool functionOneDown;
+    private bool escapeDown;
 
     public CtrlGestureStateMachine(ActivationGestureOptions options)
     {
@@ -176,6 +181,60 @@ public sealed class CtrlGestureStateMachine
         return CtrlGestureAction.None;
     }
 
+    public CtrlGestureAction HandleAltDown(ControlKeySide side)
+    {
+        SetAltDown(side, true);
+        HandleOtherKey();
+        return CtrlGestureAction.None;
+    }
+
+    public CtrlGestureAction HandleAltUp(ControlKeySide side)
+    {
+        SetAltDown(side, false);
+        return CtrlGestureAction.None;
+    }
+
+    public CtrlGestureAction HandleFunctionOneDown(bool hasAdditionalModifier = false)
+    {
+        HandleOtherKey();
+        if (functionOneDown)
+        {
+            return CtrlGestureAction.None;
+        }
+
+        functionOneDown = true;
+        return (leftAltDown || rightAltDown)
+            && !leftControlDown
+            && !rightControlDown
+            && !hasAdditionalModifier
+            ? CtrlGestureAction.QuickActionsRequested
+            : CtrlGestureAction.None;
+    }
+
+    public CtrlGestureAction HandleFunctionOneUp()
+    {
+        functionOneDown = false;
+        return CtrlGestureAction.None;
+    }
+
+    public CtrlGestureAction HandleEscapeDown()
+    {
+        HandleOtherKey();
+        if (escapeDown)
+        {
+            return CtrlGestureAction.None;
+        }
+
+        escapeDown = true;
+        return CtrlGestureAction.PopupsDismissRequested;
+    }
+
+    public CtrlGestureAction HandleEscapeUp()
+    {
+        escapeDown = false;
+        return CtrlGestureAction.None;
+    }
+
     public void HandleOtherKey()
     {
         if (phase == GesturePhase.Idle)
@@ -253,6 +312,10 @@ public sealed class CtrlGestureStateMachine
     {
         leftControlDown = false;
         rightControlDown = false;
+        leftAltDown = false;
+        rightAltDown = false;
+        functionOneDown = false;
+        escapeDown = false;
         ResetPhase();
     }
 
@@ -292,17 +355,6 @@ public sealed class CtrlGestureStateMachine
             );
         }
 
-        if (
-            !IsSupportedGesture(options.InputBox)
-            || !IsSupportedGesture(options.QuickActions)
-            || options.InputBox == options.QuickActions
-        )
-        {
-            throw new ArgumentException(
-                "InputBox and QuickActions must use different supported activation gestures.",
-                nameof(options)
-            );
-        }
     }
 
     private void ExpireSequenceBeforeInput(long timestampMs)
@@ -345,22 +397,13 @@ public sealed class CtrlGestureStateMachine
 
     private CtrlGestureAction GetActionFor(ActivationGestureKind gesture)
     {
-        if (options.InputBox == gesture)
+        if (gesture == ActivationGestureKind.DoubleControlPress)
         {
             return CtrlGestureAction.CommandInputRequested;
         }
 
-        if (options.QuickActions == gesture)
-        {
-            return CtrlGestureAction.QuickActionsRequested;
-        }
-
         return CtrlGestureAction.None;
     }
-
-    private static bool IsSupportedGesture(ActivationGestureKind gesture) => gesture is
-        ActivationGestureKind.DoubleControlPress
-        or ActivationGestureKind.ControlTapThenHold;
 
     private bool IsControlDown(ControlKeySide side) => side switch
     {
@@ -378,6 +421,21 @@ public sealed class CtrlGestureStateMachine
                 break;
             case ControlKeySide.Right:
                 rightControlDown = isDown;
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(side));
+        }
+    }
+
+    private void SetAltDown(ControlKeySide side, bool isDown)
+    {
+        switch (side)
+        {
+            case ControlKeySide.Left:
+                leftAltDown = isDown;
+                break;
+            case ControlKeySide.Right:
+                rightAltDown = isDown;
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(side));

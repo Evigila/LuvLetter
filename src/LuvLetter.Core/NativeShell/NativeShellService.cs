@@ -223,6 +223,15 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
         }
     }
 
+    public void HidePopups()
+    {
+        lock (operationSyncRoot)
+        {
+            ThrowIfDisposed();
+            ThrowIfFailed(nativeApi.HidePopups(), "HidePopups");
+        }
+    }
+
     public void Dispose()
     {
         lock (operationSyncRoot)

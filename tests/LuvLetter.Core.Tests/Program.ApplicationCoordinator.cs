@@ -20,7 +20,7 @@ internal static partial class Program
             new FakeConfigurationStore(LuvLetterConfiguration.Default),
             commands,
             quickActions,
-            [new SettingsModule(applicationShell)],
+            [new SettingsPlugin(applicationShell)],
             activation,
             nativeShell,
             applicationShell);
@@ -34,8 +34,12 @@ internal static partial class Program
 
         activation.RaiseCommandInputRequested();
         activation.RaiseQuickActionsRequested();
+        activation.RaisePopupsDismissRequested();
         Assert.Equal(1, nativeShell.ToggleCommandInputCalls);
         Assert.Equal(1, nativeShell.ToggleQuickActionsCalls);
+        Assert.Equal(1, nativeShell.HidePopupsCalls);
+        Assert.Equal(0, nativeShell.HideCommandInputCalls);
+        Assert.Equal(0, nativeShell.HideQuickActionsCalls);
 
         nativeShell.RaiseQuickActionActivated("settings.open");
         await Task.Delay(25);
@@ -52,5 +56,10 @@ internal static partial class Program
             1,
             nativeShell.ToggleQuickActionsCalls,
             "Application coordinator shutdown left an activation event subscribed.");
+        activation.RaisePopupsDismissRequested();
+        Assert.Equal(
+            1,
+            nativeShell.HidePopupsCalls,
+            "Application coordinator shutdown left a dismissal event subscribed.");
     }
 }

@@ -171,12 +171,195 @@ internal static class ConfigurationSchemaMigrator
             };
         }
 
+        if (configuration.SchemaVersion < 7
+            && migrated.QuickActions is
+            {
+                Layout: { } previousQuickActionsLayout,
+                Colors: { } previousQuickActionsColors,
+            } previousQuickActions)
+        {
+            var usesPreviousCornerRadius = NearlyEquals(
+                previousQuickActionsLayout.CornerRadius,
+                16.0f);
+            var usesPreviousBackground = IsColor(
+                    previousQuickActionsColors.Background,
+                    "38F5F5F5")
+                && NearlyEquals(previousQuickActionsColors.BackgroundOpacity, 0.22f);
+            if (usesPreviousCornerRadius || usesPreviousBackground)
+            {
+                migrated = migrated with
+                {
+                    QuickActions = previousQuickActions with
+                    {
+                        Layout = usesPreviousCornerRadius
+                            ? previousQuickActionsLayout with
+                            {
+                                CornerRadius = defaults.QuickActions.Layout.CornerRadius,
+                            }
+                            : previousQuickActionsLayout,
+                        Colors = usesPreviousBackground
+                            ? previousQuickActionsColors with
+                            {
+                                Background = defaults.QuickActions.Colors.Background,
+                                BackgroundOpacity = defaults.QuickActions.Colors.BackgroundOpacity,
+                            }
+                            : previousQuickActionsColors,
+                    },
+                };
+            }
+        }
+
+        if (configuration.SchemaVersion < 8)
+        {
+            if (migrated.InputBox is { Colors: { } previousThemeInputColors } themedInputBox)
+            {
+                var usesPreviousBackground = IsPreviousSurfaceBackground(
+                    previousThemeInputColors);
+                var usesUnifiedBackground = usesPreviousBackground
+                    || IsUnifiedSurfaceBackground(
+                        previousThemeInputColors.Background,
+                        previousThemeInputColors.BackgroundOpacity,
+                        defaults.InputBox.Colors.Background,
+                        defaults.InputBox.Colors.BackgroundOpacity);
+                if (usesUnifiedBackground)
+                {
+                    migrated = migrated with
+                    {
+                        InputBox = themedInputBox with
+                        {
+                            Colors = previousThemeInputColors with
+                            {
+                                Border = IsColor(previousThemeInputColors.Border, "66FFFFFF")
+                                    ? defaults.InputBox.Colors.Border
+                                    : previousThemeInputColors.Border,
+                                Background = usesPreviousBackground
+                                    ? defaults.InputBox.Colors.Background
+                                    : previousThemeInputColors.Background,
+                                BackgroundOpacity = usesPreviousBackground
+                                    ? defaults.InputBox.Colors.BackgroundOpacity
+                                    : previousThemeInputColors.BackgroundOpacity,
+                                Text = IsPreviousSurfaceContent(
+                                        previousThemeInputColors.Text,
+                                        previousThemeInputColors.TextOpacity)
+                                    ? defaults.InputBox.Colors.Text
+                                    : previousThemeInputColors.Text,
+                                TextOpacity = IsPreviousSurfaceContent(
+                                        previousThemeInputColors.Text,
+                                        previousThemeInputColors.TextOpacity)
+                                    ? defaults.InputBox.Colors.TextOpacity
+                                    : previousThemeInputColors.TextOpacity,
+                                Caret = IsColor(previousThemeInputColors.Caret, "FFFFFFFF")
+                                    ? defaults.InputBox.Colors.Caret
+                                    : previousThemeInputColors.Caret,
+                            },
+                        },
+                    };
+                }
+            }
+
+            if (migrated.QuickActions is
+                { Colors: { } previousThemeQuickActionsColors } themedQuickActions)
+            {
+                var usesPreviousBackground = IsPreviousSurfaceBackground(
+                    previousThemeQuickActionsColors);
+                var usesUnifiedBackground = usesPreviousBackground
+                    || IsUnifiedSurfaceBackground(
+                        previousThemeQuickActionsColors.Background,
+                        previousThemeQuickActionsColors.BackgroundOpacity,
+                        defaults.QuickActions.Colors.Background,
+                        defaults.QuickActions.Colors.BackgroundOpacity);
+                if (usesUnifiedBackground)
+                {
+                    migrated = migrated with
+                    {
+                        QuickActions = themedQuickActions with
+                        {
+                            Colors = previousThemeQuickActionsColors with
+                            {
+                                Border = IsColor(
+                                        previousThemeQuickActionsColors.Border,
+                                        "66FFFFFF")
+                                    ? defaults.QuickActions.Colors.Border
+                                    : previousThemeQuickActionsColors.Border,
+                                Background = usesPreviousBackground
+                                    ? defaults.QuickActions.Colors.Background
+                                    : previousThemeQuickActionsColors.Background,
+                                BackgroundOpacity = usesPreviousBackground
+                                    ? defaults.QuickActions.Colors.BackgroundOpacity
+                                    : previousThemeQuickActionsColors.BackgroundOpacity,
+                                Text = IsPreviousSurfaceContent(
+                                        previousThemeQuickActionsColors.Text,
+                                        previousThemeQuickActionsColors.TextOpacity)
+                                    ? defaults.QuickActions.Colors.Text
+                                    : previousThemeQuickActionsColors.Text,
+                                TextOpacity = IsPreviousSurfaceContent(
+                                        previousThemeQuickActionsColors.Text,
+                                        previousThemeQuickActionsColors.TextOpacity)
+                                    ? defaults.QuickActions.Colors.TextOpacity
+                                    : previousThemeQuickActionsColors.TextOpacity,
+                                Accent = IsColor(
+                                        previousThemeQuickActionsColors.Accent,
+                                        "FFFFFFFF")
+                                    ? defaults.QuickActions.Colors.Accent
+                                    : previousThemeQuickActionsColors.Accent,
+                            },
+                        },
+                    };
+                }
+            }
+        }
+
+        if (configuration.SchemaVersion < 9
+            && migrated.InputBox is
+            {
+                Size: { } legacyDarkInputSize,
+                Colors: { } legacyDarkInputColors,
+            } legacyDarkInputBox
+            && IsPreviousInputBoxSizeBundle(legacyDarkInputSize)
+            && IsLegacyDarkInputTheme(legacyDarkInputColors, defaults.InputBox.Colors))
+        {
+            migrated = migrated with
+            {
+                InputBox = legacyDarkInputBox with
+                {
+                    Size = legacyDarkInputSize with
+                    {
+                        CornerRadius = defaults.InputBox.Size.CornerRadius,
+                        BorderThickness = defaults.InputBox.Size.BorderThickness,
+                    },
+                    Colors = defaults.InputBox.Colors,
+                },
+            };
+        }
+
         return migrated;
     }
+
+    private static bool IsPreviousSurfaceBackground(InputBoxColorOptions colors) =>
+        IsColor(colors.Background, "80F5F5F5")
+        && NearlyEquals(colors.BackgroundOpacity, 0.5f);
+
+    private static bool IsPreviousSurfaceBackground(QuickActionsColorOptions colors) =>
+        IsColor(colors.Background, "80F5F5F5")
+        && NearlyEquals(colors.BackgroundOpacity, 0.5f);
+
+    private static bool IsPreviousSurfaceContent(string? color, float opacity) =>
+        IsColor(color, "FFFFFFFF") && NearlyEquals(opacity, 1.0f);
+
+    private static bool IsUnifiedSurfaceBackground(
+        string? color,
+        float opacity,
+        string defaultColor,
+        float defaultOpacity) =>
+        IsSameColor(color, defaultColor) && NearlyEquals(opacity, defaultOpacity);
 
     private static bool IsPreviousInputBoxDefaultBundle(
         InputBoxSizeOptions size,
         InputBoxColorOptions colors) =>
+        IsPreviousInputBoxSizeBundle(size)
+        && IsPreviousLightInputBackground(colors);
+
+    private static bool IsPreviousInputBoxSizeBundle(InputBoxSizeOptions size) =>
         size.Width == 640
         && size.Height == 44
         && NearlyEquals(size.CornerRadius, 10.0f)
@@ -184,9 +367,30 @@ internal static class ConfigurationSchemaMigrator
         && NearlyEquals(size.FontSize, 20.0f)
         && NearlyEquals(size.HorizontalPadding, 10.0f)
         && NearlyEquals(size.VerticalPadding, 6.0f)
-        && NearlyEquals(size.CaretWidth, 2.25f)
-        && IsColor(colors.Background, "38F5F5F5")
+        && NearlyEquals(size.CaretWidth, 2.25f);
+
+    private static bool IsPreviousLightInputBackground(InputBoxColorOptions colors) =>
+        IsColor(colors.Background, "38F5F5F5")
         && NearlyEquals(colors.BackgroundOpacity, 0.22f);
+
+    private static bool IsLegacyDarkInputBackground(InputBoxColorOptions colors) =>
+        IsColor(colors.Background, "80000000")
+        && NearlyEquals(colors.BackgroundOpacity, 0.5f);
+
+    private static bool IsLegacyDarkInputTheme(
+        InputBoxColorOptions colors,
+        InputBoxColorOptions defaults) =>
+        IsLegacyDarkInputBackground(colors)
+        && IsLegacyOrCurrentColor(colors.Border, "66FFFFFF", defaults.Border)
+        && IsLegacyOrCurrentColor(colors.Text, "FFFFFFFF", defaults.Text)
+        && NearlyEquals(colors.TextOpacity, 1.0f)
+        && IsLegacyOrCurrentColor(colors.Caret, "FFFFFFFF", defaults.Caret);
+
+    private static bool IsLegacyOrCurrentColor(
+        string? color,
+        string legacyArgb,
+        string currentColor) =>
+        IsColor(color, legacyArgb) || IsSameColor(color, currentColor);
 
     private static bool NearlyEquals(float left, float right) =>
         Math.Abs(left - right) < 0.0001f;
@@ -202,6 +406,12 @@ internal static class ConfigurationSchemaMigrator
         string.Equals(
             color?.Trim().TrimStart('#'),
             expectedArgb,
+            StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsSameColor(string? left, string? right) =>
+        string.Equals(
+            left?.Trim().TrimStart('#'),
+            right?.Trim().TrimStart('#'),
             StringComparison.OrdinalIgnoreCase);
 
     private static void RenameLegacyProperty(

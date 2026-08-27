@@ -99,7 +99,7 @@ internal static partial class Program
         Assert.NotEqual(
             normalized.ActivationGestures.InputBox,
             normalized.ActivationGestures.QuickActions,
-            "The two Ctrl gestures must remain mutually exclusive.");
+            "The legacy serialized gesture fields must retain their canonical values.");
         Assert.Equal(
             ActivationGestureKind.ControlTapThenHold,
             normalized.ActivationGestures.QuickActions);
@@ -298,11 +298,11 @@ internal static partial class Program
             Assert.Equal(LuvLetterConfiguration.CurrentSchemaVersion, migratedVisual.SchemaVersion);
             Assert.Equal(1.0f, migratedVisual.InputBox.Size.BorderThickness);
             Assert.Equal(8.0f, migratedVisual.InputBox.Size.CornerRadius);
-            Assert.Equal("#66FFFFFF", migratedVisual.InputBox.Colors.Border);
+            Assert.Equal(SurfaceStyleDefaults.Border, migratedVisual.InputBox.Colors.Border);
             Assert.Equal(1.0f, migratedVisual.InputBox.Colors.TextOpacity);
             Assert.Equal(1.0f, migratedVisual.QuickActions.Layout.BorderThickness);
-            Assert.Equal(16.0f, migratedVisual.QuickActions.Layout.CornerRadius);
-            Assert.Equal("#66FFFFFF", migratedVisual.QuickActions.Colors.Border);
+            Assert.Equal(8.0f, migratedVisual.QuickActions.Layout.CornerRadius);
+            Assert.Equal(SurfaceStyleDefaults.Border, migratedVisual.QuickActions.Colors.Border);
             Assert.Equal(1.0f, migratedVisual.QuickActions.Colors.TextOpacity);
             Assert.Equal(
                 ActivationGestureKind.ControlTapThenHold,
@@ -405,8 +405,136 @@ internal static partial class Program
             Assert.Equal(8.0f, migratedInputDefaults.InputBox.Size.CornerRadius);
             Assert.Equal(14.0f, migratedInputDefaults.InputBox.Size.FontSize);
             Assert.Equal(4.0f, migratedInputDefaults.InputBox.Size.VerticalPadding);
-            Assert.Equal("#80F5F5F5", migratedInputDefaults.InputBox.Colors.Background);
-            Assert.Equal(0.5f, migratedInputDefaults.InputBox.Colors.BackgroundOpacity);
+            Assert.Equal(
+                SurfaceStyleDefaults.Background,
+                migratedInputDefaults.InputBox.Colors.Background);
+            Assert.Equal(
+                SurfaceStyleDefaults.BackgroundOpacity,
+                migratedInputDefaults.InputBox.Colors.BackgroundOpacity);
+
+            var legacyDarkInputPath = Path.Combine(
+                temporaryDirectory,
+                "legacy-dark-input-v3.json");
+            File.WriteAllText(
+                legacyDarkInputPath,
+                """
+                {
+                  "SchemaVersion": 3,
+                  "InputBox": {
+                    "Size": {
+                      "Width": 640,
+                      "Height": 44,
+                      "CornerRadius": 10,
+                      "BorderThickness": 1,
+                      "FontSize": 20,
+                      "HorizontalPadding": 10,
+                      "VerticalPadding": 6,
+                      "CaretWidth": 2.25
+                    },
+                    "Colors": {
+                      "Border": "#66FFFFFF",
+                      "Background": "#80000000",
+                      "BackgroundOpacity": 0.5,
+                      "Text": "#FFFFFFFF",
+                      "TextOpacity": 1,
+                      "Caret": "#FFFFFFFF"
+                    }
+                  }
+                }
+                """);
+            var migratedLegacyDarkInput = new LuvLetterConfigurationStore(
+                legacyDarkInputPath).Current;
+            Assert.Equal(640, migratedLegacyDarkInput.InputBox.Size.Width);
+            Assert.Equal(44, migratedLegacyDarkInput.InputBox.Size.Height);
+            Assert.Equal(
+                SurfaceStyleDefaults.CornerRadius,
+                migratedLegacyDarkInput.InputBox.Size.CornerRadius);
+            Assert.Equal(
+                SurfaceStyleDefaults.Border,
+                migratedLegacyDarkInput.InputBox.Colors.Border);
+            Assert.Equal(
+                SurfaceStyleDefaults.Background,
+                migratedLegacyDarkInput.InputBox.Colors.Background);
+            Assert.Equal(
+                SurfaceStyleDefaults.Content,
+                migratedLegacyDarkInput.InputBox.Colors.Text);
+            Assert.Equal(
+                SurfaceStyleDefaults.Content,
+                migratedLegacyDarkInput.InputBox.Colors.Caret);
+
+            var persistedHybridInputPath = Path.Combine(
+                temporaryDirectory,
+                "persisted-hybrid-input-v8.json");
+            File.WriteAllText(
+                persistedHybridInputPath,
+                """
+                {
+                  "SchemaVersion": 8,
+                  "InputBox": {
+                    "Size": {
+                      "Width": 640,
+                      "Height": 44,
+                      "CornerRadius": 10,
+                      "BorderThickness": 1,
+                      "FontSize": 20,
+                      "HorizontalPadding": 10,
+                      "VerticalPadding": 6,
+                      "CaretWidth": 2.25
+                    },
+                    "Colors": {
+                      "Border": "#FFFFFFFF",
+                      "Background": "#80000000",
+                      "BackgroundOpacity": 0.5,
+                      "Text": "#FF3F3F3F",
+                      "TextOpacity": 1,
+                      "Caret": "#FF3F3F3F"
+                    }
+                  }
+                }
+                """);
+            var migratedHybridInput = new LuvLetterConfigurationStore(
+                persistedHybridInputPath).Current;
+            Assert.Equal(
+                SurfaceStyleDefaults.Background,
+                migratedHybridInput.InputBox.Colors.Background);
+            Assert.Equal(
+                SurfaceStyleDefaults.Content,
+                migratedHybridInput.InputBox.Colors.Text);
+
+            var customizedDarkInputPath = Path.Combine(
+                temporaryDirectory,
+                "customized-dark-input-v8.json");
+            File.WriteAllText(
+                customizedDarkInputPath,
+                """
+                {
+                  "SchemaVersion": 8,
+                  "InputBox": {
+                    "Size": {
+                      "Width": 639,
+                      "Height": 44,
+                      "CornerRadius": 10,
+                      "BorderThickness": 1,
+                      "FontSize": 20,
+                      "HorizontalPadding": 10,
+                      "VerticalPadding": 6,
+                      "CaretWidth": 2.25
+                    },
+                    "Colors": {
+                      "Border": "#66FFFFFF",
+                      "Background": "#80000000",
+                      "BackgroundOpacity": 0.5,
+                      "Text": "#FFFFFFFF",
+                      "TextOpacity": 1,
+                      "Caret": "#FFFFFFFF"
+                    }
+                  }
+                }
+                """);
+            var customizedDarkInput = new LuvLetterConfigurationStore(
+                customizedDarkInputPath).Current;
+            Assert.Equal("#80000000", customizedDarkInput.InputBox.Colors.Background);
+            Assert.Equal("#FFFFFFFF", customizedDarkInput.InputBox.Colors.Text);
 
             var customizedPreviousInputPath = Path.Combine(
                 temporaryDirectory,
@@ -441,6 +569,158 @@ internal static partial class Program
             Assert.Equal(20.0f, customizedPreviousInput.InputBox.Size.FontSize);
             Assert.Equal("#38F5F5F5", customizedPreviousInput.InputBox.Colors.Background);
             Assert.Equal(0.22f, customizedPreviousInput.InputBox.Colors.BackgroundOpacity);
+
+            var previousQuickActionsDefaultsPath = Path.Combine(
+                temporaryDirectory,
+                "previous-quick-actions-defaults-v6.json");
+            File.WriteAllText(
+                previousQuickActionsDefaultsPath,
+                """
+                {
+                  "SchemaVersion": 6,
+                  "QuickActions": {
+                    "Layout": { "CornerRadius": 16 },
+                    "Colors": {
+                      "Background": "#38F5F5F5",
+                      "BackgroundOpacity": 0.22
+                    }
+                  }
+                }
+                """);
+            var migratedQuickActionsDefaults = new LuvLetterConfigurationStore(
+                previousQuickActionsDefaultsPath).Current;
+            Assert.Equal(8.0f, migratedQuickActionsDefaults.QuickActions.Layout.CornerRadius);
+            Assert.Equal(
+                SurfaceStyleDefaults.Background,
+                migratedQuickActionsDefaults.QuickActions.Colors.Background);
+            Assert.Equal(
+                SurfaceStyleDefaults.BackgroundOpacity,
+                migratedQuickActionsDefaults.QuickActions.Colors.BackgroundOpacity);
+
+            var customizedQuickActionsPath = Path.Combine(
+                temporaryDirectory,
+                "customized-quick-actions-v6.json");
+            File.WriteAllText(
+                customizedQuickActionsPath,
+                """
+                {
+                  "SchemaVersion": 6,
+                  "QuickActions": {
+                    "Layout": { "CornerRadius": 11 },
+                    "Colors": {
+                      "Background": "#66445566",
+                      "BackgroundOpacity": 0.4
+                    }
+                  }
+                }
+                """);
+            var customizedQuickActions = new LuvLetterConfigurationStore(
+                customizedQuickActionsPath).Current;
+            Assert.Equal(11.0f, customizedQuickActions.QuickActions.Layout.CornerRadius);
+            Assert.Equal("#66445566", customizedQuickActions.QuickActions.Colors.Background);
+            Assert.Equal(0.4f, customizedQuickActions.QuickActions.Colors.BackgroundOpacity);
+
+            var previousUnifiedThemePath = Path.Combine(
+                temporaryDirectory,
+                "previous-unified-theme-v7.json");
+            File.WriteAllText(
+                previousUnifiedThemePath,
+                """
+                {
+                  "SchemaVersion": 7,
+                  "InputBox": {
+                    "Colors": {
+                      "Border": "#66FFFFFF",
+                      "Background": "#80F5F5F5",
+                      "BackgroundOpacity": 0.5,
+                      "Text": "#FFFFFFFF",
+                      "TextOpacity": 1,
+                      "Caret": "#FFFFFFFF"
+                    }
+                  },
+                  "QuickActions": {
+                    "Colors": {
+                      "Border": "#66FFFFFF",
+                      "Background": "#80F5F5F5",
+                      "BackgroundOpacity": 0.5,
+                      "Text": "#FFFFFFFF",
+                      "TextOpacity": 1,
+                      "Accent": "#FFFFFFFF"
+                    }
+                  }
+                }
+                """);
+            var migratedUnifiedTheme = new LuvLetterConfigurationStore(
+                previousUnifiedThemePath).Current;
+            Assert.Equal(
+                SurfaceStyleDefaults.Border,
+                migratedUnifiedTheme.InputBox.Colors.Border);
+            Assert.Equal(
+                SurfaceStyleDefaults.Background,
+                migratedUnifiedTheme.InputBox.Colors.Background);
+            Assert.Equal(
+                SurfaceStyleDefaults.Content,
+                migratedUnifiedTheme.InputBox.Colors.Text);
+            Assert.Equal(
+                SurfaceStyleDefaults.Content,
+                migratedUnifiedTheme.InputBox.Colors.Caret);
+            Assert.Equal(
+                SurfaceStyleDefaults.Border,
+                migratedUnifiedTheme.QuickActions.Colors.Border);
+            Assert.Equal(
+                SurfaceStyleDefaults.Background,
+                migratedUnifiedTheme.QuickActions.Colors.Background);
+            Assert.Equal(
+                SurfaceStyleDefaults.Content,
+                migratedUnifiedTheme.QuickActions.Colors.Text);
+            Assert.Equal(
+                SurfaceStyleDefaults.Content,
+                migratedUnifiedTheme.QuickActions.Colors.Accent);
+
+            var customizedUnifiedThemePath = Path.Combine(
+                temporaryDirectory,
+                "customized-unified-theme-v7.json");
+            File.WriteAllText(
+                customizedUnifiedThemePath,
+                """
+                {
+                  "SchemaVersion": 7,
+                  "InputBox": {
+                    "Colors": {
+                      "Border": "#FF55AAFF",
+                      "Background": "#CC223344",
+                      "BackgroundOpacity": 0.8,
+                      "Text": "#FF112233",
+                      "TextOpacity": 0.75,
+                      "Caret": "#FFFFAA00"
+                    }
+                  },
+                  "QuickActions": {
+                    "Colors": {
+                      "Border": "#FF8844CC",
+                      "Background": "#99334455",
+                      "BackgroundOpacity": 0.6,
+                      "Text": "#FF223344",
+                      "TextOpacity": 0.7,
+                      "Accent": "#FF00AA88"
+                    }
+                  }
+                }
+                """);
+            var customizedUnifiedTheme = new LuvLetterConfigurationStore(
+                customizedUnifiedThemePath).Current;
+            Assert.Equal("#FF55AAFF", customizedUnifiedTheme.InputBox.Colors.Border);
+            Assert.Equal("#CC223344", customizedUnifiedTheme.InputBox.Colors.Background);
+            Assert.Equal(0.8f, customizedUnifiedTheme.InputBox.Colors.BackgroundOpacity);
+            Assert.Equal("#FF112233", customizedUnifiedTheme.InputBox.Colors.Text);
+            Assert.Equal(0.75f, customizedUnifiedTheme.InputBox.Colors.TextOpacity);
+            Assert.Equal("#FFFFAA00", customizedUnifiedTheme.InputBox.Colors.Caret);
+            Assert.Equal("#FF8844CC", customizedUnifiedTheme.QuickActions.Colors.Border);
+            Assert.Equal("#99334455", customizedUnifiedTheme.QuickActions.Colors.Background);
+            Assert.Equal(0.6f, customizedUnifiedTheme.QuickActions.Colors.BackgroundOpacity);
+            Assert.Equal("#FF223344", customizedUnifiedTheme.QuickActions.Colors.Text);
+            Assert.Equal(0.7f, customizedUnifiedTheme.QuickActions.Colors.TextOpacity);
+            Assert.Equal("#FF00AA88", customizedUnifiedTheme.QuickActions.Colors.Accent);
 
             TestFailedSaveDoesNotChangeCurrent(temporaryDirectory);
         }

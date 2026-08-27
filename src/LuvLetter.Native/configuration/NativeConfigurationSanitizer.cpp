@@ -1,4 +1,5 @@
 #include "configuration/NativeConfigurationSanitizer.h"
+#include "rendering/SurfaceStyleDefaults.h"
 
 #include <Windows.h>
 
@@ -13,6 +14,8 @@ namespace
 	}
 }
 
+using namespace LuvLetterNative;
+
 LuvLetterInputBoxConfig NativeConfigurationSanitizer::DefaultInputBox() noexcept
 {
 	LuvLetterInputBoxConfig config{};
@@ -20,18 +23,18 @@ LuvLetterInputBoxConfig NativeConfigurationSanitizer::DefaultInputBox() noexcept
 	config.abiVersion = LUVLETTER_NATIVE_ABI_VERSION;
 	config.width = 560;
 	config.height = 32;
-	config.cornerRadius = 8.0f;
-	config.borderThickness = 1.0f;
+	config.cornerRadius = SurfaceCornerRadius;
+	config.borderThickness = SurfaceBorderThickness;
 	config.fontSize = 14.0f;
 	config.horizontalPadding = 10.0f;
 	config.verticalPadding = 4.0f;
 	config.caretWidth = 2.25f;
 	config.positionMode = 0;
 	config.bottomMargin = 60;
-	config.borderColor = 0x66FFFFFF;
-	config.backgroundColor = 0x80F5F5F5;
-	config.textColor = 0xFFFFFFFF;
-	config.caretColor = 0xFFFFFFFF;
+	config.borderColor = SurfaceBorderColor;
+	config.backgroundColor = SurfaceBackgroundColor;
+	config.textColor = SurfaceContentColor;
+	config.caretColor = SurfaceContentColor;
 	config.submitVirtualKey = VK_RETURN;
 	config.cancelVirtualKey = VK_ESCAPE;
 	config.backspaceVirtualKey = VK_BACK;
@@ -46,14 +49,14 @@ LuvLetterFeatureWindowConfig NativeConfigurationSanitizer::DefaultQuickActionsWi
 	config.itemsPerPage = 7;
 	config.cellSize = 96.0f;
 	config.gap = 12.0f;
-	config.cornerRadius = 16.0f;
-	config.borderThickness = 1.0f;
+	config.cornerRadius = SurfaceCornerRadius;
+	config.borderThickness = SurfaceBorderThickness;
 	config.fontSize = 16.0f;
 	config.bottomMargin = 60;
-	config.borderColor = 0x66FFFFFF;
-	config.backgroundColor = 0x38F5F5F5;
-	config.textColor = 0xFFFFFFFF;
-	config.accentColor = 0xFFFFFFFF;
+	config.borderColor = SurfaceBorderColor;
+	config.backgroundColor = SurfaceBackgroundColor;
+	config.textColor = SurfaceContentColor;
+	config.accentColor = SurfaceContentColor;
 	config.previousVirtualKey = VK_OEM_MINUS;
 	config.nextVirtualKey = VK_OEM_PLUS;
 	config.cancelVirtualKey = VK_ESCAPE;

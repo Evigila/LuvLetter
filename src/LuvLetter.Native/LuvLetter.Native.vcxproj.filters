@@ -56,6 +56,9 @@
     <ClInclude Include="rendering\LayeredWindowSurface.h">
       <Filter>Header Files\rendering</Filter>
     </ClInclude>
+    <ClInclude Include="rendering\SurfaceStyleDefaults.h">
+      <Filter>Header Files\rendering</Filter>
+    </ClInclude>
     <ClInclude Include="windows\InputWindow.h">
       <Filter>Header Files\windows</Filter>
     </ClInclude>

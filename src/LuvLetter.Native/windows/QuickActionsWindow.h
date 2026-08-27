@@ -1,6 +1,7 @@
 #pragma once
 
 #include "api/InputBoxApi.h"
+#include "rendering/InputBoxAnimator.h"
 #include "rendering/LayeredWindowSurface.h"
 
 #include <Windows.h>
@@ -31,9 +32,10 @@ public:
 	QuickActionsWindow& operator=(const QuickActionsWindow&) = delete;
 
 	HRESULT Attach(HWND window);
+	void SetPeerWindow(HWND peerWindow) noexcept { peerHwnd_ = peerWindow; }
 	void ApplyConfiguration(const LuvLetterFeatureWindowConfig& config);
 	void SetItems(std::vector<QuickActionItem>&& items);
-	void Show(HMONITOR targetMonitor);
+	void Show(HMONITOR targetMonitor, HWND previousForegroundWindow);
 	void Hide();
 	bool IsVisible() const noexcept { return visible_; }
 	bool IsEmpty() const noexcept { return items_.empty(); }
@@ -49,7 +51,11 @@ private:
 	void RefreshDpiFromWindow();
 	void ApplyDpiChange(UINT dpi, const RECT* suggestedRect);
 	void UpdateGeometry();
-	void UpdatePosition() const;
+	void ReleaseFocus();
+	void SynchronizeAnimation();
+	void AdvanceAnimation();
+	void CompleteHide();
+	void UpdatePosition(bool applyAnimation = true) const;
 	float WindowWidthDip() const;
 	void GetSurfaceMetrics(int& width, int& height, float& renderScale) const;
 	void Render();
@@ -67,10 +73,14 @@ private:
 	void ClampCurrentPage() noexcept;
 
 	HWND hwnd_ = nullptr;
+	HWND peerHwnd_ = nullptr;
+	HWND previousForegroundHwnd_ = nullptr;
 	HMONITOR targetMonitor_ = nullptr;
 	UINT dpi_ = LuvLetterNative::DefaultDpi;
 	bool visible_ = false;
 	bool updatingGeometry_ = false;
+	ULONGLONG animationTimestamp_ = 0;
+	PopupAnimator animator_{ PopupAnimationSettings{ 180.0, 140.0, 1.0f, -72.0f } };
 
 	LuvLetterFeatureWindowConfig config_{};
 	std::vector<QuickActionItem> items_;

@@ -37,14 +37,14 @@ internal static class NativeConfigurationMapper
             BottomMargin = inputBox.Placement.BottomMargin,
             CustomX = inputBox.Placement.CustomX,
             CustomY = inputBox.Placement.CustomY,
-            BorderColor = ParseArgb(inputBox.Colors.Border, 0x66FFFFFF),
+            BorderColor = ParseArgb(inputBox.Colors.Border, SurfaceStyleDefaults.BorderArgb),
             BackgroundColor = ApplyOpacity(
-                ParseArgb(inputBox.Colors.Background, 0x80F5F5F5),
+                ParseArgb(inputBox.Colors.Background, SurfaceStyleDefaults.BackgroundArgb),
                 inputBox.Colors.BackgroundOpacity),
             TextColor = MultiplyOpacity(
-                ParseArgb(inputBox.Colors.Text, 0xFFFFFFFF),
+                ParseArgb(inputBox.Colors.Text, SurfaceStyleDefaults.ContentArgb),
                 inputBox.Colors.TextOpacity),
-            CaretColor = ParseArgb(inputBox.Colors.Caret, 0xFFFFFFFF),
+            CaretColor = ParseArgb(inputBox.Colors.Caret, SurfaceStyleDefaults.ContentArgb),
             SubmitVirtualKey = inputBox.Hotkeys.Submit.VirtualKey,
             CancelVirtualKey = inputBox.Hotkeys.Cancel.VirtualKey,
             BackspaceVirtualKey = inputBox.Hotkeys.Backspace.VirtualKey,
@@ -67,14 +67,20 @@ internal static class NativeConfigurationMapper
             BottomMargin = quickActions.Layout.BottomMargin,
             OffsetX = quickActions.Layout.OffsetX,
             OffsetY = quickActions.Layout.OffsetY,
-            BorderColor = ParseArgb(quickActions.Colors.Border, 0x66FFFFFF),
+            BorderColor = ParseArgb(
+                quickActions.Colors.Border,
+                SurfaceStyleDefaults.BorderArgb),
             BackgroundColor = ApplyOpacity(
-                ParseArgb(quickActions.Colors.Background, 0x38F5F5F5),
+                ParseArgb(
+                    quickActions.Colors.Background,
+                    SurfaceStyleDefaults.BackgroundArgb),
                 quickActions.Colors.BackgroundOpacity),
             TextColor = MultiplyOpacity(
-                ParseArgb(quickActions.Colors.Text, 0xFFFFFFFF),
+                ParseArgb(quickActions.Colors.Text, SurfaceStyleDefaults.ContentArgb),
                 quickActions.Colors.TextOpacity),
-            AccentColor = ParseArgb(quickActions.Colors.Accent, 0xFFFFFFFF),
+            AccentColor = ParseArgb(
+                quickActions.Colors.Accent,
+                SurfaceStyleDefaults.ContentArgb),
             PreviousVirtualKey = quickActions.Hotkeys.PreviousPage.VirtualKey,
             NextVirtualKey = quickActions.Hotkeys.NextPage.VirtualKey,
             CancelVirtualKey = quickActions.Hotkeys.Cancel.VirtualKey,

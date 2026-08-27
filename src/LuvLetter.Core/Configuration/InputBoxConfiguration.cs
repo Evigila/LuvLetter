@@ -38,17 +38,17 @@ public sealed record InputBoxPlacementOptions
 
 public sealed record InputBoxColorOptions
 {
-    public string Border { get; init; } = "#66FFFFFF";
+    public string Border { get; init; } = SurfaceStyleDefaults.Border;
 
-    public string Background { get; init; } = "#80F5F5F5";
+    public string Background { get; init; } = SurfaceStyleDefaults.Background;
 
-    public float BackgroundOpacity { get; init; } = 0.5f;
+    public float BackgroundOpacity { get; init; } = SurfaceStyleDefaults.BackgroundOpacity;
 
-    public string Text { get; init; } = "#FFFFFFFF";
+    public string Text { get; init; } = SurfaceStyleDefaults.Content;
 
-    public float TextOpacity { get; init; } = 1.0f;
+    public float TextOpacity { get; init; } = SurfaceStyleDefaults.ContentOpacity;
 
-    public string Caret { get; init; } = "#FFFFFFFF";
+    public string Caret { get; init; } = SurfaceStyleDefaults.Content;
 }
 
 public sealed record InputBoxSizeOptions
@@ -61,9 +61,9 @@ public sealed record InputBoxSizeOptions
 
     public int Height { get; init; } = 32;
 
-    public float CornerRadius { get; init; } = 8.0f;
+    public float CornerRadius { get; init; } = SurfaceStyleDefaults.CornerRadius;
 
-    public float BorderThickness { get; init; } = 1.0f;
+    public float BorderThickness { get; init; } = SurfaceStyleDefaults.BorderThickness;
 
     public float FontSize { get; init; } = 14.0f;
 

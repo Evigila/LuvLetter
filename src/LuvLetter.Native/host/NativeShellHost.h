@@ -32,6 +32,7 @@ public:
 	HRESULT ShowQuickActionsWindow();
 	HRESULT HideQuickActionsWindow();
 	HRESULT ToggleQuickActionsWindow();
+	HRESULT HidePopups();
 	HRESULT Shutdown();
 
 private:

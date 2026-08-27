@@ -150,6 +150,30 @@ internal static partial class Program
             Assert.Equal(nativeApi.AbiVersion, nativeApi.LastInputBoxConfig?.AbiVersion);
             Assert.Equal(nativeApi.AbiVersion, nativeApi.LastQuickActionsConfig?.AbiVersion);
             Assert.Equal(560, nativeApi.LastInputBoxConfig?.Width);
+            Assert.Equal(
+                SurfaceStyleDefaults.BorderArgb,
+                nativeApi.LastInputBoxConfig?.BorderColor);
+            Assert.Equal(
+                SurfaceStyleDefaults.BackgroundArgb,
+                nativeApi.LastInputBoxConfig?.BackgroundColor);
+            Assert.Equal(
+                SurfaceStyleDefaults.ContentArgb,
+                nativeApi.LastInputBoxConfig?.TextColor);
+            Assert.Equal(
+                SurfaceStyleDefaults.ContentArgb,
+                nativeApi.LastInputBoxConfig?.CaretColor);
+            Assert.Equal(
+                SurfaceStyleDefaults.BorderArgb,
+                nativeApi.LastQuickActionsConfig?.BorderColor);
+            Assert.Equal(
+                SurfaceStyleDefaults.BackgroundArgb,
+                nativeApi.LastQuickActionsConfig?.BackgroundColor);
+            Assert.Equal(
+                SurfaceStyleDefaults.ContentArgb,
+                nativeApi.LastQuickActionsConfig?.TextColor);
+            Assert.Equal(
+                SurfaceStyleDefaults.ContentArgb,
+                nativeApi.LastQuickActionsConfig?.AccentColor);
 
             service.SynchronizeQuickActions(
             [
@@ -203,12 +227,17 @@ internal static partial class Program
             service.ShowCommandInput();
             service.HideCommandInput();
             service.ToggleQuickActions();
+            service.HidePopups();
             Assert.Equal(1, nativeApi.ShowInputBoxCalls);
             Assert.Equal(1, nativeApi.HideInputBoxCalls);
             Assert.Equal(1, nativeApi.ToggleQuickActionsCalls);
+            Assert.Equal(1, nativeApi.HidePopupsCalls);
+            Assert.Equal(0, nativeApi.HideQuickActionsCalls);
 
             nativeApi.ToggleInputBoxResult = unchecked((int)0x80004005);
             Assert.Throws<ExternalException>(service.ToggleCommandInput);
+            nativeApi.HidePopupsResult = unchecked((int)0x80004005);
+            Assert.Throws<ExternalException>(service.HidePopups);
         }
         finally
         {

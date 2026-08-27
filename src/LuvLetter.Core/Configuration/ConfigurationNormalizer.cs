@@ -167,23 +167,12 @@ internal static class ConfigurationNormalizer
             allowRightControl = fallback.AllowRightControl;
         }
 
-        var inputBoxGesture = Enum.IsDefined(value.InputBox)
-            ? value.InputBox
-            : fallback.InputBox;
-        var quickActionsGesture = Enum.IsDefined(value.QuickActions)
-            ? value.QuickActions
-            : fallback.QuickActions;
-        if (quickActionsGesture == inputBoxGesture)
-        {
-            quickActionsGesture = inputBoxGesture == ActivationGestureKind.DoubleControlPress
-                ? ActivationGestureKind.ControlTapThenHold
-                : ActivationGestureKind.DoubleControlPress;
-        }
-
         return value with
         {
-            InputBox = inputBoxGesture,
-            QuickActions = quickActionsGesture,
+            // Schema v6 and earlier allowed swapping two Ctrl gestures. The runtime
+            // now reserves double Ctrl for command input and Alt+F1 for Quick Actions.
+            InputBox = ActivationGestureKind.DoubleControlPress,
+            QuickActions = ActivationGestureKind.ControlTapThenHold,
             TapMaxDurationMs = tapDuration,
             SecondPressTimeoutMs = secondPressTimeout,
             HoldThresholdMs = holdThreshold,

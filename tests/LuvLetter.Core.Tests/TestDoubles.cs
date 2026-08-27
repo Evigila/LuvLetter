@@ -29,11 +29,17 @@ internal sealed class FakeNativeShellApi : INativeShellApi
 
     public int ToggleInputBoxResult { get; set; }
 
+    public int HidePopupsResult { get; set; }
+
     public int ShowInputBoxCalls { get; private set; }
 
     public int HideInputBoxCalls { get; private set; }
 
     public int ToggleQuickActionsCalls { get; private set; }
+
+    public int HideQuickActionsCalls { get; private set; }
+
+    public int HidePopupsCalls { get; private set; }
 
     public int ShutdownCalls { get; private set; }
 
@@ -99,12 +105,22 @@ internal sealed class FakeNativeShellApi : INativeShellApi
 
     public int ShowFeatureWindow() => 0;
 
-    public int HideFeatureWindow() => 0;
+    public int HideFeatureWindow()
+    {
+        HideQuickActionsCalls++;
+        return 0;
+    }
 
     public int ToggleFeatureWindow()
     {
         ToggleQuickActionsCalls++;
         return 0;
+    }
+
+    public int HidePopups()
+    {
+        HidePopupsCalls++;
+        return HidePopupsResult;
     }
 
     public int ShutdownInputBox()
@@ -158,6 +174,8 @@ internal sealed class FakeActivationGestureService : IActivationGestureService
 
     public event EventHandler? CommandInputRequested;
 
+    public event EventHandler? PopupsDismissRequested;
+
     public event EventHandler? QuickActionsRequested;
 
     public int StopCalls { get; private set; }
@@ -172,6 +190,9 @@ internal sealed class FakeActivationGestureService : IActivationGestureService
 
     public void RaiseCommandInputRequested() =>
         CommandInputRequested?.Invoke(this, EventArgs.Empty);
+
+    public void RaisePopupsDismissRequested() =>
+        PopupsDismissRequested?.Invoke(this, EventArgs.Empty);
 
     public void RaiseQuickActionsRequested() =>
         QuickActionsRequested?.Invoke(this, EventArgs.Empty);
@@ -200,6 +221,8 @@ internal sealed class FakeNativeShell : INativeShell
 
     public int HideQuickActionsCalls { get; private set; }
 
+    public int HidePopupsCalls { get; private set; }
+
     public void ApplyConfiguration(
         InputBoxConfiguration inputBoxConfiguration,
         QuickActionsConfiguration quickActionsConfiguration)
@@ -219,6 +242,8 @@ internal sealed class FakeNativeShell : INativeShell
     public void ToggleQuickActions() => ToggleQuickActionsCalls++;
 
     public void HideQuickActions() => HideQuickActionsCalls++;
+
+    public void HidePopups() => HidePopupsCalls++;
 
     public void RaiseInputSubmitted(string commandText) => InputSubmitted?.Invoke(commandText);
 
