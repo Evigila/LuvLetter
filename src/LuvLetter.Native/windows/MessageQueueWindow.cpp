@@ -22,7 +22,50 @@ namespace
 	constexpr float WorkAreaMarginDip = 16.0f;
 	constexpr float FontSizeDip = 14.0f;
 	constexpr auto MessageLifetime = std::chrono::seconds(5);
-	constexpr UINT_PTR MessageExpiryTimerId = 1;
+	constexpr auto MessageShowDuration = std::chrono::milliseconds(180);
+	constexpr auto MessageHideDuration = std::chrono::milliseconds(140);
+	constexpr UINT MessageAnimationFrameMs = 16;
+	constexpr UINT_PTR MessageTimerId = 1;
+
+	double EaseOutCubic(double progress) noexcept
+	{
+		progress = (std::clamp)(progress, 0.0, 1.0);
+		const auto remaining = 1.0 - progress;
+		return 1.0 - (remaining * remaining * remaining);
+	}
+
+	struct MessageAnimationFrame final
+	{
+		float horizontalOffsetDip = 0.0f;
+		float opacity = 1.0f;
+	};
+
+	MessageAnimationFrame CalculateMessageFrame(
+		std::chrono::steady_clock::time_point createdAt,
+		std::chrono::steady_clock::time_point expiresAt,
+		std::chrono::steady_clock::time_point now) noexcept
+	{
+		double visibleProgress = 1.0;
+		const auto showEnd = createdAt + MessageShowDuration;
+		if (now < showEnd)
+		{
+			visibleProgress = std::chrono::duration<double>(now - createdAt).count()
+				/ std::chrono::duration<double>(MessageShowDuration).count();
+		}
+		else if (now >= expiresAt)
+		{
+			const auto hideProgress = std::chrono::duration<double>(now - expiresAt).count()
+				/ std::chrono::duration<double>(MessageHideDuration).count();
+			visibleProgress = 1.0 - hideProgress;
+		}
+
+		const auto motionProgress = EaseOutCubic(visibleProgress);
+		const auto slideDistance = WindowWidthDip + WorkAreaMarginDip;
+		return MessageAnimationFrame{
+			-slideDistance * (1.0f - static_cast<float>(motionProgress)),
+			static_cast<float>(motionProgress),
+		};
+	}
 }
 
 MessageQueueWindow::MessageQueueWindow(
@@ -36,7 +79,7 @@ MessageQueueWindow::MessageQueueWindow(
 
 MessageQueueWindow::~MessageQueueWindow()
 {
-	StopExpiryTimer();
+	StopMessageTimer();
 }
 
 HRESULT MessageQueueWindow::Attach(HWND window)
@@ -62,30 +105,30 @@ void MessageQueueWindow::Enqueue(std::wstring message, HMONITOR targetMonitor)
 	if (message.empty()) return;
 
 	const auto now = Clock::now();
-	RemoveExpiredMessages(now);
+	RemoveCompletedMessages(now);
 	if (messages_.size() == MaximumMessageCount)
 	{
 		messages_.pop_front();
 	}
 	messages_.push_back(QueuedMessage{
 		std::move(message),
+		now,
 		now + MessageLifetime,
 	});
-	ScheduleExpiryTimer();
 	Show(targetMonitor);
 }
 
 void MessageQueueWindow::Show(HMONITOR targetMonitor)
 {
 	if (hwnd_ == nullptr) return;
-	RemoveExpiredMessages(Clock::now());
+	const auto now = Clock::now();
+	RemoveCompletedMessages(now);
 	if (messages_.empty())
 	{
-		StopExpiryTimer();
+		StopMessageTimer();
 		Hide();
 		return;
 	}
-	ScheduleExpiryTimer();
 	if (targetMonitor != nullptr)
 	{
 		targetMonitor_ = targetMonitor;
@@ -97,11 +140,12 @@ void MessageQueueWindow::Show(HMONITOR targetMonitor)
 	RefreshDpiFromWindow();
 	visible_ = true;
 	UpdateGeometry();
-	Render();
+	Render(now);
 	ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 	SetWindowPos(
 		hwnd_, HWND_TOPMOST, 0, 0, 0, 0,
 		SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+	ScheduleMessageTimer(now);
 }
 
 void MessageQueueWindow::Hide() noexcept
@@ -111,6 +155,7 @@ void MessageQueueWindow::Hide() noexcept
 	{
 		ShowWindow(hwnd_, SW_HIDE);
 	}
+	ScheduleMessageTimer(Clock::now());
 }
 
 void MessageQueueWindow::Toggle(HMONITOR targetMonitor)
@@ -237,7 +282,7 @@ void MessageQueueWindow::ApplyDpiChange(UINT dpi, const RECT* suggestedRect)
 		targetMonitor_ = MonitorFromRect(suggestedRect, MONITOR_DEFAULTTONEAREST);
 	}
 	UpdateGeometry();
-	if (visible_) Render();
+	if (visible_) Render(Clock::now());
 }
 
 void MessageQueueWindow::UpdateGeometry()
@@ -353,39 +398,68 @@ size_t MessageQueueWindow::VisibleMessageCount() const noexcept
 	return (std::min)(messages_.size(), MaximumVisibleMessages);
 }
 
-bool MessageQueueWindow::RemoveExpiredMessages(Clock::time_point now)
+bool MessageQueueWindow::RemoveCompletedMessages(Clock::time_point now)
 {
 	const auto originalSize = messages_.size();
-	while (!messages_.empty() && messages_.front().expiresAt <= now)
+	while (!messages_.empty()
+		&& messages_.front().expiresAt + MessageHideDuration <= now)
 	{
 		messages_.pop_front();
 	}
 	return messages_.size() != originalSize;
 }
 
-void MessageQueueWindow::ScheduleExpiryTimer()
+void MessageQueueWindow::ScheduleMessageTimer(Clock::time_point now) noexcept
 {
-	StopExpiryTimer();
+	StopMessageTimer();
 	if (hwnd_ == nullptr || messages_.empty()) return;
 
-	const auto now = Clock::now();
-	auto remaining = std::chrono::ceil<std::chrono::milliseconds>(
-		messages_.front().expiresAt - now).count();
+	bool needsAnimationFrame = false;
+	auto nextWake = (Clock::time_point::max)();
+	for (const auto& message : messages_)
+	{
+		const auto showEnd = message.createdAt + MessageShowDuration;
+		const auto hideEnd = message.expiresAt + MessageHideDuration;
+		if (now < showEnd)
+		{
+			needsAnimationFrame = needsAnimationFrame || visible_;
+			nextWake = (std::min)(nextWake, showEnd);
+		}
+		else if (now < message.expiresAt)
+		{
+			nextWake = (std::min)(nextWake, message.expiresAt);
+		}
+		else if (now < hideEnd)
+		{
+			needsAnimationFrame = needsAnimationFrame || visible_;
+			nextWake = (std::min)(nextWake, hideEnd);
+		}
+	}
+
+	auto remaining = int64_t{ 1 };
+	if (needsAnimationFrame)
+	{
+		remaining = static_cast<int64_t>(MessageAnimationFrameMs);
+	}
+	else if (nextWake != (Clock::time_point::max)())
+	{
+		remaining = std::chrono::ceil<std::chrono::milliseconds>(nextWake - now).count();
+	}
 	remaining = (std::clamp)(remaining, int64_t{ 1 }, int64_t{ USER_TIMER_MAXIMUM });
-	expiryTimerActive_ = SetTimer(
+	messageTimerActive_ = SetTimer(
 		hwnd_,
-		MessageExpiryTimerId,
+		MessageTimerId,
 		static_cast<UINT>(remaining),
 		nullptr) != 0;
 }
 
-void MessageQueueWindow::StopExpiryTimer() noexcept
+void MessageQueueWindow::StopMessageTimer() noexcept
 {
-	if (hwnd_ != nullptr && expiryTimerActive_)
+	if (hwnd_ != nullptr && messageTimerActive_)
 	{
-		KillTimer(hwnd_, MessageExpiryTimerId);
+		KillTimer(hwnd_, MessageTimerId);
 	}
-	expiryTimerActive_ = false;
+	messageTimerActive_ = false;
 }
 
 int MessageQueueWindow::PixelWidth() const
@@ -406,7 +480,7 @@ int MessageQueueWindow::PixelHeight() const
 	return height;
 }
 
-void MessageQueueWindow::Render()
+void MessageQueueWindow::Render(Clock::time_point now)
 {
 	if (hwnd_ == nullptr || messages_.empty() || FAILED(EnsureResources())) return;
 
@@ -427,25 +501,34 @@ void MessageQueueWindow::Render()
 	const auto firstIndex = messages_.size() - visibleCount;
 	for (size_t index = 0; index < visibleCount; ++index)
 	{
+		const auto& queuedMessage = messages_[firstIndex + index];
+		const auto animationFrame = CalculateMessageFrame(
+			queuedMessage.createdAt,
+			queuedMessage.expiresAt,
+			now);
 		const auto top = static_cast<float>(index) * (MessageHeightDip + MessageGapDip);
+		const auto left = animationFrame.horizontalOffsetDip;
 		const auto bubble = CreateInsetRoundedRect(
-			0.0f,
+			left,
 			top,
-			WindowWidthDip,
+			left + WindowWidthDip,
 			top + MessageHeightDip,
 			SurfaceCornerRadius,
 			SurfaceBorderThickness);
+		backgroundBrush_->SetOpacity(animationFrame.opacity);
+		borderBrush_->SetOpacity(animationFrame.opacity);
+		textBrush_->SetOpacity(animationFrame.opacity);
 		renderTarget_->FillRoundedRectangle(bubble, backgroundBrush_.Get());
 		renderTarget_->DrawRoundedRectangle(
 			bubble,
 			borderBrush_.Get(),
 			SurfaceBorderThickness);
 
-		const auto& message = messages_[firstIndex + index].text;
+		const auto& message = queuedMessage.text;
 		const auto textRect = D2D1::RectF(
-			HorizontalPaddingDip,
+			left + HorizontalPaddingDip,
 			top,
-			WindowWidthDip - HorizontalPaddingDip,
+			left + WindowWidthDip - HorizontalPaddingDip,
 			top + MessageHeightDip);
 		renderTarget_->DrawTextW(
 			message.c_str(),
@@ -456,6 +539,9 @@ void MessageQueueWindow::Render()
 			D2D1_DRAW_TEXT_OPTIONS_CLIP,
 			DWRITE_MEASURING_MODE_NATURAL);
 	}
+	backgroundBrush_->SetOpacity(1.0f);
+	borderBrush_->SetOpacity(1.0f);
+	textBrush_->SetOpacity(1.0f);
 
 	const auto endResult = renderTarget_->EndDraw();
 	if (endResult == D2DERR_RECREATE_TARGET)
@@ -525,37 +611,38 @@ LRESULT MessageQueueWindow::HandleMessage(
 		if (visible_)
 		{
 			UpdateGeometry();
-			Render();
+			Render(Clock::now());
 		}
 		return 0;
 	case WM_PAINT:
 	{
 		PAINTSTRUCT paint{};
 		BeginPaint(window, &paint);
-		if (visible_) Render();
+		if (visible_) Render(Clock::now());
 		EndPaint(window, &paint);
 		return 0;
 	}
 	case WM_SIZE:
-		if (visible_ && !updatingGeometry_) Render();
+		if (visible_ && !updatingGeometry_) Render(Clock::now());
 		return 0;
 	case WM_TIMER:
-		if (wParam == MessageExpiryTimerId)
+		if (wParam == MessageTimerId)
 		{
-			StopExpiryTimer();
-			const auto changed = RemoveExpiredMessages(Clock::now());
+			StopMessageTimer();
+			const auto now = Clock::now();
+			const auto changed = RemoveCompletedMessages(now);
 			if (messages_.empty())
 			{
 				Hide();
 			}
 			else
 			{
-				ScheduleExpiryTimer();
-				if (changed && visible_)
+				if (visible_)
 				{
-					UpdateGeometry();
-					Render();
+					if (changed) UpdateGeometry();
+					Render(now);
 				}
+				ScheduleMessageTimer(now);
 			}
 			return 0;
 		}
@@ -564,7 +651,7 @@ LRESULT MessageQueueWindow::HandleMessage(
 		Hide();
 		return 0;
 	case WM_DESTROY:
-		StopExpiryTimer();
+		StopMessageTimer();
 		DiscardResources(true);
 		hwnd_ = nullptr;
 		visible_ = false;

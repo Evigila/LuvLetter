@@ -136,6 +136,13 @@ The caret timer starts only while InputWindow is both foreground and focused; fo
 application deactivation stops the timer and removes the caret immediately. Window
 visibility alone is never treated as proof of keyboard ownership.
 
+Keyboard focus also drives a reversible green leading indicator. The indicator slides
+in from outside the input surface instead of toggling visibility in place. Its animated
+reservation is part of the DirectWrite content geometry, so text, selection, caret,
+mouse hit testing, responsive wrapping, and the IME composition position move together.
+The indicator shares the input window's frame timer but keeps an independent animation
+state, allowing focus and popup transitions to reverse without discontinuities.
+
 The built-in settings plugin is always Quick Action slot 1 and is displayed as
 `Control Center`. Quick Actions exposes the numeric slots 1 through 9. Selecting an
 unassigned slot closes the Quick Actions window and reports a diagnostic through the
@@ -150,6 +157,12 @@ is a no-op when none remain. A subsequent message shows the queue again. Escape
 deliberately does not hide this read-only status surface. The active stack is bounded
 at six bubbles, discarding the oldest on overflow; long text is kept to one line and
 trimmed with an ellipsis.
+
+Each bubble owns an independent monotonic timeline: it enters from the left over 180 ms,
+starts its reverse leftward exit five seconds after enqueue, and is removed after the
+140 ms exit completes. One adaptive timer renders 16 ms frames only while the queue is
+visible and a transition is active; otherwise it sleeps until the next lifecycle
+boundary. Manually hiding the surface therefore pauses rendering, not message lifetime.
 
 Writes use a same-directory temporary file, flush it, atomically replace the old file,
 and only then publish the new in-memory snapshot.

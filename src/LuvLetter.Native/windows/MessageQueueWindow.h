@@ -38,6 +38,7 @@ private:
 	struct QueuedMessage final
 	{
 		std::wstring text;
+		Clock::time_point createdAt;
 		Clock::time_point expiresAt;
 	};
 
@@ -53,10 +54,10 @@ private:
 	void GetSurfaceMetrics(int& width, int& height, float& renderScale) const;
 	float WindowHeightDip() const noexcept;
 	size_t VisibleMessageCount() const noexcept;
-	bool RemoveExpiredMessages(Clock::time_point now);
-	void ScheduleExpiryTimer();
-	void StopExpiryTimer() noexcept;
-	void Render();
+	bool RemoveCompletedMessages(Clock::time_point now);
+	void ScheduleMessageTimer(Clock::time_point now) noexcept;
+	void StopMessageTimer() noexcept;
+	void Render(Clock::time_point now);
 	static std::wstring NormalizeMessage(std::wstring message);
 
 	HWND hwnd_ = nullptr;
@@ -64,7 +65,7 @@ private:
 	UINT dpi_ = LuvLetterNative::DefaultDpi;
 	bool visible_ = false;
 	bool updatingGeometry_ = false;
-	bool expiryTimerActive_ = false;
+	bool messageTimerActive_ = false;
 	std::deque<QueuedMessage> messages_;
 
 	Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory_;

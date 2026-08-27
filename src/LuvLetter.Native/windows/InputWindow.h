@@ -48,6 +48,7 @@ private:
 	void AdvanceAnimation();
 	void CompleteHide();
 	void UpdateWindowPosition(bool applyAnimation = true) const;
+	void SetFocusIndicatorTarget(bool focused) noexcept;
 
 	void Reset();
 	void Submit();
@@ -86,6 +87,8 @@ private:
 	float TextWidthDip() const;
 	float TextTopDip() const;
 	float TextViewportHeightDip() const;
+	float FocusIndicatorProgress() const noexcept;
+	float FocusIndicatorReservationDip() const noexcept;
 	void Render(bool caretOnly = false);
 	bool HandleKeyDown(WPARAM key);
 
@@ -111,6 +114,7 @@ private:
 	int lineCapacity_ = 1;
 	float verticalOffset_ = 0.0f;
 	PopupAnimator animator_;
+	PopupAnimator focusIndicatorAnimator_{ PopupAnimationSettings{ 140.0, 120.0, 1.0f, 0.0f } };
 	std::vector<std::wstring> historyEntries_;
 	std::wstring historyDraft_;
 	int historyNavigationIndex_ = -1;
@@ -128,6 +132,7 @@ private:
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> placeholderBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> caretBrush_;
+	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> focusIndicatorBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> selectionBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> selectionTextBrush_;
 	std::unique_ptr<LuvLetterNative::LayeredWindowSurface> surface_;

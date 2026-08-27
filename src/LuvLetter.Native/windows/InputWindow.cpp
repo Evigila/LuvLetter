@@ -20,6 +20,8 @@ namespace
 	constexpr UINT_PTR AnimationTimerId = 2;
 	constexpr UINT CaretBlinkMs = 530;
 	constexpr UINT AnimationFrameMs = 16;
+	constexpr float FocusIndicatorDiameterDip = 10.0f;
+	constexpr float FocusIndicatorGapDip = 8.0f;
 	constexpr size_t MaxInputCharacters = 32768;
 	constexpr size_t HistoryCapacity = 100;
 	constexpr float MaxTextLayoutHeight = 16777216.0f;
@@ -197,6 +199,12 @@ HRESULT InputWindow::EnsureResources()
 		result = renderTarget_->CreateSolidColorBrush(ColorFromArgb(config_.caretColor), caretBrush_.GetAddressOf());
 		if (FAILED(result)) return result;
 	}
+	if (!focusIndicatorBrush_)
+	{
+		result = renderTarget_->CreateSolidColorBrush(
+			D2D1::ColorF(0x22C55E, 1.0f), focusIndicatorBrush_.GetAddressOf());
+		if (FAILED(result)) return result;
+	}
 	if (!selectionBrush_)
 	{
 		result = renderTarget_->CreateSolidColorBrush(
@@ -216,6 +224,11 @@ HRESULT InputWindow::EnsureResources()
 			TextWidthDip(), MaxTextLayoutHeight, textLayout_.GetAddressOf());
 		if (FAILED(result)) return result;
 	}
+	else if (textLayout_)
+	{
+		result = textLayout_->SetMaxWidth(TextWidthDip());
+		if (FAILED(result)) return result;
+	}
 	return S_OK;
 }
 
@@ -225,6 +238,7 @@ void InputWindow::DiscardResources(bool discardSurface)
 	textLayout_.Reset();
 	selectionTextBrush_.Reset();
 	selectionBrush_.Reset();
+	focusIndicatorBrush_.Reset();
 	caretBrush_.Reset();
 	placeholderBrush_.Reset();
 	textBrush_.Reset();
@@ -297,6 +311,10 @@ void InputWindow::Show(HMONITOR targetMonitor, HWND previousForegroundWindow)
 	if (hwnd_ == nullptr) return;
 	SynchronizeAnimation();
 	const auto wasPresenting = animator_.Current().ShouldPresent();
+	if (!wasPresenting)
+	{
+		focusIndicatorAnimator_.Reset(false);
+	}
 	previousForegroundHwnd_ = previousForegroundWindow;
 	targetMonitor_ = targetMonitor;
 	EnableWindow(hwnd_, TRUE);
@@ -347,6 +365,7 @@ void InputWindow::Hide()
 	mouseSelecting_ = false;
 	if (GetCapture() == hwnd_) ReleaseCapture();
 	animator_.Hide();
+	focusIndicatorAnimator_.Hide();
 	caretDirtyValid_ = false;
 	ReleaseFocus();
 	UpdateWindowPosition();
@@ -377,6 +396,7 @@ void InputWindow::HideImmediately()
 	mouseSelecting_ = false;
 	if (GetCapture() == hwnd_) ReleaseCapture();
 	animator_.Reset(false);
+	focusIndicatorAnimator_.Reset(false);
 	animationTimestamp_ = 0;
 	caretDirtyValid_ = false;
 	EnableWindow(hwnd_, FALSE);
@@ -414,12 +434,19 @@ void InputWindow::ReleaseFocus()
 void InputWindow::SynchronizeAnimation()
 {
 	const auto now = GetTickCount64();
-	if (animationTimestamp_ != 0 && animator_.Current().IsAnimating())
+	if (animationTimestamp_ != 0)
 	{
 		const auto elapsed = now >= animationTimestamp_
 			? static_cast<double>(now - animationTimestamp_)
 			: 0.0;
-		animator_.Advance(elapsed);
+		if (animator_.Current().IsAnimating())
+		{
+			animator_.Advance(elapsed);
+		}
+		if (focusIndicatorAnimator_.Current().IsAnimating())
+		{
+			focusIndicatorAnimator_.Advance(elapsed);
+		}
 	}
 	animationTimestamp_ = now;
 }
@@ -429,14 +456,21 @@ void InputWindow::AdvanceAnimation()
 	if (hwnd_ == nullptr) return;
 	SynchronizeAnimation();
 	const auto frame = animator_.Current();
+	const auto indicatorFrame = focusIndicatorAnimator_.Current();
+	caretDirtyValid_ = false;
+	UpdateResponsiveHeight();
+	EnsureCaretVisible();
 	UpdateWindowPosition();
+	UpdateImeCompositionWindow();
 	Render();
-	if (frame.IsAnimating()) return;
+	if (frame.IsAnimating() || indicatorFrame.IsAnimating()) return;
 	KillTimer(hwnd_, AnimationTimerId);
 	if (!frame.ShouldPresent())
 	{
 		CompleteHide();
+		return;
 	}
+	animationTimestamp_ = 0;
 }
 
 void InputWindow::CompleteHide()
@@ -444,7 +478,30 @@ void InputWindow::CompleteHide()
 	if (hwnd_ == nullptr) return;
 	KillTimer(hwnd_, AnimationTimerId);
 	ShowWindow(hwnd_, SW_HIDE);
+	focusIndicatorAnimator_.Reset(false);
 	animationTimestamp_ = 0;
+}
+
+void InputWindow::SetFocusIndicatorTarget(bool focused) noexcept
+{
+	if (hwnd_ == nullptr || focusIndicatorAnimator_.TargetVisible() == focused) return;
+	SynchronizeAnimation();
+	if (focused)
+	{
+		focusIndicatorAnimator_.Show();
+	}
+	else
+	{
+		focusIndicatorAnimator_.Hide();
+	}
+	caretDirtyValid_ = false;
+	animationTimestamp_ = GetTickCount64();
+	if (focusIndicatorAnimator_.Current().IsAnimating()
+		&& SetTimer(hwnd_, AnimationTimerId, AnimationFrameMs, nullptr) == 0)
+	{
+		focusIndicatorAnimator_.Reset(focused);
+		animationTimestamp_ = 0;
+	}
 }
 
 void InputWindow::UpdateWindowPosition(bool applyAnimation) const
@@ -822,9 +879,13 @@ void InputWindow::SetCaretFromPoint(LPARAM lParam, bool extendSelection)
 	const auto horizontalPadding = (std::min)(
 		(std::max)(0.0f, config_.horizontalPadding),
 		(std::max)(0.0f, animatedWidth / 2.0f - 1.0f));
+	const auto indicatorReservation = (std::min)(
+		FocusIndicatorReservationDip(),
+		(std::max)(0.0f, animatedWidth - 2.0f * horizontalPadding - 1.0f));
 	const auto x = PixelsToDip(GET_X_LPARAM(lParam), dpi_)
 		- animatedLeft
-		- horizontalPadding;
+		- horizontalPadding
+		- indicatorReservation;
 	const auto textTop = TextTopDip();
 	const auto y = PixelsToDip(GET_Y_LPARAM(lParam), dpi_) - textTop + verticalOffset_;
 	if (SUCCEEDED(textLayout_->HitTestPoint(x, y, &trailing, &inside, &metrics)))
@@ -864,6 +925,7 @@ bool InputWindow::HasKeyboardFocus() const noexcept
 bool InputWindow::RefreshCaretState(bool restartBlink, bool forceInactive) noexcept
 {
 	const auto focused = !forceInactive && HasKeyboardFocus();
+	SetFocusIndicatorTarget(focused);
 	if (!focused)
 	{
 		if (hwnd_ != nullptr) KillTimer(hwnd_, CaretTimerId);
@@ -952,12 +1014,15 @@ void InputWindow::UpdateImeCompositionWindow()
 	const auto horizontalPadding = (std::min)(
 		(std::max)(0.0f, config_.horizontalPadding),
 		(std::max)(0.0f, animatedWidth / 2.0f - 1.0f));
+	const auto indicatorReservation = (std::min)(
+		FocusIndicatorReservationDip(),
+		(std::max)(0.0f, animatedWidth - 2.0f * horizontalPadding - 1.0f));
 	const auto caret = GetCaretLogicalPosition();
 	const auto textTop = TextTopDip();
 	COMPOSITIONFORM compositionForm{};
 	compositionForm.dwStyle = CFS_POINT;
 	compositionForm.ptCurrentPos.x = DipToPixels(
-		animatedLeft + horizontalPadding + caret.x,
+		animatedLeft + horizontalPadding + indicatorReservation + caret.x,
 		dpi_);
 	compositionForm.ptCurrentPos.y = DipToPixels(
 		textTop + caret.y - verticalOffset_ + config_.fontSize,
@@ -970,8 +1035,10 @@ void InputWindow::Render(bool caretOnly)
 {
 	if (hwnd_ == nullptr || FAILED(EnsureResources())) return;
 	const auto animationFrame = animator_.Current();
+	const auto focusIndicatorFrame = focusIndicatorAnimator_.Current();
 	caretOnly = caretOnly
-		&& animationFrame.state == PopupAnimationState::Visible;
+		&& animationFrame.state == PopupAnimationState::Visible
+		&& !focusIndicatorFrame.IsAnimating();
 	const auto width = PixelWidth();
 	const auto height = PixelHeight();
 	const auto fullWidth = static_cast<float>(config_.width);
@@ -983,6 +1050,9 @@ void InputWindow::Render(bool caretOnly)
 	const auto horizontalPadding = (std::min)(
 		(std::max)(0.0f, config_.horizontalPadding),
 		(std::max)(0.0f, animatedWidth / 2.0f - 1.0f));
+	const auto indicatorReservation = (std::min)(
+		FocusIndicatorReservationDip(),
+		(std::max)(0.0f, animatedWidth - 2.0f * horizontalPadding - 1.0f));
 	const auto windowHeight = WindowHeightDip();
 	const auto verticalPadding = (std::min)(
 		(std::max)(0.0f, config_.verticalPadding),
@@ -990,7 +1060,7 @@ void InputWindow::Render(bool caretOnly)
 	const auto lineHeight = LineHeightDip();
 	const auto textTop = TextTopDip();
 	const auto textRect = D2D1::RectF(
-		animatedLeft + horizontalPadding, textTop,
+		animatedLeft + horizontalPadding + indicatorReservation, textTop,
 		animatedRight - horizontalPadding,
 		(std::min)(windowHeight - verticalPadding, textTop + TextViewportHeightDip()));
 	const auto caret = GetCaretLogicalPosition();
@@ -1059,6 +1129,24 @@ void InputWindow::Render(bool caretOnly)
 	{
 		renderTarget_->DrawRoundedRectangle(
 			rounded, borderBrush_.Get(), config_.borderThickness);
+	}
+	if (focusIndicatorFrame.motionProgress > 0.0)
+	{
+		const auto radius = FocusIndicatorDiameterDip / 2.0f;
+		const auto hiddenCenterX = animatedLeft - radius;
+		const auto focusedCenterX = animatedLeft + horizontalPadding + radius;
+		const auto centerX = hiddenCenterX
+			+ (focusedCenterX - hiddenCenterX) * FocusIndicatorProgress();
+		renderTarget_->PushAxisAlignedClip(
+			D2D1::RectF(animatedLeft, 0.0f, animatedRight, windowHeight),
+			D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+		renderTarget_->FillEllipse(
+			D2D1::Ellipse(
+				D2D1::Point2F(centerX, windowHeight / 2.0f),
+				radius,
+				radius),
+			focusIndicatorBrush_.Get());
+		renderTarget_->PopAxisAlignedClip();
 	}
 	renderTarget_->PushAxisAlignedClip(textRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 	if (text_.empty())
@@ -1203,7 +1291,9 @@ float InputWindow::TextWidthDip() const
 {
 	return (std::max)(
 		1.0f,
-		static_cast<float>(config_.width) - 2.0f * (std::max)(0.0f, config_.horizontalPadding));
+		static_cast<float>(config_.width)
+			- 2.0f * (std::max)(0.0f, config_.horizontalPadding)
+			- FocusIndicatorReservationDip());
 }
 
 float InputWindow::TextTopDip() const
@@ -1223,6 +1313,20 @@ float InputWindow::TextViewportHeightDip() const
 		WindowHeightDip() - TextTopDip()
 			- (std::max)(0.0f, config_.verticalPadding));
 	return (std::min)(requestedViewport, availableViewport);
+}
+
+float InputWindow::FocusIndicatorProgress() const noexcept
+{
+	return static_cast<float>((std::clamp)(
+		focusIndicatorAnimator_.Current().motionProgress,
+		0.0,
+		1.0));
+}
+
+float InputWindow::FocusIndicatorReservationDip() const noexcept
+{
+	return (FocusIndicatorDiameterDip + FocusIndicatorGapDip)
+		* FocusIndicatorProgress();
 }
 
 int InputWindow::PixelWidth() const
