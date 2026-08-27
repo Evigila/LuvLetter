@@ -75,7 +75,7 @@ internal delegate void NativeInputSubmittedCallback(IntPtr text, int length, Int
 
 internal sealed class NativeShellApi : INativeShellApi
 {
-    private const uint CurrentAbiVersion = 2;
+    private const uint CurrentAbiVersion = 3;
 
     internal static INativeShellApi Instance { get; } = new NativeShellApi();
 
@@ -179,6 +179,30 @@ internal sealed class NativeShellApi : INativeShellApi
 
         [DllImport(
             "LuvLetter.Native.dll",
+            EntryPoint = "EnqueueMessage",
+            ExactSpelling = true,
+            CharSet = CharSet.Unicode,
+            CallingConvention = CallingConvention.StdCall)]
+        internal static extern int EnqueueMessage(
+            [MarshalAs(UnmanagedType.LPWStr)] string text,
+            int length);
+
+        [DllImport(
+            "LuvLetter.Native.dll",
+            EntryPoint = "ToggleMessageQueue",
+            ExactSpelling = true,
+            CallingConvention = CallingConvention.StdCall)]
+        internal static extern int ToggleMessageQueue();
+
+        [DllImport(
+            "LuvLetter.Native.dll",
+            EntryPoint = "HideMessageQueue",
+            ExactSpelling = true,
+            CallingConvention = CallingConvention.StdCall)]
+        internal static extern int HideMessageQueue();
+
+        [DllImport(
+            "LuvLetter.Native.dll",
             EntryPoint = "HidePopups",
             ExactSpelling = true,
             CallingConvention = CallingConvention.StdCall)]
@@ -222,6 +246,13 @@ internal sealed class NativeShellApi : INativeShellApi
     public int HideFeatureWindow() => NativeMethods.HideFeatureWindow();
 
     public int ToggleFeatureWindow() => NativeMethods.ToggleFeatureWindow();
+
+    public int EnqueueMessage(string text, int length) =>
+        NativeMethods.EnqueueMessage(text, length);
+
+    public int ToggleMessageQueue() => NativeMethods.ToggleMessageQueue();
+
+    public int HideMessageQueue() => NativeMethods.HideMessageQueue();
 
     public int HidePopups() => NativeMethods.HidePopups();
 

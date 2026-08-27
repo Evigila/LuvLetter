@@ -209,9 +209,10 @@ void QuickActionsWindow::Show(HMONITOR targetMonitor, HWND previousForegroundWin
 	animator_.Show();
 	UpdatePosition();
 	Render();
-	ShowWindow(hwnd_, SW_SHOWNORMAL);
-	SetForegroundWindow(hwnd_);
-	SetFocus(hwnd_);
+	// Foreground activation is coordinated by NativeShellHost after the window is
+	// visible. Keeping presentation non-activating here avoids competing focus
+	// transitions between this window and the host's shared activation path.
+	ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 	animationTimestamp_ = GetTickCount64();
 	if (animator_.Current().IsAnimating())
 	{
@@ -559,7 +560,12 @@ void QuickActionsWindow::ChangePage(int direction)
 void QuickActionsWindow::Activate(size_t indexOnPage)
 {
 	size_t absoluteIndex = 0;
-	if (!TryResolveIndex(indexOnPage, absoluteIndex)) return;
+	if (!TryResolveIndex(indexOnPage, absoluteIndex))
+	{
+		Hide();
+		if (activated_) activated_(0);
+		return;
+	}
 	const auto token = items_[absoluteIndex].token;
 	Hide();
 	if (activated_) activated_(token);

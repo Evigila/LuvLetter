@@ -14,6 +14,7 @@ public enum CtrlGestureAction
     CommandInputRequested,
     PopupsDismissRequested,
     QuickActionsRequested,
+    MessageQueueToggleRequested,
 }
 
 public sealed class CtrlGestureStateMachine
@@ -38,6 +39,7 @@ public sealed class CtrlGestureStateMachine
     private bool rightAltDown;
     private bool functionOneDown;
     private bool escapeDown;
+    private bool backspaceDown;
 
     public CtrlGestureStateMachine(ActivationGestureOptions options)
     {
@@ -217,6 +219,29 @@ public sealed class CtrlGestureStateMachine
         return CtrlGestureAction.None;
     }
 
+    public CtrlGestureAction HandleBackspaceDown(bool hasAdditionalModifier = false)
+    {
+        HandleOtherKey();
+        if (backspaceDown)
+        {
+            return CtrlGestureAction.None;
+        }
+
+        backspaceDown = true;
+        return (leftAltDown || rightAltDown)
+            && !leftControlDown
+            && !rightControlDown
+            && !hasAdditionalModifier
+            ? CtrlGestureAction.MessageQueueToggleRequested
+            : CtrlGestureAction.None;
+    }
+
+    public CtrlGestureAction HandleBackspaceUp()
+    {
+        backspaceDown = false;
+        return CtrlGestureAction.None;
+    }
+
     public CtrlGestureAction HandleEscapeDown()
     {
         HandleOtherKey();
@@ -316,6 +341,7 @@ public sealed class CtrlGestureStateMachine
         rightAltDown = false;
         functionOneDown = false;
         escapeDown = false;
+        backspaceDown = false;
         ResetPhase();
     }
 

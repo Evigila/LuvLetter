@@ -46,7 +46,7 @@ LuvLetterFeatureWindowConfig NativeConfigurationSanitizer::DefaultQuickActionsWi
 	LuvLetterFeatureWindowConfig config{};
 	config.structSize = sizeof(config);
 	config.abiVersion = LUVLETTER_NATIVE_ABI_VERSION;
-	config.itemsPerPage = 7;
+	config.itemsPerPage = 9;
 	config.cellSize = 96.0f;
 	config.gap = 12.0f;
 	config.cornerRadius = SurfaceCornerRadius;
@@ -125,7 +125,7 @@ LuvLetterFeatureWindowConfig NativeConfigurationSanitizer::SanitizeQuickActionsW
 	const LuvLetterFeatureWindowConfig& config) noexcept
 {
 	auto sanitized = DefaultQuickActionsWindow();
-	sanitized.itemsPerPage = (std::clamp)(config.itemsPerPage, 1, 7);
+	sanitized.itemsPerPage = (std::clamp)(config.itemsPerPage, 1, 9);
 	sanitized.cellSize = (std::clamp)(
 		FiniteOr(config.cellSize, sanitized.cellSize),
 		32.0f,

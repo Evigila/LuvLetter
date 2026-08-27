@@ -29,14 +29,17 @@ internal static partial class Program
         Assert.Equal(1, nativeShell.AppliedConfigurations);
         Assert.Equal(1, nativeShell.SynchronizedSnapshots.Count);
         Assert.Equal("settings.open", nativeShell.SynchronizedSnapshots[0].Single().Id);
+        Assert.Equal("Control Center", nativeShell.SynchronizedSnapshots[0].Single().DisplayName);
         Assert.Equal(1, activation.AppliedOptions.Count);
         Assert.Equal(0, applicationShell.ShowSettingsCalls);
 
         activation.RaiseCommandInputRequested();
         activation.RaiseQuickActionsRequested();
+        activation.RaiseMessageQueueToggleRequested();
         activation.RaisePopupsDismissRequested();
         Assert.Equal(1, nativeShell.ToggleCommandInputCalls);
         Assert.Equal(1, nativeShell.ToggleQuickActionsCalls);
+        Assert.Equal(1, nativeShell.ToggleMessageQueueCalls);
         Assert.Equal(1, nativeShell.HidePopupsCalls);
         Assert.Equal(0, nativeShell.HideCommandInputCalls);
         Assert.Equal(0, nativeShell.HideQuickActionsCalls);
@@ -44,6 +47,16 @@ internal static partial class Program
         nativeShell.RaiseQuickActionActivated("settings.open");
         await Task.Delay(25);
         Assert.Equal(1, applicationShell.ShowSettingsCalls);
+
+        nativeShell.RaiseQuickActionUnavailable();
+        Assert.SequenceEqual(
+            ["No feature is assigned to that key."],
+            nativeShell.EnqueuedMessages,
+            "An unavailable Quick Action must be forwarded to the Native message queue.");
+        Assert.SequenceEqual(
+            ["No feature is assigned to that key."],
+            applicationShell.Statuses,
+            "The existing status surface must remain synchronized with queue messages.");
 
         await coordinator.StopAsync(CancellationToken.None);
         await coordinator.StopAsync(CancellationToken.None);
@@ -61,5 +74,15 @@ internal static partial class Program
             1,
             nativeShell.HidePopupsCalls,
             "Application coordinator shutdown left a dismissal event subscribed.");
+        activation.RaiseMessageQueueToggleRequested();
+        Assert.Equal(
+            1,
+            nativeShell.ToggleMessageQueueCalls,
+            "Application coordinator shutdown left a message-queue event subscribed.");
+        nativeShell.RaiseQuickActionUnavailable();
+        Assert.Equal(
+            1,
+            nativeShell.EnqueuedMessages.Count,
+            "Application coordinator shutdown left an unavailable-action event subscribed.");
     }
 }

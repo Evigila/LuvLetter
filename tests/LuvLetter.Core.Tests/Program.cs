@@ -9,7 +9,7 @@ internal static partial class Program
         ("Legacy Ctrl hold is inactive", TestCtrlGestureHoldIsInactive),
         ("Ctrl gesture cancellation boundaries", TestCtrlGestureCancellationBoundaries),
         ("Ctrl gesture side and auto-repeat handling", TestCtrlGestureSidesAndAutoRepeat),
-        ("Global Alt+F1 and Escape shortcuts", TestGlobalShortcuts),
+        ("Global Alt+F1, Alt+Backspace, and Escape shortcuts", TestGlobalShortcuts),
         ("Configuration normalization", TestConfigurationNormalization),
         ("Quick-action registry", TestQuickActionRegistry),
         ("Asynchronous command dispatch", TestCommandDispatcher),

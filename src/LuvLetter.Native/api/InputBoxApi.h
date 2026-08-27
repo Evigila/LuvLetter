@@ -12,7 +12,7 @@
 
 extern "C"
 {
-	inline constexpr uint32_t LUVLETTER_NATIVE_ABI_VERSION = 2;
+	inline constexpr uint32_t LUVLETTER_NATIVE_ABI_VERSION = 3;
 
 	struct LuvLetterInputBoxConfig
 	{
@@ -105,6 +105,11 @@ extern "C"
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ShowFeatureWindow();
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL HideFeatureWindow();
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ToggleFeatureWindow();
+	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL EnqueueMessage(
+		const wchar_t* text,
+		int32_t length);
+	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ToggleMessageQueue();
+	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL HideMessageQueue();
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL HidePopups();
 
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ShutdownInputBox();

@@ -140,6 +140,7 @@ internal static partial class Program
         var service = new NativeShellService(nativeApi);
         try
         {
+            Assert.Equal(3U, nativeApi.AbiVersion);
             Assert.Equal(1, nativeApi.CompatibilityChecks);
             Assert.NotNull(nativeApi.InputSubmittedCallback);
             Assert.NotNull(nativeApi.QuickActionActivatedCallback);
@@ -191,6 +192,14 @@ internal static partial class Program
                 "alpha",
                 await quickActionActivated.Task.WaitAsync(TimeSpan.FromSeconds(2)));
 
+            var quickActionUnavailable = new TaskCompletionSource<bool>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            service.QuickActionUnavailable += () => quickActionUnavailable.SetResult(true);
+            nativeApi.RaiseFeatureActivated(0);
+            Assert.True(
+                await quickActionUnavailable.Task.WaitAsync(TimeSpan.FromSeconds(2)),
+                "Token zero must report an unavailable Quick Action.");
+
             nativeApi.SetFeatureItemsResult = unchecked((int)0x80004005);
             Assert.Throws<ExternalException>(
                 () => service.SynchronizeQuickActions(
@@ -227,10 +236,19 @@ internal static partial class Program
             service.ShowCommandInput();
             service.HideCommandInput();
             service.ToggleQuickActions();
+            service.EnqueueMessage("  hello queue  ");
+            service.EnqueueMessage("   ");
+            service.ToggleMessageQueue();
+            service.HideMessageQueue();
             service.HidePopups();
             Assert.Equal(1, nativeApi.ShowInputBoxCalls);
             Assert.Equal(1, nativeApi.HideInputBoxCalls);
             Assert.Equal(1, nativeApi.ToggleQuickActionsCalls);
+            Assert.Equal(1, nativeApi.EnqueuedMessages.Count);
+            Assert.Equal("hello queue", nativeApi.EnqueuedMessages[0].Text);
+            Assert.Equal("hello queue".Length, nativeApi.EnqueuedMessages[0].Length);
+            Assert.Equal(1, nativeApi.ToggleMessageQueueCalls);
+            Assert.Equal(1, nativeApi.HideMessageQueueCalls);
             Assert.Equal(1, nativeApi.HidePopupsCalls);
             Assert.Equal(0, nativeApi.HideQuickActionsCalls);
 
@@ -238,6 +256,12 @@ internal static partial class Program
             Assert.Throws<ExternalException>(service.ToggleCommandInput);
             nativeApi.HidePopupsResult = unchecked((int)0x80004005);
             Assert.Throws<ExternalException>(service.HidePopups);
+            nativeApi.EnqueueMessageResult = unchecked((int)0x80004005);
+            Assert.Throws<ExternalException>(() => service.EnqueueMessage("failure"));
+            nativeApi.ToggleMessageQueueResult = unchecked((int)0x80004005);
+            Assert.Throws<ExternalException>(service.ToggleMessageQueue);
+            nativeApi.HideMessageQueueResult = unchecked((int)0x80004005);
+            Assert.Throws<ExternalException>(service.HideMessageQueue);
         }
         finally
         {

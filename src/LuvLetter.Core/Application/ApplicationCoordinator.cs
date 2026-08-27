@@ -94,7 +94,7 @@ public sealed class ApplicationCoordinator : IHostedService
 
             if (warnings.Count > 0)
             {
-                applicationShell.ReportStatus(string.Join(" ", warnings));
+                ReportStatus(string.Join(" ", warnings));
             }
 
             return Task.CompletedTask;
@@ -117,12 +117,14 @@ public sealed class ApplicationCoordinator : IHostedService
     {
         nativeShell.InputSubmitted += HandleInputSubmitted;
         nativeShell.QuickActionActivated += HandleQuickActionActivated;
+        nativeShell.QuickActionUnavailable += HandleQuickActionUnavailable;
         quickActions.Changed += HandleQuickActionsChanged;
         commandDispatcher.Unhandled += HandleUnhandledCommand;
         commandDispatcher.Failed += HandleFailedCommand;
         activationGestures.CommandInputRequested += HandleCommandInputRequested;
         activationGestures.PopupsDismissRequested += HandlePopupsDismissRequested;
         activationGestures.QuickActionsRequested += HandleQuickActionsRequested;
+        activationGestures.MessageQueueToggleRequested += HandleMessageQueueToggleRequested;
         eventsSubscribed = true;
     }
 
@@ -133,6 +135,7 @@ public sealed class ApplicationCoordinator : IHostedService
             return;
         }
 
+        activationGestures.MessageQueueToggleRequested -= HandleMessageQueueToggleRequested;
         activationGestures.QuickActionsRequested -= HandleQuickActionsRequested;
         activationGestures.CommandInputRequested -= HandleCommandInputRequested;
         activationGestures.PopupsDismissRequested -= HandlePopupsDismissRequested;
@@ -140,6 +143,7 @@ public sealed class ApplicationCoordinator : IHostedService
         commandDispatcher.Unhandled -= HandleUnhandledCommand;
         quickActions.Changed -= HandleQuickActionsChanged;
         nativeShell.QuickActionActivated -= HandleQuickActionActivated;
+        nativeShell.QuickActionUnavailable -= HandleQuickActionUnavailable;
         nativeShell.InputSubmitted -= HandleInputSubmitted;
         eventsSubscribed = false;
     }
@@ -162,7 +166,7 @@ public sealed class ApplicationCoordinator : IHostedService
         }
         catch (Exception exception)
         {
-            applicationShell.ReportStatus($"Cannot stop plugins: {exception.Message}");
+            ReportStatus($"Cannot stop plugins: {exception.Message}");
         }
         finally
         {
@@ -180,7 +184,7 @@ public sealed class ApplicationCoordinator : IHostedService
         var result = commandDispatcher.Dispatch(commandText);
         if (result != CommandDispatchResult.Accepted)
         {
-            applicationShell.ReportStatus($"Command was not accepted: {result}");
+            ReportStatus($"Command was not accepted: {result}");
         }
     }
 
@@ -189,6 +193,14 @@ public sealed class ApplicationCoordinator : IHostedService
         if (Volatile.Read(ref stopping) == 0)
         {
             _ = ActivateQuickActionAsync(quickActionId);
+        }
+    }
+
+    private void HandleQuickActionUnavailable()
+    {
+        if (Volatile.Read(ref stopping) == 0)
+        {
+            ReportStatus("No feature is assigned to that key.");
         }
     }
 
@@ -201,7 +213,7 @@ public sealed class ApplicationCoordinator : IHostedService
         }
 
         var detail = result.Exception is null ? result.Status.ToString() : result.Exception.Message;
-        applicationShell.ReportStatus(
+        ReportStatus(
             $"Cannot activate quick action '{quickActionId}': {detail}");
     }
 
@@ -215,10 +227,10 @@ public sealed class ApplicationCoordinator : IHostedService
     }
 
     private void HandleUnhandledCommand(CommandInvocation invocation) =>
-        applicationShell.ReportStatus($"Unknown command: {invocation.CommandName}");
+        ReportStatus($"Unknown command: {invocation.CommandName}");
 
     private void HandleFailedCommand(CommandInvocation invocation, Exception exception) =>
-        applicationShell.ReportStatus(
+        ReportStatus(
             $"Command '{invocation.CommandName}' failed: {exception.Message}");
 
     private void HandleCommandInputRequested(object? sender, EventArgs eventArgs)
@@ -242,6 +254,13 @@ public sealed class ApplicationCoordinator : IHostedService
         TryNativeAction(nativeShell.ToggleQuickActions, "toggle quick actions");
     }
 
+    private void HandleMessageQueueToggleRequested(object? sender, EventArgs eventArgs)
+    {
+        _ = sender;
+        _ = eventArgs;
+        TryNativeAction(nativeShell.ToggleMessageQueue, "toggle the message queue");
+    }
+
     private void TryStopActivationGestures()
     {
         try
@@ -250,7 +269,7 @@ public sealed class ApplicationCoordinator : IHostedService
         }
         catch (Exception exception)
         {
-            applicationShell.ReportStatus($"Cannot stop Ctrl gestures: {exception.Message}");
+            ReportStatus($"Cannot stop Ctrl gestures: {exception.Message}");
         }
     }
 
@@ -262,7 +281,21 @@ public sealed class ApplicationCoordinator : IHostedService
         }
         catch (Exception exception)
         {
-            applicationShell.ReportStatus($"Cannot {operation}: {exception.Message}");
+            ReportStatus($"Cannot {operation}: {exception.Message}");
         }
+    }
+
+    private void ReportStatus(string message)
+    {
+        try
+        {
+            nativeShell.EnqueueMessage(message);
+        }
+        catch
+        {
+            // The existing application status surface remains the fallback if Native fails.
+        }
+
+        applicationShell.ReportStatus(message);
     }
 }

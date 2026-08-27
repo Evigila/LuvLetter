@@ -25,6 +25,10 @@ namespace
 	constexpr float MaxTextLayoutHeight = 16777216.0f;
 	constexpr int64_t MaxSurfacePixels = 16LL * 1024LL * 1024LL;
 	constexpr wchar_t PlaceholderText[] = L"Enter command here";
+	constexpr int AltModifier = 1;
+	constexpr int ControlModifier = 2;
+	constexpr int ShiftModifier = 4;
+	constexpr int WindowsModifier = 8;
 
 	constexpr int SelectLineCapacity(UINT32 lineCount) noexcept
 	{
@@ -61,6 +65,41 @@ namespace
 			return index + 2;
 		}
 		return index + 1;
+	}
+
+	enum class CharacterClass
+	{
+		Whitespace,
+		Word,
+		Other,
+	};
+
+	CharacterClass ClassifyCharacter(const std::wstring& value, size_t index) noexcept
+	{
+		if (index >= value.size()) return CharacterClass::Other;
+		WORD ctype1 = 0;
+		WORD ctype3 = 0;
+		const auto character = value[index];
+		GetStringTypeW(CT_CTYPE1, &character, 1, &ctype1);
+		GetStringTypeW(CT_CTYPE3, &character, 1, &ctype3);
+		if ((ctype1 & (C1_SPACE | C1_BLANK)) != 0) return CharacterClass::Whitespace;
+		if (character == L'_'
+			|| (ctype1 & (C1_ALPHA | C1_DIGIT)) != 0
+			|| (ctype3 & (C3_NONSPACING | C3_DIACRITIC | C3_VOWELMARK)) != 0)
+		{
+			return CharacterClass::Word;
+		}
+		return CharacterClass::Other;
+	}
+
+	D2D1_COLOR_F SystemColor(int colorIndex) noexcept
+	{
+		const auto color = GetSysColor(colorIndex);
+		return D2D1::ColorF(
+			static_cast<float>(GetRValue(color)) / 255.0f,
+			static_cast<float>(GetGValue(color)) / 255.0f,
+			static_cast<float>(GetBValue(color)) / 255.0f,
+			1.0f);
 	}
 
 }
@@ -158,6 +197,18 @@ HRESULT InputWindow::EnsureResources()
 		result = renderTarget_->CreateSolidColorBrush(ColorFromArgb(config_.caretColor), caretBrush_.GetAddressOf());
 		if (FAILED(result)) return result;
 	}
+	if (!selectionBrush_)
+	{
+		result = renderTarget_->CreateSolidColorBrush(
+			SystemColor(COLOR_HIGHLIGHT), selectionBrush_.GetAddressOf());
+		if (FAILED(result)) return result;
+	}
+	if (!selectionTextBrush_)
+	{
+		result = renderTarget_->CreateSolidColorBrush(
+			SystemColor(COLOR_HIGHLIGHTTEXT), selectionTextBrush_.GetAddressOf());
+		if (FAILED(result)) return result;
+	}
 	if (!text_.empty() && !textLayout_)
 	{
 		result = dwriteFactory_->CreateTextLayout(
@@ -172,6 +223,8 @@ void InputWindow::DiscardResources(bool discardSurface)
 {
 	caretDirtyValid_ = false;
 	textLayout_.Reset();
+	selectionTextBrush_.Reset();
+	selectionBrush_.Reset();
 	caretBrush_.Reset();
 	placeholderBrush_.Reset();
 	textBrush_.Reset();
@@ -248,7 +301,8 @@ void InputWindow::Show(HMONITOR targetMonitor, HWND previousForegroundWindow)
 	targetMonitor_ = targetMonitor;
 	EnableWindow(hwnd_, TRUE);
 	Reset();
-	caretVisible_ = true;
+	KillTimer(hwnd_, CaretTimerId);
+	caretVisible_ = false;
 	// The first move enters the target monitor and lets PMv2 deliver authoritative
 	// WM_DPICHANGED data. GetDpiForWindow then verifies it before final placement.
 	UpdateWindowPosition(wasPresenting);
@@ -260,10 +314,7 @@ void InputWindow::Show(HMONITOR targetMonitor, HWND previousForegroundWindow)
 	caretDirtyValid_ = false;
 	UpdateWindowPosition();
 	Render();
-	ShowWindow(hwnd_, SW_SHOWNORMAL);
-	SetForegroundWindow(hwnd_);
-	SetFocus(hwnd_);
-	SetTimer(hwnd_, CaretTimerId, CaretBlinkMs, nullptr);
+	ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
 	animationTimestamp_ = GetTickCount64();
 	if (animator_.Current().IsAnimating())
 	{
@@ -293,6 +344,8 @@ void InputWindow::Hide()
 	visible_ = false;
 	KillTimer(hwnd_, CaretTimerId);
 	caretVisible_ = false;
+	mouseSelecting_ = false;
+	if (GetCapture() == hwnd_) ReleaseCapture();
 	animator_.Hide();
 	caretDirtyValid_ = false;
 	ReleaseFocus();
@@ -321,6 +374,8 @@ void InputWindow::HideImmediately()
 	caretVisible_ = false;
 	KillTimer(hwnd_, CaretTimerId);
 	KillTimer(hwnd_, AnimationTimerId);
+	mouseSelecting_ = false;
+	if (GetCapture() == hwnd_) ReleaseCapture();
 	animator_.Reset(false);
 	animationTimestamp_ = 0;
 	caretDirtyValid_ = false;
@@ -437,6 +492,8 @@ void InputWindow::Reset()
 	text_.clear();
 	textLayout_.Reset();
 	caretIndex_ = 0;
+	selectionAnchor_ = 0;
+	mouseSelecting_ = false;
 	lineCapacity_ = 1;
 	verticalOffset_ = 0.0f;
 	ResetHistoryNavigation();
@@ -452,14 +509,18 @@ void InputWindow::Submit()
 	text_.clear();
 	textLayout_.Reset();
 	caretIndex_ = 0;
+	selectionAnchor_ = 0;
 	verticalOffset_ = 0.0f;
 	Invalidate();
 }
 
 void InputWindow::InsertText(const std::wstring& value)
 {
-	if (value.empty() || text_.size() >= MaxInputCharacters) return;
-	const auto count = (std::min)(value.size(), MaxInputCharacters - text_.size());
+	if (value.empty()) return;
+	const auto selectedCount = SelectionEnd() - SelectionStart();
+	const auto retainedCount = text_.size() - selectedCount;
+	if (retainedCount >= MaxInputCharacters) return;
+	const auto count = (std::min)(value.size(), MaxInputCharacters - retainedCount);
 	auto safeCount = count;
 	if (safeCount < value.size() && safeCount > 0
 		&& IsHighSurrogate(value[safeCount - 1]) && IsLowSurrogate(value[safeCount]))
@@ -467,76 +528,193 @@ void InputWindow::InsertText(const std::wstring& value)
 		--safeCount;
 	}
 	if (safeCount == 0) return;
+	EraseSelection();
 	text_.insert(caretIndex_, value.data(), safeCount);
 	textLayout_.Reset();
 	caretIndex_ += safeCount;
+	selectionAnchor_ = caretIndex_;
 	ResetHistoryNavigation();
 	Invalidate();
 }
 
 void InputWindow::InsertCharacter(wchar_t value)
 {
-	if (text_.size() >= MaxInputCharacters) return;
+	const auto selectedCount = SelectionEnd() - SelectionStart();
+	const auto retainedCount = text_.size() - selectedCount;
+	if (retainedCount >= MaxInputCharacters) return;
 	// WM_CHAR delivers a supplementary character as two UTF-16 code units. Do not
 	// admit the high surrogate into the final slot, where its low surrogate could
 	// no longer be appended. Likewise, ignore an unmatched low surrogate.
-	if (IsHighSurrogate(value) && MaxInputCharacters - text_.size() < 2) return;
+	if (IsHighSurrogate(value) && MaxInputCharacters - retainedCount < 2) return;
+	const auto insertionIndex = SelectionStart();
 	if (IsLowSurrogate(value)
-		&& (caretIndex_ == 0 || !IsHighSurrogate(text_[caretIndex_ - 1]))) return;
+		&& (insertionIndex == 0 || !IsHighSurrogate(text_[insertionIndex - 1]))) return;
+	EraseSelection();
 	text_.insert(caretIndex_, 1, value);
 	textLayout_.Reset();
 	++caretIndex_;
+	selectionAnchor_ = caretIndex_;
 	ResetHistoryNavigation();
 	Invalidate();
 }
 
-void InputWindow::DeleteBeforeCaret()
+void InputWindow::EraseRange(size_t start, size_t end)
 {
-	if (caretIndex_ == 0 || text_.empty()) return;
-	const auto previous = PreviousUtf16Boundary(text_, caretIndex_);
-	text_.erase(previous, caretIndex_ - previous);
+	start = (std::min)(start, text_.size());
+	end = (std::clamp)(end, start, text_.size());
+	if (start == end) return;
+	text_.erase(start, end - start);
 	textLayout_.Reset();
-	caretIndex_ = previous;
+	caretIndex_ = start;
+	selectionAnchor_ = start;
 	ResetHistoryNavigation();
+}
+
+bool InputWindow::EraseSelection()
+{
+	if (!HasSelection()) return false;
+	EraseRange(SelectionStart(), SelectionEnd());
+	return true;
+}
+
+void InputWindow::DeleteBeforeCaret(bool byWord)
+{
+	if (!EraseSelection())
+	{
+		if (caretIndex_ == 0 || text_.empty()) return;
+		const auto previous = byWord
+			? PreviousWordBoundary(caretIndex_)
+			: PreviousUtf16Boundary(text_, caretIndex_);
+		EraseRange(previous, caretIndex_);
+	}
 	Invalidate();
 }
 
-void InputWindow::DeleteAtCaret()
+void InputWindow::DeleteAtCaret(bool byWord)
 {
-	if (caretIndex_ >= text_.size()) return;
-	const auto next = NextUtf16Boundary(text_, caretIndex_);
-	text_.erase(caretIndex_, next - caretIndex_);
-	textLayout_.Reset();
-	ResetHistoryNavigation();
+	if (!EraseSelection())
+	{
+		if (caretIndex_ >= text_.size()) return;
+		const auto next = byWord
+			? NextWordBoundary(caretIndex_)
+			: NextUtf16Boundary(text_, caretIndex_);
+		EraseRange(caretIndex_, next);
+	}
 	Invalidate();
 }
 
-void InputWindow::MoveCaretLeft()
+bool InputWindow::HasSelection() const noexcept
 {
-	if (caretIndex_ == 0) return;
-	caretIndex_ = PreviousUtf16Boundary(text_, caretIndex_);
+	return caretIndex_ != selectionAnchor_;
+}
+
+size_t InputWindow::SelectionStart() const noexcept
+{
+	return (std::min)(caretIndex_, selectionAnchor_);
+}
+
+size_t InputWindow::SelectionEnd() const noexcept
+{
+	return (std::max)(caretIndex_, selectionAnchor_);
+}
+
+void InputWindow::CollapseSelection() noexcept
+{
+	selectionAnchor_ = caretIndex_;
+}
+
+void InputWindow::MoveCaretTo(size_t index, bool extendSelection)
+{
+	index = (std::min)(index, text_.size());
+	if (index > 0 && index < text_.size()
+		&& IsHighSurrogate(text_[index - 1]) && IsLowSurrogate(text_[index]))
+	{
+		index = NextUtf16Boundary(text_, index - 1);
+	}
+	if (caretIndex_ == index && (extendSelection || !HasSelection())) return;
+	caretIndex_ = index;
+	if (!extendSelection) CollapseSelection();
 	Invalidate();
 }
 
-void InputWindow::MoveCaretRight()
+void InputWindow::MoveCaretLeft(bool extendSelection, bool byWord)
 {
-	if (caretIndex_ >= text_.size()) return;
-	caretIndex_ = NextUtf16Boundary(text_, caretIndex_);
-	Invalidate();
+	if (!extendSelection && HasSelection())
+	{
+		MoveCaretTo(SelectionStart(), false);
+		return;
+	}
+	const auto target = byWord
+		? PreviousWordBoundary(caretIndex_)
+		: PreviousUtf16Boundary(text_, caretIndex_);
+	MoveCaretTo(target, extendSelection);
 }
 
-void InputWindow::MoveCaretToStart()
+void InputWindow::MoveCaretRight(bool extendSelection, bool byWord)
 {
-	if (caretIndex_ == 0) return;
-	caretIndex_ = 0;
-	Invalidate();
+	if (!extendSelection && HasSelection())
+	{
+		MoveCaretTo(SelectionEnd(), false);
+		return;
+	}
+	const auto target = byWord
+		? NextWordBoundary(caretIndex_)
+		: NextUtf16Boundary(text_, caretIndex_);
+	MoveCaretTo(target, extendSelection);
 }
 
-void InputWindow::MoveCaretToEnd()
+void InputWindow::MoveCaretToStart(bool extendSelection)
 {
-	if (caretIndex_ == text_.size()) return;
+	MoveCaretTo(0, extendSelection);
+}
+
+void InputWindow::MoveCaretToEnd(bool extendSelection)
+{
+	MoveCaretTo(text_.size(), extendSelection);
+}
+
+void InputWindow::SelectAll()
+{
+	if (text_.empty()) return;
+	selectionAnchor_ = 0;
 	caretIndex_ = text_.size();
 	Invalidate();
+}
+
+size_t InputWindow::PreviousWordBoundary(size_t index) const noexcept
+{
+	index = (std::min)(index, text_.size());
+	while (index > 0)
+	{
+		const auto previous = PreviousUtf16Boundary(text_, index);
+		if (ClassifyCharacter(text_, previous) == CharacterClass::Word) break;
+		index = previous;
+	}
+	while (index > 0)
+	{
+		const auto previous = PreviousUtf16Boundary(text_, index);
+		if (ClassifyCharacter(text_, previous) != CharacterClass::Word) break;
+		index = previous;
+	}
+	return index;
+}
+
+size_t InputWindow::NextWordBoundary(size_t index) const noexcept
+{
+	index = (std::min)(index, text_.size());
+	if (index >= text_.size()) return text_.size();
+	if (ClassifyCharacter(text_, index) == CharacterClass::Word)
+	{
+		while (index < text_.size() && ClassifyCharacter(text_, index) == CharacterClass::Word)
+		{
+			index = NextUtf16Boundary(text_, index);
+		}
+	}
+	while (index < text_.size() && ClassifyCharacter(text_, index) != CharacterClass::Word)
+	{
+		index = NextUtf16Boundary(text_, index);
+	}
+	return index;
 }
 
 void InputWindow::NavigateHistory(int direction)
@@ -544,6 +722,44 @@ void InputWindow::NavigateHistory(int direction)
 	if (!TryNavigateHistory(direction, text_)) return;
 	textLayout_.Reset();
 	caretIndex_ = text_.size();
+	selectionAnchor_ = caretIndex_;
+	Invalidate();
+}
+
+bool InputWindow::CopySelectionToClipboard() const
+{
+	if (hwnd_ == nullptr || !HasSelection()) return false;
+	const auto start = SelectionStart();
+	const auto characterCount = SelectionEnd() - start;
+	const auto byteCount = (characterCount + 1) * sizeof(wchar_t);
+	const auto handle = GlobalAlloc(GMEM_MOVEABLE, byteCount);
+	if (handle == nullptr) return false;
+	const auto data = static_cast<wchar_t*>(GlobalLock(handle));
+	if (data == nullptr)
+	{
+		GlobalFree(handle);
+		return false;
+	}
+	CopyMemory(data, text_.data() + start, characterCount * sizeof(wchar_t));
+	data[characterCount] = L'\0';
+	GlobalUnlock(handle);
+
+	if (!OpenClipboard(hwnd_))
+	{
+		GlobalFree(handle);
+		return false;
+	}
+	const auto emptied = EmptyClipboard() != FALSE;
+	const auto stored = emptied && SetClipboardData(CF_UNICODETEXT, handle) != nullptr;
+	CloseClipboard();
+	if (!stored) GlobalFree(handle);
+	return stored;
+}
+
+void InputWindow::CutSelectionToClipboard()
+{
+	if (!CopySelectionToClipboard()) return;
+	EraseSelection();
 	Invalidate();
 }
 
@@ -587,12 +803,11 @@ void InputWindow::PasteFromClipboard()
 	InsertText(pastedText);
 }
 
-void InputWindow::SetCaretFromPoint(LPARAM lParam)
+void InputWindow::SetCaretFromPoint(LPARAM lParam, bool extendSelection)
 {
 	if (text_.empty() || FAILED(EnsureResources()))
 	{
-		caretIndex_ = text_.size();
-		Invalidate();
+		MoveCaretTo(text_.size(), extendSelection);
 		return;
 	}
 	BOOL trailing = FALSE;
@@ -614,32 +829,54 @@ void InputWindow::SetCaretFromPoint(LPARAM lParam)
 	const auto y = PixelsToDip(GET_Y_LPARAM(lParam), dpi_) - textTop + verticalOffset_;
 	if (SUCCEEDED(textLayout_->HitTestPoint(x, y, &trailing, &inside, &metrics)))
 	{
-		caretIndex_ = (std::min)(
+		auto target = (std::min)(
 			static_cast<size_t>(metrics.textPosition + (trailing ? metrics.length : 0)),
 			text_.size());
-		if (caretIndex_ > 0 && caretIndex_ < text_.size()
-			&& IsHighSurrogate(text_[caretIndex_ - 1]) && IsLowSurrogate(text_[caretIndex_]))
+		if (target > 0 && target < text_.size()
+			&& IsHighSurrogate(text_[target - 1]) && IsLowSurrogate(text_[target]))
 		{
-			caretIndex_ = trailing ? caretIndex_ + 1 : caretIndex_ - 1;
+			target = trailing ? target + 1 : target - 1;
 		}
-		Invalidate();
+		MoveCaretTo(target, extendSelection);
 	}
 }
 
 void InputWindow::Invalidate()
 {
-	caretVisible_ = visible_;
+	RefreshCaretState(true);
 	UpdateResponsiveHeight();
 	EnsureCaretVisible();
 	if (hwnd_ != nullptr)
 	{
 		UpdateImeCompositionWindow();
-		if (visible_)
-		{
-			SetTimer(hwnd_, CaretTimerId, CaretBlinkMs, nullptr);
-		}
 		Render();
 	}
+}
+
+bool InputWindow::HasKeyboardFocus() const noexcept
+{
+	return hwnd_ != nullptr
+		&& visible_
+		&& GetForegroundWindow() == hwnd_
+		&& GetFocus() == hwnd_;
+}
+
+bool InputWindow::RefreshCaretState(bool restartBlink, bool forceInactive) noexcept
+{
+	const auto focused = !forceInactive && HasKeyboardFocus();
+	if (!focused)
+	{
+		if (hwnd_ != nullptr) KillTimer(hwnd_, CaretTimerId);
+		caretVisible_ = false;
+		return false;
+	}
+
+	if (restartBlink)
+	{
+		caretVisible_ = true;
+		SetTimer(hwnd_, CaretTimerId, CaretBlinkMs, nullptr);
+	}
+	return true;
 }
 
 void InputWindow::UpdateResponsiveHeight()
@@ -834,11 +1071,60 @@ void InputWindow::Render(bool caretOnly)
 	}
 	else if (textLayout_)
 	{
+		const auto layoutOrigin = D2D1::Point2F(textRect.left, textTop - verticalOffset_);
+		const auto fullRange = DWRITE_TEXT_RANGE{
+			0,
+			static_cast<UINT32>(text_.size()),
+		};
+		textLayout_->SetDrawingEffect(nullptr, fullRange);
+		if (HasSelection())
+		{
+			const auto selectionRange = DWRITE_TEXT_RANGE{
+				static_cast<UINT32>(SelectionStart()),
+				static_cast<UINT32>(SelectionEnd() - SelectionStart()),
+			};
+			UINT32 metricCount = 0;
+			const auto countResult = textLayout_->HitTestTextRange(
+				selectionRange.startPosition,
+				selectionRange.length,
+				layoutOrigin.x,
+				layoutOrigin.y,
+				nullptr,
+				0,
+				&metricCount);
+			if ((SUCCEEDED(countResult) || countResult == E_NOT_SUFFICIENT_BUFFER)
+				&& metricCount > 0)
+			{
+				std::vector<DWRITE_HIT_TEST_METRICS> metrics(metricCount);
+				if (SUCCEEDED(textLayout_->HitTestTextRange(
+					selectionRange.startPosition,
+					selectionRange.length,
+					layoutOrigin.x,
+					layoutOrigin.y,
+					metrics.data(),
+					metricCount,
+					&metricCount)))
+				{
+					for (UINT32 index = 0; index < metricCount; ++index)
+					{
+						const auto& metric = metrics[index];
+						renderTarget_->FillRectangle(
+							D2D1::RectF(
+								metric.left,
+								metric.top,
+								metric.left + metric.width,
+								metric.top + metric.height),
+							selectionBrush_.Get());
+					}
+				}
+			}
+			textLayout_->SetDrawingEffect(selectionTextBrush_.Get(), selectionRange);
+		}
 		renderTarget_->DrawTextLayout(
-			D2D1::Point2F(textRect.left, textTop - verticalOffset_),
+			layoutOrigin,
 			textLayout_.Get(), textBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP);
 	}
-	if (caretVisible_)
+	if (caretVisible_ && HasKeyboardFocus())
 	{
 		renderTarget_->FillRectangle(
 			D2D1::RectF(caretX, caretTop, caretX + config_.caretWidth, caretTop + caretHeight),
@@ -951,10 +1237,33 @@ int InputWindow::PixelHeight() const
 
 bool InputWindow::HandleKeyDown(WPARAM wParam)
 {
-	if ((wParam == L'V' || wParam == L'v') && IsKeyDown(VK_CONTROL))
+	const auto modifiers = GetCurrentHotkeyModifiers();
+	const auto controlDown = (modifiers & ControlModifier) != 0;
+	const auto shiftDown = (modifiers & ShiftModifier) != 0;
+	const auto hasSystemModifier = (modifiers & (AltModifier | WindowsModifier)) != 0;
+	if (modifiers == ControlModifier)
 	{
-		PasteFromClipboard();
-		return true;
+		switch (wParam)
+		{
+		case L'A': SelectAll(); return true;
+		case L'C': CopySelectionToClipboard(); return true;
+		case L'X': CutSelectionToClipboard(); return true;
+		case L'V': PasteFromClipboard(); return true;
+		default: break;
+		}
+	}
+	if (controlDown && !hasSystemModifier)
+	{
+		switch (wParam)
+		{
+		case VK_LEFT: MoveCaretLeft(shiftDown, true); return true;
+		case VK_RIGHT: MoveCaretRight(shiftDown, true); return true;
+		case VK_HOME: MoveCaretToStart(shiftDown); return true;
+		case VK_END: MoveCaretToEnd(shiftDown); return true;
+		case VK_BACK: DeleteBeforeCaret(true); return true;
+		case VK_DELETE: DeleteAtCaret(true); return true;
+		default: break;
+		}
 	}
 	if (MatchesHotkey(wParam, config_.cancelVirtualKey, config_.cancelModifiers))
 	{
@@ -971,17 +1280,18 @@ bool InputWindow::HandleKeyDown(WPARAM wParam)
 		DeleteBeforeCaret();
 		return true;
 	}
-	if (GetCurrentHotkeyModifiers() == 0)
+	if (!controlDown && !hasSystemModifier
+		&& (modifiers == 0 || modifiers == ShiftModifier))
 	{
 		switch (wParam)
 		{
 		case VK_DELETE: DeleteAtCaret(); return true;
-		case VK_LEFT: MoveCaretLeft(); return true;
-		case VK_RIGHT: MoveCaretRight(); return true;
-		case VK_HOME: MoveCaretToStart(); return true;
-		case VK_END: MoveCaretToEnd(); return true;
-		case VK_UP: NavigateHistory(-1); return true;
-		case VK_DOWN: NavigateHistory(1); return true;
+		case VK_LEFT: MoveCaretLeft(shiftDown); return true;
+		case VK_RIGHT: MoveCaretRight(shiftDown); return true;
+		case VK_HOME: MoveCaretToStart(shiftDown); return true;
+		case VK_END: MoveCaretToEnd(shiftDown); return true;
+		case VK_UP: if (!shiftDown) NavigateHistory(-1); return !shiftDown;
+		case VK_DOWN: if (!shiftDown) NavigateHistory(1); return !shiftDown;
 		default: break;
 		}
 	}
@@ -994,17 +1304,22 @@ LRESULT InputWindow::HandleMessage(HWND window, UINT message, WPARAM wParam, LPA
 	{
 	case WM_ERASEBKGND: return 1;
 	case WM_SETFOCUS:
-		caretVisible_ = visible_;
-		if (visible_)
-		{
-			SetTimer(hwnd_, CaretTimerId, CaretBlinkMs, nullptr);
-		}
+		RefreshCaretState(true);
 		UpdateImeCompositionWindow();
 		Render();
 		return 0;
 	case WM_KILLFOCUS:
-		caretVisible_ = false;
-		KillTimer(hwnd_, CaretTimerId);
+		RefreshCaretState(false, true);
+		Render();
+		return 0;
+	case WM_ACTIVATE:
+		RefreshCaretState(
+			LOWORD(wParam) != WA_INACTIVE,
+			LOWORD(wParam) == WA_INACTIVE);
+		Render();
+		return 0;
+	case WM_ACTIVATEAPP:
+		RefreshCaretState(wParam != FALSE, wParam == FALSE);
 		Render();
 		return 0;
 	case WM_TIMER:
@@ -1015,10 +1330,9 @@ LRESULT InputWindow::HandleMessage(HWND window, UINT message, WPARAM wParam, LPA
 		}
 		if (wParam == CaretTimerId)
 		{
-			if (!visible_)
+			if (!RefreshCaretState(false))
 			{
-				KillTimer(hwnd_, CaretTimerId);
-				caretVisible_ = false;
+				Render(true);
 				return 0;
 			}
 			caretVisible_ = !caretVisible_;
@@ -1041,12 +1355,40 @@ LRESULT InputWindow::HandleMessage(HWND window, UINT message, WPARAM wParam, LPA
 	case WM_PASTE:
 		if (visible_) PasteFromClipboard();
 		return 0;
+	case WM_COPY:
+		if (visible_) CopySelectionToClipboard();
+		return 0;
+	case WM_CUT:
+		if (visible_) CutSelectionToClipboard();
+		return 0;
+	case WM_CLEAR:
+		if (visible_ && EraseSelection()) Invalidate();
+		return 0;
 	case WM_LBUTTONDOWN:
 		if (visible_)
 		{
 			SetFocus(hwnd_);
-			SetCaretFromPoint(lParam);
+			mouseSelecting_ = true;
+			SetCapture(hwnd_);
+			SetCaretFromPoint(lParam, IsKeyDown(VK_SHIFT));
 		}
+		return 0;
+	case WM_MOUSEMOVE:
+		if (visible_ && mouseSelecting_ && (wParam & MK_LBUTTON) != 0)
+		{
+			SetCaretFromPoint(lParam, true);
+		}
+		return 0;
+	case WM_LBUTTONUP:
+		if (mouseSelecting_)
+		{
+			if (visible_) SetCaretFromPoint(lParam, true);
+			mouseSelecting_ = false;
+			if (GetCapture() == hwnd_) ReleaseCapture();
+		}
+		return 0;
+	case WM_CAPTURECHANGED:
+		mouseSelecting_ = false;
 		return 0;
 	case WM_IME_STARTCOMPOSITION:
 		if (!visible_) return 0;
@@ -1094,6 +1436,7 @@ LRESULT InputWindow::HandleMessage(HWND window, UINT message, WPARAM wParam, LPA
 	case WM_DESTROY:
 		KillTimer(hwnd_, CaretTimerId);
 		KillTimer(hwnd_, AnimationTimerId);
+		mouseSelecting_ = false;
 		DiscardResources(true);
 		hwnd_ = nullptr;
 		visible_ = false;

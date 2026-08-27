@@ -79,7 +79,7 @@ namespace
 
 	void TestAbiContract()
 	{
-		Assert(LUVLETTER_NATIVE_ABI_VERSION == 2, "Native ABI must expose atomic popup dismissal.");
+		Assert(LUVLETTER_NATIVE_ABI_VERSION == 3, "Native ABI must expose the message queue.");
 		Assert(sizeof(LuvLetterInputBoxConfig) == 104, "Input config ABI size changed unexpectedly.");
 		Assert(sizeof(LuvLetterFeatureWindowConfig) == 88, "Quick Actions config ABI size changed unexpectedly.");
 		Assert(sizeof(LuvLetterFeatureItem) == 16, "Quick Action item ABI size changed unexpectedly.");

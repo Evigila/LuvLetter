@@ -11,6 +11,7 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
     private const int MaximumQuickActionCount = 4096;
     private const int MaximumCallbackTextLength = 1_048_576;
     private const int MaximumQuickActionLabelLength = 96;
+    private const int MaximumMessageLength = 4096;
     private const int MaximumPendingNotifications = 128;
 
     private static readonly IReadOnlyDictionary<ulong, string> EmptyQuickActionMap =
@@ -66,6 +67,8 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
     public event Action<string>? InputSubmitted;
 
     public event Action<string>? QuickActionActivated;
+
+    public event Action? QuickActionUnavailable;
 
     public void ApplyConfiguration(
         InputBoxConfiguration inputBoxConfiguration,
@@ -223,6 +226,42 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
         }
     }
 
+    public void EnqueueMessage(string message)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        var normalized = NormalizeMessage(message);
+        if (normalized.Length == 0)
+        {
+            return;
+        }
+
+        lock (operationSyncRoot)
+        {
+            ThrowIfDisposed();
+            ThrowIfFailed(
+                nativeApi.EnqueueMessage(normalized, normalized.Length),
+                "EnqueueMessage");
+        }
+    }
+
+    public void ToggleMessageQueue()
+    {
+        lock (operationSyncRoot)
+        {
+            ThrowIfDisposed();
+            ThrowIfFailed(nativeApi.ToggleMessageQueue(), "ToggleMessageQueue");
+        }
+    }
+
+    public void HideMessageQueue()
+    {
+        lock (operationSyncRoot)
+        {
+            ThrowIfDisposed();
+            ThrowIfFailed(nativeApi.HideMessageQueue(), "HideMessageQueue");
+        }
+    }
+
     public void HidePopups()
     {
         lock (operationSyncRoot)
@@ -273,7 +312,9 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
             var ownedText = Marshal.PtrToStringUni(text, length);
             if (!string.IsNullOrWhiteSpace(ownedText))
             {
-                QueueNotification(new CallbackNotification(ownedText, IsQuickAction: false));
+                QueueNotification(new CallbackNotification(
+                    ownedText,
+                    CallbackNotificationKind.InputSubmitted));
             }
         }
         catch
@@ -293,11 +334,19 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
             }
 
             var quickActionIds = Volatile.Read(ref activeQuickActionIds);
+            if (token == 0)
+            {
+                QueueNotification(new CallbackNotification(
+                    string.Empty,
+                    CallbackNotificationKind.QuickActionUnavailable));
+                return;
+            }
+
             if (quickActionIds.TryGetValue(token, out var quickActionId))
             {
                 QueueNotification(new CallbackNotification(
                     quickActionId,
-                    IsQuickAction: true));
+                    CallbackNotificationKind.QuickActionActivated));
             }
         }
         catch
@@ -318,11 +367,27 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
             return;
         }
 
-        var handlers = notification.IsQuickAction ? QuickActionActivated : InputSubmitted;
-        if (handlers is null)
+        if (notification.Kind == CallbackNotificationKind.QuickActionUnavailable)
         {
+            foreach (Action handler in QuickActionUnavailable?.GetInvocationList()
+                .Cast<Action>() ?? Array.Empty<Action>())
+            {
+                try
+                {
+                    handler();
+                }
+                catch
+                {
+                    // One consumer cannot terminate delivery to other consumers.
+                }
+            }
             return;
         }
+
+        var handlers = notification.Kind == CallbackNotificationKind.QuickActionActivated
+            ? QuickActionActivated
+            : InputSubmitted;
+        if (handlers is null) return;
 
         foreach (Action<string> handler in handlers.GetInvocationList())
         {
@@ -396,5 +461,22 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
             : label[..MaximumQuickActionLabelLength];
     }
 
-    private readonly record struct CallbackNotification(string Value, bool IsQuickAction);
+    private static string NormalizeMessage(string message)
+    {
+        var normalized = message.Trim();
+        return normalized.Length <= MaximumMessageLength
+            ? normalized
+            : normalized[..MaximumMessageLength];
+    }
+
+    private enum CallbackNotificationKind
+    {
+        InputSubmitted,
+        QuickActionActivated,
+        QuickActionUnavailable,
+    }
+
+    private readonly record struct CallbackNotification(
+        string Value,
+        CallbackNotificationKind Kind);
 }

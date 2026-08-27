@@ -18,6 +18,7 @@ public sealed class ActivationGestureService : IActivationGestureService, IDispo
     private const uint VkLeftMenu = 0xA4;
     private const uint VkRightMenu = 0xA5;
     private const uint VkEscape = 0x1B;
+    private const uint VkBackspace = 0x08;
     private const uint VkF1 = 0x70;
     private const int VkShift = 0x10;
     private const int VkLeftWindows = 0x5B;
@@ -31,6 +32,8 @@ public sealed class ActivationGestureService : IActivationGestureService, IDispo
     private CtrlGestureStateMachine? stateMachine;
     private int disposalStarted;
     private long activationGeneration;
+    private bool suppressFunctionOneUntilUp;
+    private bool suppressBackspaceUntilUp;
 
     public ActivationGestureService()
     {
@@ -48,6 +51,8 @@ public sealed class ActivationGestureService : IActivationGestureService, IDispo
     public event EventHandler? PopupsDismissRequested;
 
     public event EventHandler? QuickActionsRequested;
+
+    public event EventHandler? MessageQueueToggleRequested;
 
     public void Start(ActivationGestureOptions options)
     {
@@ -118,6 +123,8 @@ public sealed class ActivationGestureService : IActivationGestureService, IDispo
         keyboardHook.Start();
 
         stateMachine = nextStateMachine;
+        suppressFunctionOneUntilUp = false;
+        suppressBackspaceUntilUp = false;
         Interlocked.Increment(ref activationGeneration);
     }
 
@@ -145,16 +152,20 @@ public sealed class ActivationGestureService : IActivationGestureService, IDispo
         dispatcher.VerifyAccess();
 
         stateMachine?.CancelPending();
+        suppressFunctionOneUntilUp = false;
+        suppressBackspaceUntilUp = false;
         deadlineTimer.Stop();
         Interlocked.Increment(ref activationGeneration);
     }
 
-    private void HandleLowLevelKeyboardEvent(int message, IntPtr keyboardData)
+    private bool HandleLowLevelKeyboardEvent(int message, IntPtr keyboardData)
     {
         if (Volatile.Read(ref disposalStarted) == 0 && stateMachine is not null)
         {
-            ProcessKeyboardEvent(message, keyboardData);
+            return ProcessKeyboardEvent(message, keyboardData);
         }
+
+        return false;
     }
 
     private void HandleHookCallbackFailure()
@@ -162,22 +173,25 @@ public sealed class ActivationGestureService : IActivationGestureService, IDispo
         // Resetting the in-progress gesture prevents a malformed event from
         // triggering an activation after callback processing has failed.
         stateMachine?.Reset();
+        suppressFunctionOneUntilUp = false;
+        suppressBackspaceUntilUp = false;
         deadlineTimer.Stop();
     }
 
-    private void ProcessKeyboardEvent(int message, IntPtr keyboardData)
+    private bool ProcessKeyboardEvent(int message, IntPtr keyboardData)
     {
         var isKeyDown = message is WmKeyDown or WmSysKeyDown;
         var isKeyUp = message is WmKeyUp or WmSysKeyUp;
         if (!isKeyDown && !isKeyUp)
         {
-            return;
+            return false;
         }
 
         var virtualKey = unchecked((uint)Marshal.ReadInt32(keyboardData));
         var timestampMs = Environment.TickCount64;
         var previousDeadline = stateMachine!.NextDeadlineTimestampMs;
         CtrlGestureAction action;
+        var suppressKey = false;
 
         if (TryGetControlSide(virtualKey, keyboardData, out var side))
         {
@@ -196,6 +210,30 @@ public sealed class ActivationGestureService : IActivationGestureService, IDispo
             action = isKeyDown
                 ? stateMachine.HandleFunctionOneDown(HasAdditionalHotkeyModifier())
                 : stateMachine.HandleFunctionOneUp();
+            if (isKeyDown && action == CtrlGestureAction.QuickActionsRequested)
+            {
+                suppressFunctionOneUntilUp = true;
+            }
+            suppressKey = suppressFunctionOneUntilUp;
+            if (isKeyUp)
+            {
+                suppressFunctionOneUntilUp = false;
+            }
+        }
+        else if (virtualKey == VkBackspace)
+        {
+            action = isKeyDown
+                ? stateMachine.HandleBackspaceDown(HasAdditionalHotkeyModifier())
+                : stateMachine.HandleBackspaceUp();
+            if (isKeyDown && action == CtrlGestureAction.MessageQueueToggleRequested)
+            {
+                suppressBackspaceUntilUp = true;
+            }
+            suppressKey = suppressBackspaceUntilUp;
+            if (isKeyUp)
+            {
+                suppressBackspaceUntilUp = false;
+            }
         }
         else if (virtualKey == VkEscape)
         {
@@ -215,6 +253,7 @@ public sealed class ActivationGestureService : IActivationGestureService, IDispo
         }
 
         QueueGestureAction(action);
+        return suppressKey;
     }
 
     private void HandleDeadlineTimerTick(object? sender, EventArgs eventArgs)
@@ -280,6 +319,10 @@ public sealed class ActivationGestureService : IActivationGestureService, IDispo
                 {
                     QuickActionsRequested?.Invoke(this, EventArgs.Empty);
                 }
+                else if (action == CtrlGestureAction.MessageQueueToggleRequested)
+                {
+                    MessageQueueToggleRequested?.Invoke(this, EventArgs.Empty);
+                }
             }),
             DispatcherPriority.Input
         );
@@ -300,12 +343,16 @@ public sealed class ActivationGestureService : IActivationGestureService, IDispo
         Interlocked.Increment(ref activationGeneration);
         stateMachine?.Reset();
         stateMachine = null;
+        suppressFunctionOneUntilUp = false;
+        suppressBackspaceUntilUp = false;
         keyboardHook.Stop();
     }
 
     private void DisposeAfterDispatcherShutdown()
     {
         stateMachine = null;
+        suppressFunctionOneUntilUp = false;
+        suppressBackspaceUntilUp = false;
         keyboardHook.Dispose();
     }
 

@@ -95,6 +95,7 @@
     <ClInclude Include="rendering\SurfaceStyleDefaults.h" />
     <ClInclude Include="windows\QuickActionsWindow.h" />
     <ClInclude Include="windows\InputWindow.h" />
+    <ClInclude Include="windows\MessageQueueWindow.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="api\InputBoxExports.cpp" />
@@ -104,6 +105,7 @@
     <ClCompile Include="rendering\LayeredWindowSurface.cpp" />
     <ClCompile Include="windows\QuickActionsWindow.cpp" />
     <ClCompile Include="windows\InputWindow.cpp" />
+    <ClCompile Include="windows\MessageQueueWindow.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

@@ -28,6 +28,12 @@ internal interface INativeShellApi
 
     int ToggleFeatureWindow();
 
+    int EnqueueMessage(string text, int length);
+
+    int ToggleMessageQueue();
+
+    int HideMessageQueue();
+
     int HidePopups();
 
     int ShutdownInputBox();

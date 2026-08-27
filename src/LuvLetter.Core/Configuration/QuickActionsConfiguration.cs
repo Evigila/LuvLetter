@@ -13,7 +13,7 @@ public sealed record QuickActionsConfiguration
 
 public sealed record QuickActionsLayoutOptions
 {
-    public const int MaximumItemsPerPage = 7;
+    public const int MaximumItemsPerPage = 9;
 
     public int ItemsPerPage { get; init; } = MaximumItemsPerPage;
 

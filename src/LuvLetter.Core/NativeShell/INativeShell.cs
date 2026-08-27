@@ -12,6 +12,8 @@ public interface INativeShell
 
     event Action<string>? QuickActionActivated;
 
+    event Action? QuickActionUnavailable;
+
     void ApplyConfiguration(
         InputBoxConfiguration inputBoxConfiguration,
         QuickActionsConfiguration quickActionsConfiguration);
@@ -25,6 +27,12 @@ public interface INativeShell
     void ToggleQuickActions();
 
     void HideQuickActions();
+
+    void EnqueueMessage(string message);
+
+    void ToggleMessageQueue();
+
+    void HideMessageQueue();
 
     void HidePopups();
 }

@@ -60,12 +60,15 @@ composition and cannot be removed; optional assemblies are discovered from `plug
 - `windows/InputWindow`: input editing, history, IME, animation driving, and rendering.
 - `windows/QuickActionsWindow`: top-aligned Quick Action paging, hotkeys, animation,
   geometry, and rendering.
+- `windows/MessageQueueWindow`: a read-only, non-activating bottom-left notification stack.
+  It renders up to six compact, independent notification bubbles without taking focus.
 - `rendering`: shared animation and layered-window surface primitives.
 
-The internal Native vocabulary is `QuickActions`. ABI v2 deliberately retains its
+The internal Native vocabulary is `QuickActions`. ABI v3 deliberately retains its
 historic `Feature*` struct names and layouts; those names are compatibility wire
-identifiers, not domain modules. The v2 version gate advertises the required atomic
-`HidePopups` export so a new Managed assembly cannot silently pair with an older DLL.
+identifiers, not domain modules. The v3 version gate advertises the message-queue
+exports in addition to atomic `HidePopups`, so a new Managed assembly cannot silently
+pair with an older DLL.
 
 ## Host lifecycle
 
@@ -88,8 +91,8 @@ that cannot occur. The Host owns singleton disposal and `IHostedService` start/s
 Plugin and initial-load diagnostics are recoverable warnings. A gesture-hook failure
 opens Settings as a degraded mode. Fatal partial startup executes compensating cleanup.
 Shutdown can be requested by WPF, the tray, or the Host. It stops the hook, unsubscribes
-events, hides both Native windows, and releases the plugin session; every step is
-idempotent and container-owned singletons are disposed by the Host afterward.
+events, hides the interactive Native windows, and releases the plugin session; every
+step is idempotent and container-owned singletons are disposed by the Host afterward.
 
 ## Configuration compatibility
 
@@ -109,22 +112,136 @@ default theme and preserves customized values. Schema 9 also recognizes the hist
 foreground together so it cannot become a low-contrast hybrid after migration.
 
 The command input shortcut is fixed to double Ctrl, Quick Actions is fixed to Alt+F1,
-and Escape globally dismisses both popups through one serialized Native request. The
-two Native popups have independent visibility: command input is bottom-centered and
-enters upward, while Quick Actions is top-centered and enters downward.
+the message queue is fixed to Alt+Backspace, and Escape dismisses the two interactive
+popups through one serialized Native request. Command input is bottom-centered and
+enters upward, Quick Actions is top-centered and enters downward, and the read-only
+message queue is positioned at the bottom-left of the selected monitor's work area.
+
+InputBox and Quick Actions show/toggle requests complete synchronously on the Native UI
+thread so the next keystroke cannot overtake window activation. The Host verifies that
+the requested popup is both the foreground window and the keyboard-focus owner. If the
+normal foreground request is rejected, it briefly joins the previous foreground
+thread's input queue, retries activation, and always detaches afterward. Recognized
+Alt+F1 and Alt+Backspace keystrokes are consumed by the global hook so the previously
+focused application does not handle the same command concurrently. If Windows still
+denies activation, Native returns an explicit failure instead of silently presenting a
+popup that cannot receive keyboard input.
+
+`InputWindow` remains a custom DirectWrite control, but implements standard single-line
+editor semantics: Shift navigation and mouse dragging maintain a visible selection;
+Ctrl navigation moves by word; Ctrl+A/C/X/V use the normal selection and clipboard
+rules; Backspace, Delete, text input, paste, and IME results replace or remove the
+selection first. Up and Down remain reserved for command history.
+The caret timer starts only while InputWindow is both foreground and focused; focus or
+application deactivation stops the timer and removes the caret immediately. Window
+visibility alone is never treated as proof of keyboard ownership.
+
+The built-in settings plugin is always Quick Action slot 1 and is displayed as
+`Control Center`. Quick Actions exposes the numeric slots 1 through 9. Selecting an
+unassigned slot closes the Quick Actions window and reports a diagnostic through the
+message queue. All coordinator status reports are mirrored to that queue and retain
+their existing WPF/tray status fallback.
+
+The message queue starts empty and hidden. Enqueuing a non-empty message shows it
+without activating it. Each bubble has its own five-second lifetime; expiry continues
+while the window is manually hidden, and the window hides automatically when the last
+bubble expires. Alt+Backspace hides a visible queue or shows the unexpired bubbles; it
+is a no-op when none remain. A subsequent message shows the queue again. Escape
+deliberately does not hide this read-only status surface. The active stack is bounded
+at six bubbles, discarding the oldest on overflow; long text is kept to one line and
+trimmed with an ellipsis.
 
 Writes use a same-directory temporary file, flush it, atomically replace the old file,
 and only then publish the new in-memory snapshot.
 
 ## Build and tests
 
-The C++ project requires full Visual Studio MSBuild:
+LuvLetter is a Windows x64 application and requires both managed and native build tools:
+
+- the .NET 10 SDK;
+- Visual Studio Build Tools 2026 with the **Desktop development with C++** workload;
+- the MSVC `v145` x64/x86 tools and a Windows 10 or Windows 11 SDK;
+- the Build Tools **.NET SDK** component, which supplies the .NET SDK resolver to full
+  MSBuild.
+
+The Visual Studio IDE is not required. The standalone Build Tools installation provides
+the full-framework `MSBuild.exe` and C++ targets that can be invoked from a VS Code
+terminal.
+
+Do not use `dotnet build LuvLetter.slnx` for a complete build. The solution contains
+two `.vcxproj` projects, while the .NET SDK version of MSBuild does not include
+`Microsoft.Cpp.Default.props` or the MSVC toolchain. It consequently reports `MSB4278`.
+
+From a PowerShell terminal at the repository root, locate full MSBuild without assuming
+that Visual Studio or Build Tools was added to `PATH`:
 
 ```powershell
-MSBuild.exe LuvLetter.slnx /m /p:Configuration=Release
+$vswhereCandidates = @(
+    "$env:ProgramFiles\Microsoft Visual Studio\Installer\vswhere.exe"
+    "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+)
+$vswhere = $vswhereCandidates |
+    Where-Object { Test-Path $_ } |
+    Select-Object -First 1
+if (-not $vswhere) {
+    throw "Visual Studio Build Tools was not found."
+}
+
+$vsPath = & $vswhere -latest `
+    -products Microsoft.VisualStudio.Product.BuildTools `
+    -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 `
+              Microsoft.VisualStudio.Component.Windows11SDK.26100 `
+              Microsoft.NetCore.Component.SDK `
+    -property installationPath
+if (-not $vsPath) {
+    throw "The required C++, Windows SDK, and .NET SDK Build Tools were not found."
+}
+
+$msbuild = Join-Path $vsPath "MSBuild\Current\Bin\amd64\MSBuild.exe"
 ```
 
-Run the 17 Core smoke scenarios with:
+Build the complete Debug application, including `LuvLetter.Native.dll`, with:
+
+```powershell
+& $msbuild LuvLetter.slnx /restore /m /p:Configuration=Debug
+```
+
+Run it directly from the shared managed/native output directory:
+
+```powershell
+& .\src\LuvLetter\bin\Debug\net10.0-windows\LuvLetter.exe
+```
+
+Alternatively, after the complete build has succeeded, let the .NET CLI launch the
+already-built executable without invoking its incompatible solution build path:
+
+```powershell
+dotnet run --project src/LuvLetter/LuvLetter.csproj -c Debug --no-build
+```
+
+Do not use a bare `dotnet build; dotnet run` at the repository root. The first command
+tries to build the C++ projects with .NET SDK MSBuild and fails; PowerShell's semicolon
+then starts the second command even though the build failed.
+
+For a Release build, replace `Debug` with `Release` in both commands. After at least one
+complete build, managed-only iterations may use the following command, which deliberately
+reuses the existing native DLL for the same configuration:
+
+```powershell
+dotnet build src/LuvLetter/LuvLetter.csproj -c Debug -p:SkipNativeBuild=true
+```
+
+The same managed-only build can be combined with launching the application:
+
+```powershell
+dotnet run --project src/LuvLetter/LuvLetter.csproj -c Debug -p:SkipNativeBuild=true
+```
+
+`SkipNativeBuild=true` is not a first-build workaround. Starting the application without
+a current ABI-compatible `LuvLetter.Native.dll` beside the executable fails during Host
+startup.
+
+Run the Core smoke scenarios with:
 
 ```powershell
 dotnet run --project tests/LuvLetter.Core.Tests/LuvLetter.Core.Tests.csproj -c Release
@@ -133,6 +250,6 @@ dotnet run --project tests/LuvLetter.Core.Tests/LuvLetter.Core.Tests.csproj -c R
 Run the Native suite with:
 
 ```powershell
-MSBuild.exe tests/LuvLetter.Native.Tests/LuvLetter.Native.Tests.vcxproj /m /p:Configuration=Release /p:Platform=x64
-tests/LuvLetter.Native.Tests/bin/x64/Release/LuvLetter.Native.Tests.exe
+& $msbuild tests/LuvLetter.Native.Tests/LuvLetter.Native.Tests.vcxproj /m /p:Configuration=Release /p:Platform=x64
+& .\tests\LuvLetter.Native.Tests\bin\x64\Release\LuvLetter.Native.Tests.exe
 ```

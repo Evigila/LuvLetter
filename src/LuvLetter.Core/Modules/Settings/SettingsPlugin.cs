@@ -14,7 +14,7 @@ public sealed class SettingsPlugin(IApplicationShell applicationShell) : ILuvLet
         context.RegisterCommand("settings", _ => applicationShell.ShowSettings());
         context.RegisterQuickAction(
             "settings.open",
-            "Open settings",
+            "Control Center",
             applicationShell.ShowSettings);
     }
 }

@@ -7,14 +7,14 @@ internal sealed class LowLevelKeyboardHook : IDisposable
 {
     private const int WhKeyboardLl = 13;
 
-    private readonly Action<int, IntPtr> keyboardEventHandler;
+    private readonly Func<int, IntPtr, bool> keyboardEventHandler;
     private readonly Action callbackFailureHandler;
     private readonly LowLevelKeyboardProc hookCallback;
     private IntPtr hookHandle;
     private int disposalStarted;
 
     public LowLevelKeyboardHook(
-        Action<int, IntPtr> keyboardEventHandler,
+        Func<int, IntPtr, bool> keyboardEventHandler,
         Action callbackFailureHandler
     )
     {
@@ -91,7 +91,13 @@ internal sealed class LowLevelKeyboardHook : IDisposable
         {
             if (code >= 0 && Volatile.Read(ref disposalStarted) == 0)
             {
-                keyboardEventHandler(unchecked((int)messagePointer.ToInt64()), keyboardData);
+                var handled = keyboardEventHandler(
+                    unchecked((int)messagePointer.ToInt64()),
+                    keyboardData);
+                if (handled)
+                {
+                    return new IntPtr(1);
+                }
             }
         }
         catch

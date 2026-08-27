@@ -12,6 +12,7 @@
 #include <string>
 
 class InputWindow;
+class MessageQueueWindow;
 class QuickActionsWindow;
 
 class NativeShellHost final
@@ -32,6 +33,9 @@ public:
 	HRESULT ShowQuickActionsWindow();
 	HRESULT HideQuickActionsWindow();
 	HRESULT ToggleQuickActionsWindow();
+	HRESULT EnqueueMessage(const wchar_t* text, int32_t length);
+	HRESULT ToggleMessageQueue();
+	HRESULT HideMessageQueue();
 	HRESULT HidePopups();
 	HRESULT Shutdown();
 
@@ -40,6 +44,7 @@ private:
 	{
 		Input,
 		QuickActions,
+		MessageQueue,
 	};
 
 	struct WindowContext
@@ -67,6 +72,7 @@ private:
 	void DestroyWindows() noexcept;
 	HMONITOR CaptureTargetMonitor() const;
 	void CapturePreviousForegroundWindow() noexcept;
+	bool TryActivateInteractiveWindow(HWND target, HWND previousForeground) noexcept;
 	void OnInputSubmitted(const std::wstring& text) noexcept;
 	void OnQuickActionActivated(uint64_t token) noexcept;
 	LRESULT DispatchWindowMessage(
@@ -89,10 +95,12 @@ private:
 
 	WindowContext inputWindowContext_{ this, WindowKind::Input };
 	WindowContext quickActionsWindowContext_{ this, WindowKind::QuickActions };
+	WindowContext messageQueueWindowContext_{ this, WindowKind::MessageQueue };
 	Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory_;
 	Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;
 	std::unique_ptr<InputWindow> inputWindow_;
 	std::unique_ptr<QuickActionsWindow> quickActionsWindow_;
+	std::unique_ptr<MessageQueueWindow> messageQueueWindow_;
 	HWND previousForegroundHwnd_ = nullptr;
 	LuvLetterInputSubmittedCallback inputSubmittedCallback_ = nullptr;
 	void* inputSubmittedContext_ = nullptr;

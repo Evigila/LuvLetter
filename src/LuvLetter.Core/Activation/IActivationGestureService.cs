@@ -10,6 +10,8 @@ public interface IActivationGestureService
 
     event EventHandler? QuickActionsRequested;
 
+    event EventHandler? MessageQueueToggleRequested;
+
     void Start(ActivationGestureOptions options);
 
     void Update(ActivationGestureOptions options);

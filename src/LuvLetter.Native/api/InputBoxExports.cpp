@@ -110,6 +110,24 @@ int LUVLETTER_NATIVE_CALL ToggleFeatureWindow()
 	catch (...) { return E_FAIL; }
 }
 
+int LUVLETTER_NATIVE_CALL EnqueueMessage(const wchar_t* text, int32_t length)
+{
+	try { return NativeShellHost::Instance().EnqueueMessage(text, length); }
+	catch (...) { return E_FAIL; }
+}
+
+int LUVLETTER_NATIVE_CALL ToggleMessageQueue()
+{
+	try { return NativeShellHost::Instance().ToggleMessageQueue(); }
+	catch (...) { return E_FAIL; }
+}
+
+int LUVLETTER_NATIVE_CALL HideMessageQueue()
+{
+	try { return NativeShellHost::Instance().HideMessageQueue(); }
+	catch (...) { return E_FAIL; }
+}
+
 int LUVLETTER_NATIVE_CALL HidePopups()
 {
 	try { return NativeShellHost::Instance().HidePopups(); }

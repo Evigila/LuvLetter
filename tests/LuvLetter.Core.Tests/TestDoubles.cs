@@ -11,7 +11,7 @@ namespace LuvLetter.Core.Tests;
 
 internal sealed class FakeNativeShellApi : INativeShellApi
 {
-    public uint AbiVersion => 73;
+    public uint AbiVersion => 3;
 
     public int CompatibilityChecks { get; private set; }
 
@@ -31,6 +31,12 @@ internal sealed class FakeNativeShellApi : INativeShellApi
 
     public int HidePopupsResult { get; set; }
 
+    public int EnqueueMessageResult { get; set; }
+
+    public int ToggleMessageQueueResult { get; set; }
+
+    public int HideMessageQueueResult { get; set; }
+
     public int ShowInputBoxCalls { get; private set; }
 
     public int HideInputBoxCalls { get; private set; }
@@ -38,6 +44,12 @@ internal sealed class FakeNativeShellApi : INativeShellApi
     public int ToggleQuickActionsCalls { get; private set; }
 
     public int HideQuickActionsCalls { get; private set; }
+
+    public List<(string Text, int Length)> EnqueuedMessages { get; } = [];
+
+    public int ToggleMessageQueueCalls { get; private set; }
+
+    public int HideMessageQueueCalls { get; private set; }
 
     public int HidePopupsCalls { get; private set; }
 
@@ -117,6 +129,24 @@ internal sealed class FakeNativeShellApi : INativeShellApi
         return 0;
     }
 
+    public int EnqueueMessage(string text, int length)
+    {
+        EnqueuedMessages.Add((text, length));
+        return EnqueueMessageResult;
+    }
+
+    public int ToggleMessageQueue()
+    {
+        ToggleMessageQueueCalls++;
+        return ToggleMessageQueueResult;
+    }
+
+    public int HideMessageQueue()
+    {
+        HideMessageQueueCalls++;
+        return HideMessageQueueResult;
+    }
+
     public int HidePopups()
     {
         HidePopupsCalls++;
@@ -178,6 +208,8 @@ internal sealed class FakeActivationGestureService : IActivationGestureService
 
     public event EventHandler? QuickActionsRequested;
 
+    public event EventHandler? MessageQueueToggleRequested;
+
     public int StopCalls { get; private set; }
 
     public void Start(ActivationGestureOptions options) => AppliedOptions.Add(options);
@@ -197,6 +229,9 @@ internal sealed class FakeActivationGestureService : IActivationGestureService
     public void RaiseQuickActionsRequested() =>
         QuickActionsRequested?.Invoke(this, EventArgs.Empty);
 
+    public void RaiseMessageQueueToggleRequested() =>
+        MessageQueueToggleRequested?.Invoke(this, EventArgs.Empty);
+
     public void Stop()
     {
         StopCalls++;
@@ -209,6 +244,8 @@ internal sealed class FakeNativeShell : INativeShell
 
     public event Action<string>? QuickActionActivated;
 
+    public event Action? QuickActionUnavailable;
+
     public int AppliedConfigurations { get; private set; }
 
     public List<IReadOnlyList<QuickActionSnapshot>> SynchronizedSnapshots { get; } = [];
@@ -220,6 +257,12 @@ internal sealed class FakeNativeShell : INativeShell
     public int ToggleQuickActionsCalls { get; private set; }
 
     public int HideQuickActionsCalls { get; private set; }
+
+    public List<string> EnqueuedMessages { get; } = [];
+
+    public int ToggleMessageQueueCalls { get; private set; }
+
+    public int HideMessageQueueCalls { get; private set; }
 
     public int HidePopupsCalls { get; private set; }
 
@@ -243,12 +286,20 @@ internal sealed class FakeNativeShell : INativeShell
 
     public void HideQuickActions() => HideQuickActionsCalls++;
 
+    public void EnqueueMessage(string message) => EnqueuedMessages.Add(message);
+
+    public void ToggleMessageQueue() => ToggleMessageQueueCalls++;
+
+    public void HideMessageQueue() => HideMessageQueueCalls++;
+
     public void HidePopups() => HidePopupsCalls++;
 
     public void RaiseInputSubmitted(string commandText) => InputSubmitted?.Invoke(commandText);
 
     public void RaiseQuickActionActivated(string quickActionId) =>
         QuickActionActivated?.Invoke(quickActionId);
+
+    public void RaiseQuickActionUnavailable() => QuickActionUnavailable?.Invoke();
 }
 
 internal sealed class FakeApplicationShell : IApplicationShell

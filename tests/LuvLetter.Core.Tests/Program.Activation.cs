@@ -39,6 +39,7 @@ internal static partial class Program
         Assert.Equal(1.0f, configuration.InputBox.Colors.TextOpacity);
         Assert.Equal(1.0f, configuration.QuickActions.Layout.BorderThickness);
         Assert.Equal(8.0f, configuration.QuickActions.Layout.CornerRadius);
+        Assert.Equal(9, configuration.QuickActions.Layout.ItemsPerPage);
         Assert.Equal(SurfaceStyleDefaults.Border, configuration.QuickActions.Colors.Border);
         Assert.Equal(
             SurfaceStyleDefaults.Background,
@@ -256,6 +257,49 @@ internal static partial class Program
             machine.HandleFunctionOneDown(),
             "F1 without Alt must not activate Quick Actions.");
         machine.HandleFunctionOneUp();
+
+        machine.HandleAltDown(ControlKeySide.Right);
+        Assert.Equal(
+            CtrlGestureAction.MessageQueueToggleRequested,
+            machine.HandleBackspaceDown(),
+            "Alt+Backspace must toggle the message queue.");
+        Assert.Equal(
+            CtrlGestureAction.None,
+            machine.HandleBackspaceDown(),
+            "Backspace auto-repeat must not toggle the message queue repeatedly.");
+        machine.HandleBackspaceUp();
+        machine.HandleAltUp(ControlKeySide.Right);
+
+        machine.HandleAltDown(ControlKeySide.Left);
+        Assert.Equal(
+            CtrlGestureAction.None,
+            machine.HandleBackspaceDown(hasAdditionalModifier: true),
+            "Alt+Backspace with Shift or Win held must not toggle the message queue.");
+        machine.HandleBackspaceUp();
+        machine.HandleAltUp(ControlKeySide.Left);
+
+        machine.HandleControlDown(ControlKeySide.Left, 7_000);
+        machine.HandleAltDown(ControlKeySide.Left);
+        Assert.Equal(
+            CtrlGestureAction.None,
+            machine.HandleBackspaceDown(),
+            "Ctrl+Alt+Backspace must not toggle the message queue.");
+        machine.HandleBackspaceUp();
+        machine.HandleAltUp(ControlKeySide.Left);
+        machine.HandleControlUp(ControlKeySide.Left, 7_010);
+
+        Assert.Equal(
+            CtrlGestureAction.None,
+            machine.HandleBackspaceDown(),
+            "Backspace without Alt must not toggle the message queue.");
+        machine.Reset();
+        machine.HandleAltDown(ControlKeySide.Left);
+        Assert.Equal(
+            CtrlGestureAction.MessageQueueToggleRequested,
+            machine.HandleBackspaceDown(),
+            "Reset must clear a held Backspace so the next physical shortcut can activate.");
+        machine.HandleBackspaceUp();
+        machine.HandleAltUp(ControlKeySide.Left);
 
         Assert.Equal(
             CtrlGestureAction.PopupsDismissRequested,
