@@ -22,6 +22,12 @@ namespace
 	constexpr UINT AnimationFrameMs = 16;
 	constexpr float FocusIndicatorDiameterDip = 10.0f;
 	constexpr float FocusIndicatorGapDip = 8.0f;
+	constexpr float StatusTagWidthDip = 34.0f;
+	constexpr float StatusTagHeightDip = 20.0f;
+	constexpr float StatusTagGapDip = 8.0f;
+	constexpr float StatusTagCornerRadiusDip = 5.0f;
+	constexpr float StatusTagBorderWidthDip = 1.0f;
+	constexpr float StatusTagFontSizeDip = 10.0f;
 	constexpr size_t MaxInputCharacters = 32768;
 	constexpr size_t HistoryCapacity = 100;
 	constexpr float MaxTextLayoutHeight = 16777216.0f;
@@ -104,12 +110,35 @@ namespace
 			1.0f);
 	}
 
+	D2D1_COLOR_F InputModeBorderColor(LuvLetterInputMode mode) noexcept
+	{
+		switch (mode)
+		{
+		case LuvLetterInputModeAsk: return D2D1::ColorF(0xF59E0B, 1.0f);
+		case LuvLetterInputModeCommand: return D2D1::ColorF(0xA855F7, 1.0f);
+		default: return D2D1::ColorF(0x22C55E, 1.0f);
+		}
+	}
+
+	D2D1_COLOR_F InterpolateColor(
+		const D2D1_COLOR_F& from,
+		const D2D1_COLOR_F& to,
+		float progress) noexcept
+	{
+		const auto amount = (std::clamp)(progress, 0.0f, 1.0f);
+		return D2D1::ColorF(
+			from.r + (to.r - from.r) * amount,
+			from.g + (to.g - from.g) * amount,
+			from.b + (to.b - from.b) * amount,
+			from.a + (to.a - from.a) * amount);
+	}
+
 }
 
 InputWindow::InputWindow(
 	ID2D1Factory* d2dFactory,
 	IDWriteFactory* dwriteFactory,
-	std::function<void(const std::wstring&)> submitted)
+	std::function<void(const std::wstring&, int32_t)> submitted)
 	: config_(NativeConfigurationSanitizer::DefaultInputBox()),
 	submitted_(std::move(submitted)),
 	d2dFactory_(d2dFactory),
@@ -199,10 +228,44 @@ HRESULT InputWindow::EnsureResources()
 		result = renderTarget_->CreateSolidColorBrush(ColorFromArgb(config_.caretColor), caretBrush_.GetAddressOf());
 		if (FAILED(result)) return result;
 	}
+	if (!statusTagTextFormat_)
+	{
+		result = dwriteFactory_->CreateTextFormat(
+			L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+			DWRITE_FONT_STRETCH_NORMAL, StatusTagFontSizeDip, L"",
+			statusTagTextFormat_.GetAddressOf());
+		if (FAILED(result)) return result;
+		result = statusTagTextFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+		if (FAILED(result)) return result;
+		result = statusTagTextFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+		if (FAILED(result)) return result;
+		result = statusTagTextFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+		if (FAILED(result)) return result;
+	}
 	if (!focusIndicatorBrush_)
 	{
 		result = renderTarget_->CreateSolidColorBrush(
 			D2D1::ColorF(0x22C55E, 1.0f), focusIndicatorBrush_.GetAddressOf());
+		if (FAILED(result)) return result;
+	}
+	if (!statusTagBackgroundBrush_)
+	{
+		result = renderTarget_->CreateSolidColorBrush(
+			ColorFromArgb(config_.textColor), statusTagBackgroundBrush_.GetAddressOf());
+		if (FAILED(result)) return result;
+		statusTagBackgroundBrush_->SetOpacity(0.10f);
+	}
+	if (!statusTagBorderBrush_)
+	{
+		result = renderTarget_->CreateSolidColorBrush(
+			InputModeBorderColor(inputMode_), statusTagBorderBrush_.GetAddressOf());
+		if (FAILED(result)) return result;
+		statusTagBorderBrush_->SetOpacity(0.90f);
+	}
+	if (!statusTagTextBrush_)
+	{
+		result = renderTarget_->CreateSolidColorBrush(
+			ColorFromArgb(config_.textColor), statusTagTextBrush_.GetAddressOf());
 		if (FAILED(result)) return result;
 	}
 	if (!selectionBrush_)
@@ -226,6 +289,8 @@ HRESULT InputWindow::EnsureResources()
 	}
 	else if (textLayout_)
 	{
+		// The focus indicator changes the leading reservation every animation
+		// frame, so keep DirectWrite wrapping aligned with the rendered geometry.
 		result = textLayout_->SetMaxWidth(TextWidthDip());
 		if (FAILED(result)) return result;
 	}
@@ -236,6 +301,9 @@ void InputWindow::DiscardResources(bool discardSurface)
 {
 	caretDirtyValid_ = false;
 	textLayout_.Reset();
+	statusTagTextBrush_.Reset();
+	statusTagBorderBrush_.Reset();
+	statusTagBackgroundBrush_.Reset();
 	selectionTextBrush_.Reset();
 	selectionBrush_.Reset();
 	focusIndicatorBrush_.Reset();
@@ -244,6 +312,7 @@ void InputWindow::DiscardResources(bool discardSurface)
 	textBrush_.Reset();
 	borderBrush_.Reset();
 	backgroundBrush_.Reset();
+	statusTagTextFormat_.Reset();
 	textFormat_.Reset();
 	renderTarget_.Reset();
 	if (discardSurface && surface_ != nullptr)
@@ -366,6 +435,9 @@ void InputWindow::Hide()
 	if (GetCapture() == hwnd_) ReleaseCapture();
 	animator_.Hide();
 	focusIndicatorAnimator_.Hide();
+	// Let the visible Tag transition finish with the popup, but do not delay
+	// dismissal by playing transitions that have not started yet.
+	pendingStatusTagModes_.clear();
 	caretDirtyValid_ = false;
 	ReleaseFocus();
 	UpdateWindowPosition();
@@ -397,6 +469,7 @@ void InputWindow::HideImmediately()
 	if (GetCapture() == hwnd_) ReleaseCapture();
 	animator_.Reset(false);
 	focusIndicatorAnimator_.Reset(false);
+	statusTagAnimator_.Reset(true);
 	animationTimestamp_ = 0;
 	caretDirtyValid_ = false;
 	EnableWindow(hwnd_, FALSE);
@@ -447,6 +520,21 @@ void InputWindow::SynchronizeAnimation()
 		{
 			focusIndicatorAnimator_.Advance(elapsed);
 		}
+		if (statusTagAnimator_.Current().IsAnimating())
+		{
+			statusTagAnimator_.Advance(elapsed);
+			if (!statusTagAnimator_.Current().IsAnimating())
+			{
+				statusTagFromMode_ = statusTagToMode_;
+				if (!pendingStatusTagModes_.empty())
+				{
+					statusTagToMode_ = pendingStatusTagModes_.front();
+					pendingStatusTagModes_.pop_front();
+					statusTagAnimator_.Reset(false);
+					statusTagAnimator_.Show();
+				}
+			}
+		}
 	}
 	animationTimestamp_ = now;
 }
@@ -457,13 +545,14 @@ void InputWindow::AdvanceAnimation()
 	SynchronizeAnimation();
 	const auto frame = animator_.Current();
 	const auto indicatorFrame = focusIndicatorAnimator_.Current();
+	const auto statusTagFrame = statusTagAnimator_.Current();
 	caretDirtyValid_ = false;
 	UpdateResponsiveHeight();
 	EnsureCaretVisible();
 	UpdateWindowPosition();
 	UpdateImeCompositionWindow();
 	Render();
-	if (frame.IsAnimating() || indicatorFrame.IsAnimating()) return;
+	if (frame.IsAnimating() || indicatorFrame.IsAnimating() || statusTagFrame.IsAnimating()) return;
 	KillTimer(hwnd_, AnimationTimerId);
 	if (!frame.ShouldPresent())
 	{
@@ -479,6 +568,7 @@ void InputWindow::CompleteHide()
 	KillTimer(hwnd_, AnimationTimerId);
 	ShowWindow(hwnd_, SW_HIDE);
 	focusIndicatorAnimator_.Reset(false);
+	statusTagAnimator_.Reset(true);
 	animationTimestamp_ = 0;
 }
 
@@ -551,6 +641,12 @@ void InputWindow::Reset()
 	caretIndex_ = 0;
 	selectionAnchor_ = 0;
 	mouseSelecting_ = false;
+	spaceModeSwitchKeyDown_ = false;
+	inputMode_ = LuvLetterInputModeGeneral;
+	statusTagFromMode_ = inputMode_;
+	statusTagToMode_ = inputMode_;
+	pendingStatusTagModes_.clear();
+	statusTagAnimator_.Reset(true);
 	lineCapacity_ = 1;
 	verticalOffset_ = 0.0f;
 	ResetHistoryNavigation();
@@ -560,7 +656,7 @@ void InputWindow::Submit()
 {
 	if (!text_.empty() && submitted_)
 	{
-		submitted_(text_);
+		submitted_(text_, static_cast<int32_t>(inputMode_));
 	}
 	RecordHistory(text_);
 	text_.clear();
@@ -571,22 +667,78 @@ void InputWindow::Submit()
 	Invalidate();
 }
 
+void InputWindow::CycleInputMode()
+{
+	SynchronizeAnimation();
+	switch (inputMode_)
+	{
+	case LuvLetterInputModeGeneral:
+		inputMode_ = LuvLetterInputModeAsk;
+		break;
+	case LuvLetterInputModeAsk:
+		inputMode_ = LuvLetterInputModeCommand;
+		break;
+	default:
+		inputMode_ = LuvLetterInputModeGeneral;
+		break;
+	}
+	if (statusTagAnimator_.Current().IsAnimating())
+	{
+		pendingStatusTagModes_.push_back(inputMode_);
+	}
+	else
+	{
+		statusTagFromMode_ = statusTagToMode_;
+		statusTagToMode_ = inputMode_;
+		statusTagAnimator_.Reset(false);
+		statusTagAnimator_.Show();
+	}
+	caretDirtyValid_ = false;
+	animationTimestamp_ = GetTickCount64();
+	if (statusTagAnimator_.Current().IsAnimating()
+		&& SetTimer(hwnd_, AnimationTimerId, AnimationFrameMs, nullptr) == 0)
+	{
+		pendingStatusTagModes_.clear();
+		statusTagFromMode_ = inputMode_;
+		statusTagToMode_ = inputMode_;
+		statusTagAnimator_.Reset(true);
+		if (!animator_.Current().IsAnimating()
+			&& !focusIndicatorAnimator_.Current().IsAnimating())
+		{
+			animationTimestamp_ = 0;
+		}
+	}
+	Invalidate();
+}
+
 void InputWindow::InsertText(const std::wstring& value)
 {
 	if (value.empty()) return;
 	const auto selectedCount = SelectionEnd() - SelectionStart();
 	const auto retainedCount = text_.size() - selectedCount;
 	if (retainedCount >= MaxInputCharacters) return;
-	const auto count = (std::min)(value.size(), MaxInputCharacters - retainedCount);
+	size_t valueStart = 0;
+	if (retainedCount == 0)
+	{
+		while (valueStart < value.size() && value[valueStart] == L' ')
+		{
+			++valueStart;
+		}
+	}
+	if (valueStart == value.size()) return;
+	const auto count = (std::min)(
+		value.size() - valueStart,
+		MaxInputCharacters - retainedCount);
 	auto safeCount = count;
-	if (safeCount < value.size() && safeCount > 0
-		&& IsHighSurrogate(value[safeCount - 1]) && IsLowSurrogate(value[safeCount]))
+	if (valueStart + safeCount < value.size() && safeCount > 0
+		&& IsHighSurrogate(value[valueStart + safeCount - 1])
+		&& IsLowSurrogate(value[valueStart + safeCount]))
 	{
 		--safeCount;
 	}
 	if (safeCount == 0) return;
 	EraseSelection();
-	text_.insert(caretIndex_, value.data(), safeCount);
+	text_.insert(caretIndex_, value.data() + valueStart, safeCount);
 	textLayout_.Reset();
 	caretIndex_ += safeCount;
 	selectionAnchor_ = caretIndex_;
@@ -599,6 +751,7 @@ void InputWindow::InsertCharacter(wchar_t value)
 	const auto selectedCount = SelectionEnd() - SelectionStart();
 	const auto retainedCount = text_.size() - selectedCount;
 	if (retainedCount >= MaxInputCharacters) return;
+	if (retainedCount == 0 && value == L' ') return;
 	// WM_CHAR delivers a supplementary character as two UTF-16 code units. Do not
 	// admit the high surrogate into the final slot, where its low surrogate could
 	// no longer be appended. Likewise, ignore an unmatched low surrogate.
@@ -879,13 +1032,13 @@ void InputWindow::SetCaretFromPoint(LPARAM lParam, bool extendSelection)
 	const auto horizontalPadding = (std::min)(
 		(std::max)(0.0f, config_.horizontalPadding),
 		(std::max)(0.0f, animatedWidth / 2.0f - 1.0f));
-	const auto indicatorReservation = (std::min)(
-		FocusIndicatorReservationDip(),
+	const auto leadingReservation = (std::min)(
+		LeadingReservationDip(),
 		(std::max)(0.0f, animatedWidth - 2.0f * horizontalPadding - 1.0f));
 	const auto x = PixelsToDip(GET_X_LPARAM(lParam), dpi_)
 		- animatedLeft
 		- horizontalPadding
-		- indicatorReservation;
+		- leadingReservation;
 	const auto textTop = TextTopDip();
 	const auto y = PixelsToDip(GET_Y_LPARAM(lParam), dpi_) - textTop + verticalOffset_;
 	if (SUCCEEDED(textLayout_->HitTestPoint(x, y, &trailing, &inside, &metrics)))
@@ -920,6 +1073,13 @@ bool InputWindow::HasKeyboardFocus() const noexcept
 		&& visible_
 		&& GetForegroundWindow() == hwnd_
 		&& GetFocus() == hwnd_;
+}
+
+void InputWindow::RefreshFocusVisuals()
+{
+	RefreshCaretState(true);
+	UpdateImeCompositionWindow();
+	Render();
 }
 
 bool InputWindow::RefreshCaretState(bool restartBlink, bool forceInactive) noexcept
@@ -1014,15 +1174,15 @@ void InputWindow::UpdateImeCompositionWindow()
 	const auto horizontalPadding = (std::min)(
 		(std::max)(0.0f, config_.horizontalPadding),
 		(std::max)(0.0f, animatedWidth / 2.0f - 1.0f));
-	const auto indicatorReservation = (std::min)(
-		FocusIndicatorReservationDip(),
+	const auto leadingReservation = (std::min)(
+		LeadingReservationDip(),
 		(std::max)(0.0f, animatedWidth - 2.0f * horizontalPadding - 1.0f));
 	const auto caret = GetCaretLogicalPosition();
 	const auto textTop = TextTopDip();
 	COMPOSITIONFORM compositionForm{};
 	compositionForm.dwStyle = CFS_POINT;
 	compositionForm.ptCurrentPos.x = DipToPixels(
-		animatedLeft + horizontalPadding + indicatorReservation + caret.x,
+		animatedLeft + horizontalPadding + leadingReservation + caret.x,
 		dpi_);
 	compositionForm.ptCurrentPos.y = DipToPixels(
 		textTop + caret.y - verticalOffset_ + config_.fontSize,
@@ -1036,9 +1196,11 @@ void InputWindow::Render(bool caretOnly)
 	if (hwnd_ == nullptr || FAILED(EnsureResources())) return;
 	const auto animationFrame = animator_.Current();
 	const auto focusIndicatorFrame = focusIndicatorAnimator_.Current();
+	const auto statusTagFrame = statusTagAnimator_.Current();
 	caretOnly = caretOnly
 		&& animationFrame.state == PopupAnimationState::Visible
-		&& !focusIndicatorFrame.IsAnimating();
+		&& !focusIndicatorFrame.IsAnimating()
+		&& !statusTagFrame.IsAnimating();
 	const auto width = PixelWidth();
 	const auto height = PixelHeight();
 	const auto fullWidth = static_cast<float>(config_.width);
@@ -1053,6 +1215,9 @@ void InputWindow::Render(bool caretOnly)
 	const auto indicatorReservation = (std::min)(
 		FocusIndicatorReservationDip(),
 		(std::max)(0.0f, animatedWidth - 2.0f * horizontalPadding - 1.0f));
+	const auto leadingReservation = (std::min)(
+		LeadingReservationDip(),
+		(std::max)(0.0f, animatedWidth - 2.0f * horizontalPadding - 1.0f));
 	const auto windowHeight = WindowHeightDip();
 	const auto verticalPadding = (std::min)(
 		(std::max)(0.0f, config_.verticalPadding),
@@ -1060,7 +1225,7 @@ void InputWindow::Render(bool caretOnly)
 	const auto lineHeight = LineHeightDip();
 	const auto textTop = TextTopDip();
 	const auto textRect = D2D1::RectF(
-		animatedLeft + horizontalPadding + indicatorReservation, textTop,
+		animatedLeft + horizontalPadding + leadingReservation, textTop,
 		animatedRight - horizontalPadding,
 		(std::min)(windowHeight - verticalPadding, textTop + TextViewportHeightDip()));
 	const auto caret = GetCaretLogicalPosition();
@@ -1146,6 +1311,85 @@ void InputWindow::Render(bool caretOnly)
 				radius,
 				radius),
 			focusIndicatorBrush_.Get());
+		renderTarget_->PopAxisAlignedClip();
+	}
+	const auto tagLeft = animatedLeft + horizontalPadding + indicatorReservation;
+	const auto tagRight = (std::min)(
+		tagLeft + StatusTagWidthDip,
+		animatedRight - horizontalPadding);
+	if (tagRight - tagLeft >= 8.0f)
+	{
+		const auto tagHeight = (std::min)(
+			StatusTagHeightDip,
+			(std::max)(1.0f, windowHeight - 2.0f));
+		const auto tagTop = (windowHeight - tagHeight) / 2.0f;
+		const auto tagRect = D2D1::RoundedRect(
+			D2D1::RectF(tagLeft, tagTop, tagRight, tagTop + tagHeight),
+			StatusTagCornerRadiusDip,
+			StatusTagCornerRadiusDip);
+		renderTarget_->PushAxisAlignedClip(
+			D2D1::RectF(animatedLeft, 0.0f, animatedRight, windowHeight),
+			D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
+		renderTarget_->FillRoundedRectangle(tagRect, statusTagBackgroundBrush_.Get());
+		const auto tagProgress = statusTagFrame.IsAnimating()
+			? static_cast<float>((std::clamp)(statusTagFrame.motionProgress, 0.0, 1.0))
+			: 1.0f;
+		const auto borderFrom = statusTagFrame.IsAnimating()
+			? InputModeBorderColor(statusTagFromMode_)
+			: InputModeBorderColor(statusTagToMode_);
+		statusTagBorderBrush_->SetColor(InterpolateColor(
+			borderFrom,
+			InputModeBorderColor(statusTagToMode_),
+			tagProgress));
+		renderTarget_->DrawRoundedRectangle(
+			tagRect,
+			statusTagBorderBrush_.Get(),
+			StatusTagBorderWidthDip);
+		renderTarget_->PushAxisAlignedClip(
+			tagRect.rect,
+			D2D1_ANTIALIAS_MODE_ALIASED);
+		if (statusTagFrame.IsAnimating())
+		{
+			const auto travel = tagRect.rect.bottom - tagRect.rect.top;
+			const auto outgoingRect = tagRect.rect;
+			const auto incomingRect = tagRect.rect;
+			renderTarget_->DrawTextW(
+				InputModeLabel(statusTagFromMode_),
+				3,
+				statusTagTextFormat_.Get(),
+				D2D1::RectF(
+					outgoingRect.left,
+					outgoingRect.top - travel * tagProgress,
+					outgoingRect.right,
+					outgoingRect.bottom - travel * tagProgress),
+				statusTagTextBrush_.Get(),
+				D2D1_DRAW_TEXT_OPTIONS_CLIP,
+				DWRITE_MEASURING_MODE_NATURAL);
+			renderTarget_->DrawTextW(
+				InputModeLabel(statusTagToMode_),
+				3,
+				statusTagTextFormat_.Get(),
+				D2D1::RectF(
+					incomingRect.left,
+					incomingRect.top + travel * (1.0f - tagProgress),
+					incomingRect.right,
+					incomingRect.bottom + travel * (1.0f - tagProgress)),
+				statusTagTextBrush_.Get(),
+				D2D1_DRAW_TEXT_OPTIONS_CLIP,
+				DWRITE_MEASURING_MODE_NATURAL);
+		}
+		else
+		{
+			renderTarget_->DrawTextW(
+				InputModeLabel(statusTagToMode_),
+				3,
+				statusTagTextFormat_.Get(),
+				tagRect.rect,
+				statusTagTextBrush_.Get(),
+				D2D1_DRAW_TEXT_OPTIONS_CLIP,
+				DWRITE_MEASURING_MODE_NATURAL);
+		}
+		renderTarget_->PopAxisAlignedClip();
 		renderTarget_->PopAxisAlignedClip();
 	}
 	renderTarget_->PushAxisAlignedClip(textRect, D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -1293,7 +1537,7 @@ float InputWindow::TextWidthDip() const
 		1.0f,
 		static_cast<float>(config_.width)
 			- 2.0f * (std::max)(0.0f, config_.horizontalPadding)
-			- FocusIndicatorReservationDip());
+			- LeadingReservationDip());
 }
 
 float InputWindow::TextTopDip() const
@@ -1329,6 +1573,26 @@ float InputWindow::FocusIndicatorReservationDip() const noexcept
 		* FocusIndicatorProgress();
 }
 
+float InputWindow::StatusTagReservationDip() const noexcept
+{
+	return StatusTagWidthDip + StatusTagGapDip;
+}
+
+float InputWindow::LeadingReservationDip() const noexcept
+{
+	return FocusIndicatorReservationDip() + StatusTagReservationDip();
+}
+
+const wchar_t* InputWindow::InputModeLabel(LuvLetterInputMode mode) const noexcept
+{
+	switch (mode)
+	{
+	case LuvLetterInputModeAsk: return L"Ask";
+	case LuvLetterInputModeCommand: return L"Cmd";
+	default: return L"Gen";
+	}
+}
+
 int InputWindow::PixelWidth() const
 {
 	return (std::max)(1, DipToPixels(static_cast<float>(config_.width), dpi_));
@@ -1339,12 +1603,26 @@ int InputWindow::PixelHeight() const
 	return (std::max)(1, DipToPixels(WindowHeightDip(), dpi_));
 }
 
-bool InputWindow::HandleKeyDown(WPARAM wParam)
+bool InputWindow::HandleKeyDown(WPARAM wParam, LPARAM keyData)
 {
 	const auto modifiers = GetCurrentHotkeyModifiers();
 	const auto controlDown = (modifiers & ControlModifier) != 0;
 	const auto shiftDown = (modifiers & ShiftModifier) != 0;
 	const auto hasSystemModifier = (modifiers & (AltModifier | WindowsModifier)) != 0;
+	if (wParam == VK_SPACE && modifiers == 0 && text_.empty())
+	{
+		if (!spaceModeSwitchKeyDown_
+			&& (static_cast<uintptr_t>(keyData) & (uintptr_t{ 1 } << 30)) == 0)
+		{
+			CycleInputMode();
+		}
+		spaceModeSwitchKeyDown_ = true;
+		return true;
+	}
+	if (wParam != VK_SPACE || !text_.empty())
+	{
+		spaceModeSwitchKeyDown_ = false;
+	}
 	if (modifiers == ControlModifier)
 	{
 		switch (wParam)
@@ -1413,6 +1691,7 @@ LRESULT InputWindow::HandleMessage(HWND window, UINT message, WPARAM wParam, LPA
 		Render();
 		return 0;
 	case WM_KILLFOCUS:
+		spaceModeSwitchKeyDown_ = false;
 		RefreshCaretState(false, true);
 		Render();
 		return 0;
@@ -1446,39 +1725,46 @@ LRESULT InputWindow::HandleMessage(HWND window, UINT message, WPARAM wParam, LPA
 		break;
 	case WM_KEYDOWN:
 	case WM_SYSKEYDOWN:
-		if (!visible_) return 0;
-		if (HandleKeyDown(wParam)) return 0;
+		if (!HasKeyboardFocus()) return 0;
+		if (HandleKeyDown(wParam, lParam)) return 0;
+		break;
+	case WM_KEYUP:
+		if (wParam == VK_SPACE) spaceModeSwitchKeyDown_ = false;
 		break;
 	case WM_CHAR:
-		if (!visible_) return 0;
+		if (!HasKeyboardFocus()) return 0;
 		if (wParam == L'\b' || wParam == L'\r' || wParam == L'\n' || wParam == L'\t') return 0;
+		if (wParam == L' ' && spaceModeSwitchKeyDown_) return 0;
 		if (wParam >= 0x20) InsertCharacter(static_cast<wchar_t>(wParam));
 		return 0;
 	case WM_SYSCHAR:
 		return 0;
 	case WM_PASTE:
-		if (visible_) PasteFromClipboard();
+		if (HasKeyboardFocus()) PasteFromClipboard();
 		return 0;
 	case WM_COPY:
-		if (visible_) CopySelectionToClipboard();
+		if (HasKeyboardFocus()) CopySelectionToClipboard();
 		return 0;
 	case WM_CUT:
-		if (visible_) CutSelectionToClipboard();
+		if (HasKeyboardFocus()) CutSelectionToClipboard();
 		return 0;
 	case WM_CLEAR:
-		if (visible_ && EraseSelection()) Invalidate();
+		if (HasKeyboardFocus() && EraseSelection()) Invalidate();
 		return 0;
 	case WM_LBUTTONDOWN:
 		if (visible_)
 		{
 			SetFocus(hwnd_);
-			mouseSelecting_ = true;
-			SetCapture(hwnd_);
-			SetCaretFromPoint(lParam, IsKeyDown(VK_SHIFT));
+			if (HasKeyboardFocus())
+			{
+				mouseSelecting_ = true;
+				SetCapture(hwnd_);
+				SetCaretFromPoint(lParam, IsKeyDown(VK_SHIFT));
+			}
 		}
 		return 0;
 	case WM_MOUSEMOVE:
-		if (visible_ && mouseSelecting_ && (wParam & MK_LBUTTON) != 0)
+		if (HasKeyboardFocus() && mouseSelecting_ && (wParam & MK_LBUTTON) != 0)
 		{
 			SetCaretFromPoint(lParam, true);
 		}
@@ -1486,7 +1772,7 @@ LRESULT InputWindow::HandleMessage(HWND window, UINT message, WPARAM wParam, LPA
 	case WM_LBUTTONUP:
 		if (mouseSelecting_)
 		{
-			if (visible_) SetCaretFromPoint(lParam, true);
+			if (HasKeyboardFocus()) SetCaretFromPoint(lParam, true);
 			mouseSelecting_ = false;
 			if (GetCapture() == hwnd_) ReleaseCapture();
 		}
@@ -1495,11 +1781,11 @@ LRESULT InputWindow::HandleMessage(HWND window, UINT message, WPARAM wParam, LPA
 		mouseSelecting_ = false;
 		return 0;
 	case WM_IME_STARTCOMPOSITION:
-		if (!visible_) return 0;
+		if (!HasKeyboardFocus()) return 0;
 		UpdateImeCompositionWindow();
 		break;
 	case WM_IME_COMPOSITION:
-		if (!visible_) return 0;
+		if (!HasKeyboardFocus()) return 0;
 		UpdateImeCompositionWindow();
 		if ((lParam & GCS_RESULTSTR) != 0)
 		{

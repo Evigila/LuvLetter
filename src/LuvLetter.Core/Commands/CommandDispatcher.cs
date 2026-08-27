@@ -86,6 +86,23 @@ public sealed class CommandDispatcher : ICommandRegistrar, IDisposable
         }
     }
 
+    public bool IsRegisteredInvocation(string commandText)
+    {
+        ArgumentNullException.ThrowIfNull(commandText);
+        var trimmedText = commandText.AsSpan().Trim();
+        if (trimmedText.Length == 0)
+        {
+            return false;
+        }
+
+        var separator = IndexOfWhitespace(trimmedText);
+        var commandName = separator < 0 ? trimmedText : trimmedText[..separator];
+        lock (handlersLock)
+        {
+            return handlers.ContainsKey(commandName.ToString());
+        }
+    }
+
     public CommandDispatchResult Dispatch(string commandText)
     {
         ArgumentNullException.ThrowIfNull(commandText);

@@ -19,6 +19,7 @@ internal static partial class Program
         ("Configuration application transaction", TestConfigurationApplicationTransaction),
         ("Settings editor mapping", TestSettingsEditorMapping),
         ("Application coordinator lifecycle", TestApplicationCoordinatorLifecycle),
+        ("Input mode routing", TestInputModeRouting),
         ("Plugin loading and registration isolation", TestPluginLoader),
         ("Configuration store round-trip and migration", TestConfigurationStore),
     ];

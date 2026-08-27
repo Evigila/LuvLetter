@@ -71,11 +71,15 @@ internal struct NativeFeatureItem
 internal delegate void NativeFeatureActivatedCallback(ulong token, IntPtr context);
 
 [UnmanagedFunctionPointer(CallingConvention.StdCall)]
-internal delegate void NativeInputSubmittedCallback(IntPtr text, int length, IntPtr context);
+internal delegate void NativeInputSubmittedCallback(
+    IntPtr text,
+    int length,
+    int inputMode,
+    IntPtr context);
 
 internal sealed class NativeShellApi : INativeShellApi
 {
-    private const uint CurrentAbiVersion = 3;
+    private const uint CurrentAbiVersion = 4;
 
     internal static INativeShellApi Instance { get; } = new NativeShellApi();
 

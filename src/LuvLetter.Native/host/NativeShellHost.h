@@ -73,7 +73,7 @@ private:
 	HMONITOR CaptureTargetMonitor() const;
 	void CapturePreviousForegroundWindow() noexcept;
 	bool TryActivateInteractiveWindow(HWND target, HWND previousForeground) noexcept;
-	void OnInputSubmitted(const std::wstring& text) noexcept;
+	void OnInputSubmitted(const std::wstring& text, int32_t inputMode) noexcept;
 	void OnQuickActionActivated(uint64_t token) noexcept;
 	LRESULT DispatchWindowMessage(
 		WindowKind kind,

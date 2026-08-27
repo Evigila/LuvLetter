@@ -21,6 +21,7 @@ internal static partial class Program
             commands,
             quickActions,
             [new SettingsPlugin(applicationShell)],
+            [],
             activation,
             nativeShell,
             applicationShell);

@@ -8,7 +8,7 @@ namespace LuvLetter.Core.NativeShell;
 /// </summary>
 public interface INativeShell
 {
-    event Action<string>? InputSubmitted;
+    event Action<InputSubmission>? InputSubmitted;
 
     event Action<string>? QuickActionActivated;
 

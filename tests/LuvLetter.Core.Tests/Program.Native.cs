@@ -140,7 +140,7 @@ internal static partial class Program
         var service = new NativeShellService(nativeApi);
         try
         {
-            Assert.Equal(3U, nativeApi.AbiVersion);
+            Assert.Equal(4U, nativeApi.AbiVersion);
             Assert.Equal(1, nativeApi.CompatibilityChecks);
             Assert.NotNull(nativeApi.InputSubmittedCallback);
             Assert.NotNull(nativeApi.QuickActionActivatedCallback);
@@ -225,13 +225,13 @@ internal static partial class Program
                 nativeApi.QuickActionItems[0].Token,
                 "A token observed by a failed Native synchronization must not be reused.");
 
-            var inputSubmitted = new TaskCompletionSource<string>(
+            var inputSubmitted = new TaskCompletionSource<InputSubmission>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
             service.InputSubmitted += inputSubmitted.SetResult;
-            nativeApi.RaiseInputSubmitted("hello native");
-            Assert.Equal(
-                "hello native",
-                await inputSubmitted.Task.WaitAsync(TimeSpan.FromSeconds(2)));
+            nativeApi.RaiseInputSubmitted("hello native", InputMode.Ask);
+            var submission = await inputSubmitted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal("hello native", submission.Text);
+            Assert.Equal(InputMode.Ask, submission.Mode);
 
             service.ShowCommandInput();
             service.HideCommandInput();

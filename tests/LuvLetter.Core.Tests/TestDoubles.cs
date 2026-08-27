@@ -11,7 +11,7 @@ namespace LuvLetter.Core.Tests;
 
 internal sealed class FakeNativeShellApi : INativeShellApi
 {
-    public uint AbiVersion => 3;
+    public uint AbiVersion => 4;
 
     public int CompatibilityChecks { get; private set; }
 
@@ -162,12 +162,12 @@ internal sealed class FakeNativeShellApi : INativeShellApi
     public void RaiseFeatureActivated(ulong token) =>
         QuickActionActivatedCallback?.Invoke(token, IntPtr.Zero);
 
-    public void RaiseInputSubmitted(string value)
+    public void RaiseInputSubmitted(string value, InputMode mode = InputMode.General)
     {
         var pointer = Marshal.StringToHGlobalUni(value);
         try
         {
-            InputSubmittedCallback?.Invoke(pointer, value.Length, IntPtr.Zero);
+            InputSubmittedCallback?.Invoke(pointer, value.Length, (int)mode, IntPtr.Zero);
         }
         finally
         {
@@ -240,7 +240,7 @@ internal sealed class FakeActivationGestureService : IActivationGestureService
 
 internal sealed class FakeNativeShell : INativeShell
 {
-    public event Action<string>? InputSubmitted;
+    public event Action<InputSubmission>? InputSubmitted;
 
     public event Action<string>? QuickActionActivated;
 
@@ -294,7 +294,8 @@ internal sealed class FakeNativeShell : INativeShell
 
     public void HidePopups() => HidePopupsCalls++;
 
-    public void RaiseInputSubmitted(string commandText) => InputSubmitted?.Invoke(commandText);
+    public void RaiseInputSubmitted(string text, InputMode mode = InputMode.General) =>
+        InputSubmitted?.Invoke(new InputSubmission(text, mode));
 
     public void RaiseQuickActionActivated(string quickActionId) =>
         QuickActionActivated?.Invoke(quickActionId);
@@ -311,6 +312,18 @@ internal sealed class FakeApplicationShell : IApplicationShell
     public void ShowSettings() => ShowSettingsCalls++;
 
     public void ReportStatus(string message) => Statuses.Add(message);
+}
+
+internal sealed class FakeGeneralInputMatcher(
+    Func<string, bool> tryHandle) : IGeneralInputMatcher
+{
+    public List<string> Inputs { get; } = [];
+
+    public bool TryHandle(string input)
+    {
+        Inputs.Add(input);
+        return tryHandle(input);
+    }
 }
 
 internal sealed class FakeInputBoxConfigurationSink : INativeConfigurationSink

@@ -64,7 +64,7 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
         }
     }
 
-    public event Action<string>? InputSubmitted;
+    public event Action<InputSubmission>? InputSubmitted;
 
     public event Action<string>? QuickActionActivated;
 
@@ -296,7 +296,11 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
         GC.SuppressFinalize(this);
     }
 
-    private void HandleNativeInputSubmitted(IntPtr text, int length, IntPtr context)
+    private void HandleNativeInputSubmitted(
+        IntPtr text,
+        int length,
+        int inputMode,
+        IntPtr context)
     {
         _ = context;
         try
@@ -304,7 +308,8 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
             if (Volatile.Read(ref disposed) != 0
                 || text == IntPtr.Zero
                 || length <= 0
-                || length > MaximumCallbackTextLength)
+                || length > MaximumCallbackTextLength
+                || !Enum.IsDefined((InputMode)inputMode))
             {
                 return;
             }
@@ -313,7 +318,7 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
             if (!string.IsNullOrWhiteSpace(ownedText))
             {
                 QueueNotification(new CallbackNotification(
-                    ownedText,
+                    new InputSubmission(ownedText, (InputMode)inputMode),
                     CallbackNotificationKind.InputSubmitted));
             }
         }
@@ -384,16 +389,39 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
             return;
         }
 
-        var handlers = notification.Kind == CallbackNotificationKind.QuickActionActivated
-            ? QuickActionActivated
-            : InputSubmitted;
-        if (handlers is null) return;
+        if (notification.Kind == CallbackNotificationKind.InputSubmitted)
+        {
+            if (notification.Value is not InputSubmission submission)
+            {
+                return;
+            }
 
-        foreach (Action<string> handler in handlers.GetInvocationList())
+            foreach (Action<InputSubmission> handler in InputSubmitted?.GetInvocationList()
+                .Cast<Action<InputSubmission>>() ?? Array.Empty<Action<InputSubmission>>())
+            {
+                try
+                {
+                    handler(submission);
+                }
+                catch
+                {
+                    // One consumer cannot terminate delivery to other consumers.
+                }
+            }
+            return;
+        }
+
+        if (notification.Value is not string value)
+        {
+            return;
+        }
+
+        foreach (Action<string> handler in QuickActionActivated?.GetInvocationList()
+            .Cast<Action<string>>() ?? Array.Empty<Action<string>>())
         {
             try
             {
-                handler(notification.Value);
+                handler(value);
             }
             catch
             {
@@ -477,6 +505,6 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
     }
 
     private readonly record struct CallbackNotification(
-        string Value,
+        object Value,
         CallbackNotificationKind Kind);
 }

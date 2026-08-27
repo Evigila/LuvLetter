@@ -9,6 +9,7 @@
 #include <dwrite.h>
 #include <wrl/client.h>
 
+#include <deque>
 #include <functional>
 #include <memory>
 #include <string>
@@ -20,7 +21,7 @@ public:
 	InputWindow(
 		ID2D1Factory* d2dFactory,
 		IDWriteFactory* dwriteFactory,
-		std::function<void(const std::wstring&)> submitted);
+		std::function<void(const std::wstring&, int32_t)> submitted);
 	~InputWindow() = default;
 	InputWindow(const InputWindow&) = delete;
 	InputWindow& operator=(const InputWindow&) = delete;
@@ -32,6 +33,9 @@ public:
 	void Hide();
 	void HideImmediately();
 	bool IsVisible() const noexcept { return visible_; }
+	bool HasKeyboardFocus() const noexcept;
+	void SetPreviousForegroundWindow(HWND window) noexcept { previousForegroundHwnd_ = window; }
+	void RefreshFocusVisuals();
 	HWND WindowHandle() const noexcept { return hwnd_; }
 	int PixelWidth() const;
 	int PixelHeight() const;
@@ -52,6 +56,7 @@ private:
 
 	void Reset();
 	void Submit();
+	void CycleInputMode();
 	void InsertText(const std::wstring& value);
 	void InsertCharacter(wchar_t value);
 	void DeleteBeforeCaret(bool byWord = false);
@@ -78,7 +83,6 @@ private:
 	void Invalidate();
 	void UpdateResponsiveHeight();
 	void UpdateImeCompositionWindow();
-	bool HasKeyboardFocus() const noexcept;
 	bool RefreshCaretState(bool restartBlink, bool forceInactive = false) noexcept;
 	void EnsureCaretVisible();
 	D2D1_POINT_2F GetCaretLogicalPosition();
@@ -89,8 +93,11 @@ private:
 	float TextViewportHeightDip() const;
 	float FocusIndicatorProgress() const noexcept;
 	float FocusIndicatorReservationDip() const noexcept;
+	float StatusTagReservationDip() const noexcept;
+	float LeadingReservationDip() const noexcept;
+	const wchar_t* InputModeLabel(LuvLetterInputMode mode) const noexcept;
 	void Render(bool caretOnly = false);
-	bool HandleKeyDown(WPARAM key);
+	bool HandleKeyDown(WPARAM key, LPARAM keyData);
 
 	void RecordHistory(const std::wstring& value);
 	void ResetHistoryNavigation() noexcept;
@@ -111,21 +118,28 @@ private:
 	size_t caretIndex_ = 0;
 	size_t selectionAnchor_ = 0;
 	bool mouseSelecting_ = false;
+	bool spaceModeSwitchKeyDown_ = false;
 	int lineCapacity_ = 1;
 	float verticalOffset_ = 0.0f;
 	PopupAnimator animator_;
 	PopupAnimator focusIndicatorAnimator_{ PopupAnimationSettings{ 140.0, 120.0, 1.0f, 0.0f } };
+	PopupAnimator statusTagAnimator_{ PopupAnimationSettings{ 160.0, 160.0, 1.0f, 0.0f } };
+	LuvLetterInputMode inputMode_ = LuvLetterInputModeGeneral;
+	LuvLetterInputMode statusTagFromMode_ = LuvLetterInputModeGeneral;
+	LuvLetterInputMode statusTagToMode_ = LuvLetterInputModeGeneral;
+	std::deque<LuvLetterInputMode> pendingStatusTagModes_;
 	std::vector<std::wstring> historyEntries_;
 	std::wstring historyDraft_;
 	int historyNavigationIndex_ = -1;
 
 	LuvLetterInputBoxConfig config_{};
-	std::function<void(const std::wstring&)> submitted_;
+	std::function<void(const std::wstring&, int32_t)> submitted_;
 
 	Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory_;
 	Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;
 	Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> renderTarget_;
 	Microsoft::WRL::ComPtr<IDWriteTextFormat> textFormat_;
+	Microsoft::WRL::ComPtr<IDWriteTextFormat> statusTagTextFormat_;
 	Microsoft::WRL::ComPtr<IDWriteTextLayout> textLayout_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> backgroundBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> borderBrush_;
@@ -133,6 +147,9 @@ private:
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> placeholderBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> caretBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> focusIndicatorBrush_;
+	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> statusTagBackgroundBrush_;
+	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> statusTagBorderBrush_;
+	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> statusTagTextBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> selectionBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> selectionTextBrush_;
 	std::unique_ptr<LuvLetterNative::LayeredWindowSurface> surface_;

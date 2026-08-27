@@ -12,7 +12,14 @@
 
 extern "C"
 {
-	inline constexpr uint32_t LUVLETTER_NATIVE_ABI_VERSION = 3;
+	inline constexpr uint32_t LUVLETTER_NATIVE_ABI_VERSION = 4;
+
+	enum LuvLetterInputMode : int32_t
+	{
+		LuvLetterInputModeGeneral = 0,
+		LuvLetterInputModeAsk = 1,
+		LuvLetterInputModeCommand = 2,
+	};
 
 	struct LuvLetterInputBoxConfig
 	{
@@ -82,6 +89,7 @@ extern "C"
 	using LuvLetterInputSubmittedCallback = void (LUVLETTER_NATIVE_CALL*)(
 		const wchar_t* text,
 		int32_t length,
+		int32_t inputMode,
 		void* context);
 
 	LUVLETTER_NATIVE_EXPORT uint32_t LUVLETTER_NATIVE_CALL GetNativeApiVersion();

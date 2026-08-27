@@ -33,7 +33,10 @@ Windows implementations through `IApplicationShell`, `IActivationGestureService`
 
 - `Application/ApplicationCoordinator`: the single application `IHostedService`. It applies the
   initial configuration, loads built-in and external plugins, synchronizes Quick
-  Actions, subscribes runtime events, starts gestures, and performs idempotent shutdown.
+  Actions, subscribes runtime events, starts gestures, routes General/Ask/Command input,
+  and performs idempotent shutdown. General mode first recognizes registered commands,
+  then offers the text to ordered `IGeneralInputMatcher` implementations before falling
+  back to an Echo response.
 - `Modules/Settings`: one cohesive settings capability containing the public service port,
   editor DTOs, validation/mapping, transactional apply/rollback, and the non-removable
   built-in settings plugin.
@@ -64,11 +67,11 @@ composition and cannot be removed; optional assemblies are discovered from `plug
   It renders up to six compact, independent notification bubbles without taking focus.
 - `rendering`: shared animation and layered-window surface primitives.
 
-The internal Native vocabulary is `QuickActions`. ABI v3 deliberately retains its
+The internal Native vocabulary is `QuickActions`. ABI v4 deliberately retains its
 historic `Feature*` struct names and layouts; those names are compatibility wire
-identifiers, not domain modules. The v3 version gate advertises the message-queue
-exports in addition to atomic `HidePopups`, so a new Managed assembly cannot silently
-pair with an older DLL.
+identifiers, not domain modules. The v4 version gate adds the submitted input mode to
+the callback contract while retaining the message-queue and atomic `HidePopups`
+exports, so a new Managed assembly cannot silently pair with an older DLL.
 
 ## Host lifecycle
 
@@ -127,6 +130,13 @@ focused application does not handle the same command concurrently. If Windows st
 denies activation, Native returns an explicit failure instead of silently presenting a
 popup that cannot receive keyboard input.
 
+Command-input toggling has three states based on actual keyboard ownership rather than
+visibility alone. A hidden input is shown and activated; a visible but unfocused input
+is reactivated without clearing its text; a visible and focused input is hidden. After
+each activation attempt the Host explicitly refreshes the caret, IME position, and
+focus-indicator target from the final foreground/focus state. Escape always follows the
+ordinary hide path.
+
 `InputWindow` remains a custom DirectWrite control, but implements standard single-line
 editor semantics: Shift navigation and mouse dragging maintain a visible selection;
 Ctrl navigation moves by word; Ctrl+A/C/X/V use the normal selection and clipboard
@@ -142,6 +152,27 @@ reservation is part of the DirectWrite content geometry, so text, selection, car
 mouse hit testing, responsive wrapping, and the IME composition position move together.
 The indicator shares the input window's frame timer but keeps an independent animation
 state, allowing focus and popup transitions to reverse without discontinuities.
+
+The input surface also owns a fixed-width mode tag immediately after the focus
+indicator. A leading Space on an empty editor cycles `Gen`, `Ask`, and `Cmd` without
+inserting text; key repeat cannot cycle more than once per physical press. The tag and
+animated indicator share one leading reservation used by DirectWrite layout, caret and
+selection painting, mouse hit testing, responsive wrapping, and IME placement.
+Mode changes keep that reservation fixed while the outgoing label slides upward and the
+incoming label slides in from below, clipped to the tag bounds. The tag owns an
+independent animation state on the input window's shared frame timer. Its border color
+follows the active mode (green for `Gen`, orange for `Ask`, and purple for `Cmd`) and is
+interpolated during the label transition; the label continues to use the configured
+input text color. Rapid mode changes are queued in input order instead of restarting the
+visible transition. Popup dismissal finishes only the current Tag transition and drops
+queued presentation work so hiding remains bounded.
+
+Submitted text crosses the Native boundary as an `InputSubmission` containing both the
+text and its mode. `Ask` always produces an Echo response. `Cmd` always uses strict
+command dispatch, including the existing unknown-command diagnostic. `Gen` recognizes
+registered commands first, then invokes `IGeneralInputMatcher` extensions, and finally
+produces Echo when no matcher accepts the text. The matcher boundary is intentionally
+WPF-independent and is reserved for the built-in file-index capability.
 
 The built-in settings plugin is always Quick Action slot 1 and is displayed as
 `Control Center`. Quick Actions exposes the numeric slots 1 through 9. Selecting an

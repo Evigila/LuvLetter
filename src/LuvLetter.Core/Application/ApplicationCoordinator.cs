@@ -17,6 +17,7 @@ public sealed class ApplicationCoordinator : IHostedService
     private readonly CommandDispatcher commandDispatcher;
     private readonly QuickActionRegistry quickActions;
     private readonly IReadOnlyList<ILuvLetterPlugin> builtInPlugins;
+    private readonly IReadOnlyList<IGeneralInputMatcher> generalInputMatchers;
     private readonly IActivationGestureService activationGestures;
     private readonly INativeShell nativeShell;
     private readonly IApplicationShell applicationShell;
@@ -30,6 +31,7 @@ public sealed class ApplicationCoordinator : IHostedService
         CommandDispatcher commandDispatcher,
         QuickActionRegistry quickActions,
         IEnumerable<ILuvLetterPlugin> builtInPlugins,
+        IEnumerable<IGeneralInputMatcher> generalInputMatchers,
         IActivationGestureService activationGestures,
         INativeShell nativeShell,
         IApplicationShell applicationShell)
@@ -38,6 +40,7 @@ public sealed class ApplicationCoordinator : IHostedService
         this.commandDispatcher = commandDispatcher;
         this.quickActions = quickActions;
         this.builtInPlugins = builtInPlugins.ToArray();
+        this.generalInputMatchers = generalInputMatchers.ToArray();
         this.activationGestures = activationGestures;
         this.nativeShell = nativeShell;
         this.applicationShell = applicationShell;
@@ -174,19 +177,65 @@ public sealed class ApplicationCoordinator : IHostedService
         }
     }
 
-    private void HandleInputSubmitted(string commandText)
+    private void HandleInputSubmitted(InputSubmission submission)
     {
         if (Volatile.Read(ref stopping) != 0)
         {
             return;
         }
 
+        switch (submission.Mode)
+        {
+            case InputMode.Ask:
+                Echo(submission.Text);
+                return;
+            case InputMode.Command:
+                DispatchCommand(submission.Text);
+                return;
+            case InputMode.General:
+                HandleGeneralInput(submission.Text);
+                return;
+            default:
+                return;
+        }
+    }
+
+    private void HandleGeneralInput(string input)
+    {
+        if (commandDispatcher.IsRegisteredInvocation(input))
+        {
+            DispatchCommand(input);
+            return;
+        }
+
+        foreach (var matcher in generalInputMatchers)
+        {
+            try
+            {
+                if (matcher.TryHandle(input))
+                {
+                    return;
+                }
+            }
+            catch (Exception exception)
+            {
+                ReportStatus($"General input matcher failed: {exception.Message}");
+            }
+        }
+
+        Echo(input);
+    }
+
+    private void DispatchCommand(string commandText)
+    {
         var result = commandDispatcher.Dispatch(commandText);
         if (result != CommandDispatchResult.Accepted)
         {
             ReportStatus($"Command was not accepted: {result}");
         }
     }
+
+    private void Echo(string input) => ReportStatus($"Echo: {input}");
 
     private void HandleQuickActionActivated(string quickActionId)
     {

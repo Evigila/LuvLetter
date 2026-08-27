@@ -554,9 +554,11 @@ HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 		CapturePreviousForegroundWindow();
 		const auto monitor = CaptureTargetMonitor();
 		inputWindow_->Show(monitor, previousForegroundHwnd_);
-		return TryActivateInteractiveWindow(
+		const auto activated = TryActivateInteractiveWindow(
 			inputWindow_->WindowHandle(),
-			previousForegroundHwnd_)
+			previousForegroundHwnd_);
+		inputWindow_->RefreshFocusVisuals();
+		return activated
 			? S_OK
 			: HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
 	}
@@ -564,18 +566,32 @@ HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 		inputWindow_->Hide();
 		return S_OK;
 	case RequestKind::ToggleInput:
-		if (inputWindow_->IsVisible())
+		if (inputWindow_->IsVisible() && inputWindow_->HasKeyboardFocus())
 		{
 			inputWindow_->Hide();
 		}
-		else
+		else if (!inputWindow_->IsVisible())
 		{
 			CapturePreviousForegroundWindow();
 			const auto monitor = CaptureTargetMonitor();
 			inputWindow_->Show(monitor, previousForegroundHwnd_);
-			return TryActivateInteractiveWindow(
+			const auto activated = TryActivateInteractiveWindow(
 				inputWindow_->WindowHandle(),
-				previousForegroundHwnd_)
+				previousForegroundHwnd_);
+			inputWindow_->RefreshFocusVisuals();
+			return activated
+				? S_OK
+				: HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
+		}
+		else
+		{
+			CapturePreviousForegroundWindow();
+			inputWindow_->SetPreviousForegroundWindow(previousForegroundHwnd_);
+			const auto activated = TryActivateInteractiveWindow(
+				inputWindow_->WindowHandle(),
+				previousForegroundHwnd_);
+			inputWindow_->RefreshFocusVisuals();
+			return activated
 				? S_OK
 				: HRESULT_FROM_WIN32(ERROR_ACCESS_DENIED);
 		}
@@ -758,7 +774,10 @@ HRESULT NativeShellHost::Run()
 			inputWindow_ = std::make_unique<InputWindow>(
 				d2dFactory_.Get(),
 				dwriteFactory_.Get(),
-				[this](const std::wstring& text) { OnInputSubmitted(text); });
+				[this](const std::wstring& text, int32_t inputMode)
+				{
+					OnInputSubmitted(text, inputMode);
+				});
 			quickActionsWindow_ = std::make_unique<QuickActionsWindow>(
 				d2dFactory_.Get(),
 				dwriteFactory_.Get(),
@@ -1079,7 +1098,7 @@ bool NativeShellHost::TryActivateInteractiveWindow(
 		&& GetFocus() == target;
 }
 
-void NativeShellHost::OnInputSubmitted(const std::wstring& text) noexcept
+void NativeShellHost::OnInputSubmitted(const std::wstring& text, int32_t inputMode) noexcept
 {
 	const auto callback = inputSubmittedCallback_;
 	const auto context = inputSubmittedContext_;
@@ -1089,7 +1108,7 @@ void NativeShellHost::OnInputSubmitted(const std::wstring& text) noexcept
 		static_cast<size_t>((std::numeric_limits<int32_t>::max)())));
 	__try
 	{
-		callback(text.c_str(), length, context);
+		callback(text.c_str(), length, inputMode, context);
 	}
 	__except (EXCEPTION_EXECUTE_HANDLER)
 	{
