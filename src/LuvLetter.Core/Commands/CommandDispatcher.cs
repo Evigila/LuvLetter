@@ -103,6 +103,20 @@ public sealed class CommandDispatcher : ICommandRegistrar, IDisposable
         }
     }
 
+    /// <summary>
+    /// Returns an immutable, deterministically ordered view of currently registered names.
+    /// </summary>
+    public IReadOnlyList<string> RegisteredNamesSnapshot()
+    {
+        lock (handlersLock)
+        {
+            return handlers.Keys
+                .OrderBy(static name => name, StringComparer.OrdinalIgnoreCase)
+                .ThenBy(static name => name, StringComparer.Ordinal)
+                .ToArray();
+        }
+    }
+
     public CommandDispatchResult Dispatch(string commandText)
     {
         ArgumentNullException.ThrowIfNull(commandText);

@@ -1,5 +1,6 @@
 #include "api/InputBoxApi.h"
 #include "rendering/InputBoxAnimator.h"
+#include "windows/InputCandidateState.h"
 
 #include <cmath>
 #include <functional>
@@ -79,10 +80,70 @@ namespace
 
 	void TestAbiContract()
 	{
-		Assert(LUVLETTER_NATIVE_ABI_VERSION == 4, "Native ABI must expose input submission modes.");
+		Assert(LUVLETTER_NATIVE_ABI_VERSION == 5, "Native ABI must expose input candidates.");
 		Assert(sizeof(LuvLetterInputBoxConfig) == 104, "Input config ABI size changed unexpectedly.");
 		Assert(sizeof(LuvLetterFeatureWindowConfig) == 88, "Quick Actions config ABI size changed unexpectedly.");
 		Assert(sizeof(LuvLetterFeatureItem) == 16, "Quick Action item ABI size changed unexpectedly.");
+		Assert(sizeof(LuvLetterInputCandidate) == 32, "Input candidate ABI size changed unexpectedly.");
+		Assert(LuvLetterCandidateKindFile == 1, "File candidate kind changed unexpectedly.");
+		Assert(LuvLetterCandidateKindCommand == 2, "Command candidate kind changed unexpectedly.");
+		Assert(LuvLetterCandidateKindGlobalSearch == 3, "Global Search candidate kind changed unexpectedly.");
+		Assert(LuvLetterCandidateActionOpen == 0, "Open candidate action changed unexpectedly.");
+		Assert(LuvLetterCandidateActionReveal == 1, "Reveal candidate action changed unexpectedly.");
+	}
+
+	std::vector<InputCandidateItem> CreateCandidateItems()
+	{
+		return {
+			InputCandidateItem{ 11, LuvLetterCandidateKindFile, L"bbb.md", L"C:\\aaa" },
+			InputCandidateItem{ 22, LuvLetterCandidateKindCommand, L"build", L"Command" },
+		};
+	}
+
+	void TestCandidateRevisionAndDefaultSelection()
+	{
+		InputCandidateState state;
+		Assert(state.Apply(CreateCandidateItems(), 7, 7), "Current candidate revision must be accepted.");
+		Assert(state.Revision() == 7, "Accepted candidate revision must be retained.");
+		Assert(state.Items().size() == 2, "Accepted candidates must be retained.");
+		Assert(!state.SelectedIndex().has_value(), "New candidates must start without a selection.");
+
+		InputCandidateActivation activation{};
+		Assert(!state.TryActivate(LuvLetterCandidateActionOpen, activation),
+			"Enter without a selected candidate must not activate an item.");
+		Assert(!state.Apply({}, 6, 7), "Stale candidate revision must be rejected.");
+		Assert(state.Items().size() == 2, "Rejected stale candidates must not replace the current list.");
+		Assert(state.Revision() == 7, "Rejected stale candidates must not change the accepted revision.");
+	}
+
+	void TestCandidateKeyboardSelectionAndActions()
+	{
+		InputCandidateState state;
+		Assert(state.Apply(CreateCandidateItems(), 9, 9), "Candidate list must be accepted for navigation.");
+
+		Assert(state.MoveSelection(1), "Down must begin candidate selection.");
+		Assert(state.SelectedIndex() == 0, "Down from no selection must select the first candidate.");
+		InputCandidateActivation activation{};
+		Assert(state.TryActivate(LuvLetterCandidateActionOpen, activation),
+			"Enter must activate a selected candidate.");
+		Assert(activation.token == 11 && activation.action == LuvLetterCandidateActionOpen,
+			"Enter must route the selected token with the Open action.");
+
+		Assert(state.MoveSelection(1), "A second Down must advance selection.");
+		Assert(state.SelectedIndex() == 1, "A second Down must select the next candidate.");
+		Assert(state.TryActivate(LuvLetterCandidateActionReveal, activation),
+			"Shift+Enter must activate a selected candidate.");
+		Assert(activation.token == 22 && activation.action == LuvLetterCandidateActionReveal,
+			"Shift+Enter must route the selected token with the Reveal action.");
+
+		Assert(state.MoveSelection(1), "Down at the last candidate must remain navigable.");
+		Assert(state.SelectedIndex() == 0, "Down at the last candidate must wrap to the first.");
+		Assert(state.MoveSelection(-1), "Up must move candidate selection.");
+		Assert(state.SelectedIndex() == 1, "Up at the first candidate must wrap to the last.");
+
+		Assert(state.Apply({}, 10, 10), "An empty current result must clear candidates.");
+		Assert(state.IsEmpty(), "An empty result must leave no candidates.");
+		Assert(!state.MoveSelection(1), "Direction keys must not be consumed by an empty candidate list.");
 	}
 
 	void TestShowHideEndpointsAndRepeatedDirection()
@@ -292,6 +353,8 @@ int main()
 	const std::vector<std::pair<std::string, std::function<void()>>> tests
 	{
 		{ "Native ABI contract", TestAbiContract },
+		{ "Candidate revision and default selection", TestCandidateRevisionAndDefaultSelection },
+		{ "Candidate keyboard selection and actions", TestCandidateKeyboardSelectionAndActions },
 		{ "Initial hidden state", TestInitialState },
 		{ "Show/hide endpoints and repeated direction", TestShowHideEndpointsAndRepeatedDirection },
 		{ "Bidirectional reversal continuity", TestBidirectionalReversalContinuity },

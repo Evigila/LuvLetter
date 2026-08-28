@@ -9,6 +9,7 @@ using LuvLetter.Core.NativeShell;
 using LuvLetter.Core.Application;
 using LuvLetter.Core.Plugins;
 using LuvLetter.Platform.Activation;
+using LuvLetter.Platform.Indexing;
 using LuvLetter.Platform.Tray;
 using LuvLetter.View.Settings;
 using WpfApplication = System.Windows.Application;
@@ -29,12 +30,26 @@ internal static class ServiceRegistration
             provider => provider.GetRequiredService<LuvLetterConfigurationStore>());
         services.AddSingleton<CommandDispatcher>();
         services.AddSingleton<QuickActionRegistry>();
+        services.AddSingleton(new InputCandidateOptions());
 
         services.AddSingleton<NativeShellService>();
         services.AddSingleton<INativeShell>(
             provider => provider.GetRequiredService<NativeShellService>());
         services.AddSingleton<INativeConfigurationSink>(
             provider => provider.GetRequiredService<NativeShellService>());
+
+        services.AddSingleton(new FileIndexClientOptions());
+        services.AddSingleton<FileIndexCompanionClient>();
+        services.AddSingleton<IFileIndexClient>(
+            provider => provider.GetRequiredService<FileIndexCompanionClient>());
+        services.AddHostedService(
+            provider => provider.GetRequiredService<FileIndexCompanionClient>());
+        services.AddSingleton<WindowsFileCandidateLauncher>();
+        services.AddSingleton<IFileCandidateLauncher>(
+            provider => provider.GetRequiredService<WindowsFileCandidateLauncher>());
+        services.AddSingleton<InputCandidateCoordinator>();
+        services.AddHostedService(
+            provider => provider.GetRequiredService<InputCandidateCoordinator>());
 
         services.AddSingleton<ActivationGestureService>();
         services.AddSingleton<IActivationGestureService>(

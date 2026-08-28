@@ -138,9 +138,17 @@ namespace
 InputWindow::InputWindow(
 	ID2D1Factory* d2dFactory,
 	IDWriteFactory* dwriteFactory,
-	std::function<void(const std::wstring&, int32_t)> submitted)
+	std::function<void(const std::wstring&, int32_t)> submitted,
+	std::function<void(const std::wstring&, int32_t, uint64_t)> changed,
+	std::function<bool(int)> moveCandidateSelection,
+	std::function<bool(int32_t)> activateCandidate,
+	std::function<void()> hideCandidates)
 	: config_(NativeConfigurationSanitizer::DefaultInputBox()),
 	submitted_(std::move(submitted)),
+	changed_(std::move(changed)),
+	moveCandidateSelection_(std::move(moveCandidateSelection)),
+	activateCandidate_(std::move(activateCandidate)),
+	hideCandidates_(std::move(hideCandidates)),
 	d2dFactory_(d2dFactory),
 	dwriteFactory_(dwriteFactory),
 	surface_(std::make_unique<LayeredWindowSurface>())
@@ -422,6 +430,7 @@ void InputWindow::Show(HMONITOR targetMonitor, HWND previousForegroundWindow)
 void InputWindow::Hide()
 {
 	if (hwnd_ == nullptr) return;
+	if (hideCandidates_) hideCandidates_();
 	if (!visible_ && !animator_.TargetVisible())
 	{
 		if (IsWindowEnabled(hwnd_)) EnableWindow(hwnd_, FALSE);
@@ -461,6 +470,7 @@ void InputWindow::Hide()
 void InputWindow::HideImmediately()
 {
 	if (hwnd_ == nullptr) return;
+	if (hideCandidates_) hideCandidates_();
 	visible_ = false;
 	caretVisible_ = false;
 	KillTimer(hwnd_, CaretTimerId);
@@ -650,6 +660,20 @@ void InputWindow::Reset()
 	lineCapacity_ = 1;
 	verticalOffset_ = 0.0f;
 	ResetHistoryNavigation();
+	PublishInputChanged();
+}
+
+void InputWindow::PublishInputChanged()
+{
+	++revision_;
+	if (revision_ == 0)
+	{
+		++revision_;
+	}
+	if (changed_)
+	{
+		changed_(text_, static_cast<int32_t>(inputMode_), revision_);
+	}
 }
 
 void InputWindow::Submit()
@@ -658,12 +682,14 @@ void InputWindow::Submit()
 	{
 		submitted_(text_, static_cast<int32_t>(inputMode_));
 	}
+	const auto hadText = !text_.empty();
 	RecordHistory(text_);
 	text_.clear();
 	textLayout_.Reset();
 	caretIndex_ = 0;
 	selectionAnchor_ = 0;
 	verticalOffset_ = 0.0f;
+	if (hadText) PublishInputChanged();
 	Invalidate();
 }
 
@@ -708,6 +734,7 @@ void InputWindow::CycleInputMode()
 			animationTimestamp_ = 0;
 		}
 	}
+	PublishInputChanged();
 	Invalidate();
 }
 
@@ -743,6 +770,7 @@ void InputWindow::InsertText(const std::wstring& value)
 	caretIndex_ += safeCount;
 	selectionAnchor_ = caretIndex_;
 	ResetHistoryNavigation();
+	PublishInputChanged();
 	Invalidate();
 }
 
@@ -765,6 +793,7 @@ void InputWindow::InsertCharacter(wchar_t value)
 	++caretIndex_;
 	selectionAnchor_ = caretIndex_;
 	ResetHistoryNavigation();
+	PublishInputChanged();
 	Invalidate();
 }
 
@@ -789,6 +818,7 @@ bool InputWindow::EraseSelection()
 
 void InputWindow::DeleteBeforeCaret(bool byWord)
 {
+	const auto previousSize = text_.size();
 	if (!EraseSelection())
 	{
 		if (caretIndex_ == 0 || text_.empty()) return;
@@ -797,11 +827,13 @@ void InputWindow::DeleteBeforeCaret(bool byWord)
 			: PreviousUtf16Boundary(text_, caretIndex_);
 		EraseRange(previous, caretIndex_);
 	}
+	if (text_.size() != previousSize) PublishInputChanged();
 	Invalidate();
 }
 
 void InputWindow::DeleteAtCaret(bool byWord)
 {
+	const auto previousSize = text_.size();
 	if (!EraseSelection())
 	{
 		if (caretIndex_ >= text_.size()) return;
@@ -810,6 +842,7 @@ void InputWindow::DeleteAtCaret(bool byWord)
 			: NextUtf16Boundary(text_, caretIndex_);
 		EraseRange(caretIndex_, next);
 	}
+	if (text_.size() != previousSize) PublishInputChanged();
 	Invalidate();
 }
 
@@ -929,10 +962,12 @@ size_t InputWindow::NextWordBoundary(size_t index) const noexcept
 
 void InputWindow::NavigateHistory(int direction)
 {
+	const auto previousText = text_;
 	if (!TryNavigateHistory(direction, text_)) return;
 	textLayout_.Reset();
 	caretIndex_ = text_.size();
 	selectionAnchor_ = caretIndex_;
+	if (text_ != previousText) PublishInputChanged();
 	Invalidate();
 }
 
@@ -969,7 +1004,7 @@ bool InputWindow::CopySelectionToClipboard() const
 void InputWindow::CutSelectionToClipboard()
 {
 	if (!CopySelectionToClipboard()) return;
-	EraseSelection();
+	if (EraseSelection()) PublishInputChanged();
 	Invalidate();
 }
 
@@ -1652,6 +1687,15 @@ bool InputWindow::HandleKeyDown(WPARAM wParam, LPARAM keyData)
 		Hide();
 		return true;
 	}
+	if (wParam == VK_RETURN && !controlDown && !hasSystemModifier
+		&& (modifiers == 0 || modifiers == ShiftModifier)
+		&& activateCandidate_
+		&& activateCandidate_(shiftDown
+			? static_cast<int32_t>(LuvLetterCandidateActionReveal)
+			: static_cast<int32_t>(LuvLetterCandidateActionOpen)))
+	{
+		return true;
+	}
 	if (MatchesHotkey(wParam, config_.submitVirtualKey, config_.submitModifiers))
 	{
 		Submit();
@@ -1672,8 +1716,14 @@ bool InputWindow::HandleKeyDown(WPARAM wParam, LPARAM keyData)
 		case VK_RIGHT: MoveCaretRight(shiftDown); return true;
 		case VK_HOME: MoveCaretToStart(shiftDown); return true;
 		case VK_END: MoveCaretToEnd(shiftDown); return true;
-		case VK_UP: if (!shiftDown) NavigateHistory(-1); return !shiftDown;
-		case VK_DOWN: if (!shiftDown) NavigateHistory(1); return !shiftDown;
+		case VK_UP:
+			if (!shiftDown && moveCandidateSelection_ && moveCandidateSelection_(-1)) return true;
+			if (!shiftDown) NavigateHistory(-1);
+			return !shiftDown;
+		case VK_DOWN:
+			if (!shiftDown && moveCandidateSelection_ && moveCandidateSelection_(1)) return true;
+			if (!shiftDown) NavigateHistory(1);
+			return !shiftDown;
 		default: break;
 		}
 	}
@@ -1749,7 +1799,11 @@ LRESULT InputWindow::HandleMessage(HWND window, UINT message, WPARAM wParam, LPA
 		if (HasKeyboardFocus()) CutSelectionToClipboard();
 		return 0;
 	case WM_CLEAR:
-		if (HasKeyboardFocus() && EraseSelection()) Invalidate();
+		if (HasKeyboardFocus() && EraseSelection())
+		{
+			PublishInputChanged();
+			Invalidate();
+		}
 		return 0;
 	case WM_LBUTTONDOWN:
 		if (visible_)

@@ -21,26 +21,53 @@
       ReferenceOutputAssembly="false"
       SkipGetTargetFrameworkProperties="true"
       SetPlatform="Platform=x64" />
+    <ProjectReference
+      Include="..\LuvLetter.Indexer\LuvLetter.Indexer.vcxproj"
+      ReferenceOutputAssembly="false"
+      SkipGetTargetFrameworkProperties="true"
+      SetPlatform="Platform=x64" />
   </ItemGroup>
 
   <PropertyGroup>
     <NativeRendererPath>$(MSBuildThisFileDirectory)bin\$(Configuration)\$(TargetFramework)\LuvLetter.Native.dll</NativeRendererPath>
+    <IndexerBuildPath>$(MSBuildThisFileDirectory)..\LuvLetter.Indexer\bin\x64\$(Configuration)\LuvLetter.Indexer.exe</IndexerBuildPath>
+    <IndexerOutputPath>$(MSBuildThisFileDirectory)bin\$(Configuration)\$(TargetFramework)\LuvLetter.Indexer.exe</IndexerOutputPath>
   </PropertyGroup>
 
   <Target
     Name="RequireVisualStudioMsBuildForNativeRenderer"
     BeforeTargets="PrepareForBuild"
     Condition="'$(SkipNativeBuild)' != 'true' and '$(BuildingSolutionFile)' != 'true' and '$(MSBuildRuntimeType)' != 'Full'">
-    <Error Text="LuvLetter.Native requires the full Visual Studio MSBuild. Build LuvLetter.slnx with MSBuild.exe, or set SkipNativeBuild=true only when a current native DLL already exists." />
+    <Error Text="LuvLetter native components require the full Visual Studio MSBuild. Build LuvLetter.slnx with MSBuild.exe, or set SkipNativeBuild=true only when current native binaries already exist." />
   </Target>
 
-  <Target Name="IncludeNativeRendererInPublish" AfterTargets="ComputeFilesToPublish">
+  <Target
+    Name="CopyIndexerToApplicationOutput"
+    AfterTargets="Build"
+    Condition="'$(SkipNativeBuild)' != 'true' and '$(MSBuildRuntimeType)' == 'Full'">
+    <Error
+      Condition="!Exists('$(IndexerBuildPath)')"
+      Text="File indexer not found at $(IndexerBuildPath). Build the solution with Visual Studio MSBuild." />
+    <Copy
+      SourceFiles="$(IndexerBuildPath)"
+      DestinationFiles="$(IndexerOutputPath)"
+      SkipUnchangedFiles="true" />
+  </Target>
+
+  <Target Name="IncludeNativeComponentsInPublish" AfterTargets="ComputeFilesToPublish">
     <Error
       Condition="!Exists('$(NativeRendererPath)')"
       Text="Native renderer not found at $(NativeRendererPath). Build the solution with Visual Studio MSBuild before publishing." />
+    <Error
+      Condition="!Exists('$(IndexerOutputPath)')"
+      Text="File indexer not found at $(IndexerOutputPath). Build the solution with Visual Studio MSBuild before publishing." />
     <ItemGroup>
       <ResolvedFileToPublish Include="$(NativeRendererPath)">
         <RelativePath>LuvLetter.Native.dll</RelativePath>
+        <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
+      </ResolvedFileToPublish>
+      <ResolvedFileToPublish Include="$(IndexerOutputPath)">
+        <RelativePath>LuvLetter.Indexer.exe</RelativePath>
         <CopyToPublishDirectory>PreserveNewest</CopyToPublishDirectory>
       </ResolvedFileToPublish>
     </ItemGroup>

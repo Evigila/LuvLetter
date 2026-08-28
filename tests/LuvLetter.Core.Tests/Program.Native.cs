@@ -39,6 +39,11 @@ internal static partial class Program
             "LuvLetter.Core.NativeShell.NativeFeatureItem",
             16,
             ["Token", "Label"]);
+        AssertNativeLayout(
+            assembly,
+            "LuvLetter.Core.NativeShell.NativeInputCandidate",
+            32,
+            ["Token", "Kind", "PrimaryText", "SecondaryText"]);
 
         return Task.CompletedTask;
     }
@@ -140,9 +145,11 @@ internal static partial class Program
         var service = new NativeShellService(nativeApi);
         try
         {
-            Assert.Equal(4U, nativeApi.AbiVersion);
+            Assert.Equal(5U, nativeApi.AbiVersion);
             Assert.Equal(1, nativeApi.CompatibilityChecks);
             Assert.NotNull(nativeApi.InputSubmittedCallback);
+            Assert.NotNull(nativeApi.InputChangedCallback);
+            Assert.NotNull(nativeApi.CandidateActivatedCallback);
             Assert.NotNull(nativeApi.QuickActionActivatedCallback);
 
             service.ApplyConfiguration(
@@ -233,6 +240,33 @@ internal static partial class Program
             Assert.Equal("hello native", submission.Text);
             Assert.Equal(InputMode.Ask, submission.Mode);
 
+            var inputChanged = new TaskCompletionSource<InputChanged>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            service.InputChanged += inputChanged.SetResult;
+            nativeApi.RaiseInputChanged("bb", InputMode.General, revision: 42);
+            var change = await inputChanged.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal("bb", change.Text);
+            Assert.Equal(InputMode.General, change.Mode);
+            Assert.Equal(42UL, change.Revision);
+
+            service.SetInputCandidates(
+            [
+                new InputCandidate(7, CandidateKind.File, "bbb.md", @"C:\aaa\bbb.md"),
+            ], revision: 42);
+            Assert.Equal(42UL, nativeApi.InputCandidateRevision);
+            Assert.Equal(1, nativeApi.InputCandidates.Count);
+            Assert.Equal(7UL, nativeApi.InputCandidates[0].Token);
+            Assert.Equal(CandidateKind.File, nativeApi.InputCandidates[0].Kind);
+            Assert.Equal("bbb.md", nativeApi.InputCandidates[0].Primary);
+
+            var candidateActivated = new TaskCompletionSource<CandidateActivated>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            service.CandidateActivated += candidateActivated.SetResult;
+            nativeApi.RaiseCandidateActivated(7, CandidateAction.Reveal);
+            var activation = await candidateActivated.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.Equal(7UL, activation.Token);
+            Assert.Equal(CandidateAction.Reveal, activation.Action);
+
             service.ShowCommandInput();
             service.HideCommandInput();
             service.ToggleQuickActions();
@@ -270,6 +304,8 @@ internal static partial class Program
 
         Assert.Equal(1, nativeApi.ShutdownCalls);
         Assert.True(nativeApi.InputSubmittedCallback is null);
+        Assert.True(nativeApi.InputChangedCallback is null);
+        Assert.True(nativeApi.CandidateActivatedCallback is null);
         Assert.True(nativeApi.QuickActionActivatedCallback is null);
     }
 

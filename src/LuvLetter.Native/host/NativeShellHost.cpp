@@ -4,6 +4,7 @@
 #include "windows/MessageQueueWindow.h"
 #include "windows/QuickActionsWindow.h"
 #include "windows/InputWindow.h"
+#include "windows/InputCandidatesWindow.h"
 
 #include <Windows.h>
 
@@ -22,6 +23,7 @@ using namespace LuvLetterNative;
 namespace
 {
 	constexpr wchar_t InputWindowClassName[] = L"LuvLetter.Native.InputBox";
+	constexpr wchar_t InputCandidatesWindowClassName[] = L"LuvLetter.Native.InputCandidates";
 	constexpr wchar_t QuickActionsWindowClassName[] = L"LuvLetter.Native.QuickActionsWindow";
 	constexpr wchar_t MessageQueueWindowClassName[] = L"LuvLetter.Native.MessageQueueWindow";
 	constexpr UINT HostRequestMessage = WM_APP + 40;
@@ -30,12 +32,18 @@ namespace
 	constexpr DWORD RequestTimeoutMs = 5000;
 	constexpr DWORD ShutdownTimeoutMs = 5000;
 	constexpr int32_t MaxQuickActions = 4096;
+	constexpr int32_t MaxInputCandidates = 32;
+	constexpr size_t MaxCandidatePrimaryLength = 512;
+	constexpr size_t MaxCandidateSecondaryLength = 2048;
 	constexpr int32_t MaxMessageLength = 4096;
 
 	enum class RequestKind
 	{
 		ApplyInputConfig,
 		SetInputCallback,
+		SetInputChangedCallback,
+		SetInputCandidates,
+		SetCandidateCallback,
 		ShowInput,
 		HideInput,
 		ToggleInput,
@@ -122,8 +130,12 @@ struct NativeShellHost::HostRequest
 	LuvLetterInputBoxConfig inputConfig{};
 	LuvLetterFeatureWindowConfig quickActionsConfig{};
 	std::vector<QuickActionItem> quickActions;
+	std::vector<InputCandidateItem> inputCandidates;
 	std::wstring message;
+	uint64_t revision = 0;
 	LuvLetterInputSubmittedCallback inputCallback = nullptr;
+	LuvLetterInputChangedCallback inputChangedCallback = nullptr;
+	LuvLetterCandidateActivatedCallback candidateCallback = nullptr;
 	LuvLetterFeatureActivatedCallback quickActionCallback = nullptr;
 	void* callbackContext = nullptr;
 };
@@ -289,6 +301,103 @@ HRESULT NativeShellHost::EnqueueMessage(const wchar_t* text, int32_t length)
 		request->Release();
 		return E_OUTOFMEMORY;
 	}
+	return DispatchRequest(request, true);
+}
+
+HRESULT NativeShellHost::SetInputChangedCallback(
+	LuvLetterInputChangedCallback callback,
+	void* context)
+{
+	auto* request = new (std::nothrow) HostRequest(RequestKind::SetInputChangedCallback, true);
+	if (request == nullptr)
+	{
+		return E_OUTOFMEMORY;
+	}
+	request->inputChangedCallback = callback;
+	request->callbackContext = context;
+	return DispatchRequest(request, true);
+}
+
+HRESULT NativeShellHost::SetCandidateActivatedCallback(
+	LuvLetterCandidateActivatedCallback callback,
+	void* context)
+{
+	auto* request = new (std::nothrow) HostRequest(RequestKind::SetCandidateCallback, true);
+	if (request == nullptr)
+	{
+		return E_OUTOFMEMORY;
+	}
+	request->candidateCallback = callback;
+	request->callbackContext = context;
+	return DispatchRequest(request, true);
+}
+
+HRESULT NativeShellHost::SetInputCandidates(
+	const LuvLetterInputCandidate* items,
+	int32_t count,
+	uint64_t revision)
+{
+	if (count < 0 || count > MaxInputCandidates || (count > 0 && items == nullptr))
+	{
+		return E_INVALIDARG;
+	}
+
+	auto* request = new (std::nothrow) HostRequest(RequestKind::SetInputCandidates, true);
+	if (request == nullptr)
+	{
+		return E_OUTOFMEMORY;
+	}
+	request->revision = revision;
+
+	try
+	{
+		request->inputCandidates.reserve(static_cast<size_t>(count));
+		for (int32_t index = 0; index < count; ++index)
+		{
+			const auto& source = items[index];
+			if (source.token == 0
+				|| source.primaryText == nullptr
+				|| source.kind < LuvLetterCandidateKindFile
+				|| source.kind > LuvLetterCandidateKindGlobalSearch)
+			{
+				request->Release();
+				return E_INVALIDARG;
+			}
+
+			const auto primaryLength = wcsnlen_s(
+				source.primaryText,
+				MaxCandidatePrimaryLength + 1);
+			if (primaryLength > MaxCandidatePrimaryLength)
+			{
+				request->Release();
+				return E_INVALIDARG;
+			}
+
+			InputCandidateItem item{};
+			item.token = source.token;
+			item.kind = static_cast<LuvLetterCandidateKind>(source.kind);
+			item.primaryText.assign(source.primaryText, primaryLength);
+			if (source.secondaryText != nullptr)
+			{
+				const auto secondaryLength = wcsnlen_s(
+					source.secondaryText,
+					MaxCandidateSecondaryLength + 1);
+				if (secondaryLength > MaxCandidateSecondaryLength)
+				{
+					request->Release();
+					return E_INVALIDARG;
+				}
+				item.secondaryText.assign(source.secondaryText, secondaryLength);
+			}
+			request->inputCandidates.push_back(std::move(item));
+		}
+	}
+	catch (...)
+	{
+		request->Release();
+		return E_OUTOFMEMORY;
+	}
+
 	return DispatchRequest(request, true);
 }
 
@@ -534,7 +643,8 @@ void NativeShellHost::CompleteRequest(HostRequest* request, HRESULT result) noex
 
 HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 {
-	if (inputWindow_ == nullptr || quickActionsWindow_ == nullptr
+	if (inputWindow_ == nullptr || inputCandidatesWindow_ == nullptr
+		|| quickActionsWindow_ == nullptr
 		|| messageQueueWindow_ == nullptr)
 	{
 		return HRESULT_FROM_WIN32(ERROR_INVALID_STATE);
@@ -544,11 +654,28 @@ HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 	{
 	case RequestKind::ApplyInputConfig:
 		inputWindow_->ApplyConfiguration(request.inputConfig);
+		inputCandidatesWindow_->ApplyConfiguration(request.inputConfig);
 		return S_OK;
 	case RequestKind::SetInputCallback:
 		inputSubmittedCallback_ = request.inputCallback;
 		inputSubmittedContext_ = request.callbackContext;
 		return S_OK;
+	case RequestKind::SetInputChangedCallback:
+		inputChangedCallback_ = request.inputChangedCallback;
+		inputChangedContext_ = request.callbackContext;
+		return S_OK;
+	case RequestKind::SetCandidateCallback:
+		candidateActivatedCallback_ = request.candidateCallback;
+		candidateActivatedContext_ = request.callbackContext;
+		return S_OK;
+	case RequestKind::SetInputCandidates:
+		return inputCandidatesWindow_->SetItems(
+			std::move(request.inputCandidates),
+			request.revision,
+			inputWindow_->CurrentRevision(),
+			inputWindow_->IsVisible())
+			? S_OK
+			: S_FALSE;
 	case RequestKind::ShowInput:
 	{
 		CapturePreviousForegroundWindow();
@@ -564,11 +691,13 @@ HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 	}
 	case RequestKind::HideInput:
 		inputWindow_->Hide();
+		inputCandidatesWindow_->Hide();
 		return S_OK;
 	case RequestKind::ToggleInput:
 		if (inputWindow_->IsVisible() && inputWindow_->HasKeyboardFocus())
 		{
 			inputWindow_->Hide();
+			inputCandidatesWindow_->Hide();
 		}
 		else if (!inputWindow_->IsVisible())
 		{
@@ -651,6 +780,7 @@ HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 		return S_OK;
 	case RequestKind::HidePopups:
 		inputWindow_->Hide();
+		inputCandidatesWindow_->Hide();
 		quickActionsWindow_->Hide();
 		return S_OK;
 	default:
@@ -777,6 +907,35 @@ HRESULT NativeShellHost::Run()
 				[this](const std::wstring& text, int32_t inputMode)
 				{
 					OnInputSubmitted(text, inputMode);
+				},
+				[this](const std::wstring& text, int32_t inputMode, uint64_t revision)
+				{
+					OnInputChanged(text, inputMode, revision);
+				},
+				[this](int direction)
+				{
+					return inputCandidatesWindow_ != nullptr
+						&& inputCandidatesWindow_->MoveSelection(direction);
+				},
+				[this](int32_t action)
+				{
+					return inputCandidatesWindow_ != nullptr
+						&& inputCandidatesWindow_->ActivateSelected(
+							static_cast<LuvLetterCandidateAction>(action));
+				},
+				[this]()
+				{
+					if (inputCandidatesWindow_ != nullptr)
+					{
+						inputCandidatesWindow_->Hide();
+					}
+				});
+			inputCandidatesWindow_ = std::make_unique<InputCandidatesWindow>(
+				d2dFactory_.Get(),
+				dwriteFactory_.Get(),
+				[this](uint64_t token, int32_t action)
+				{
+					OnCandidateActivated(token, action);
 				});
 			quickActionsWindow_ = std::make_unique<QuickActionsWindow>(
 				d2dFactory_.Get(),
@@ -800,6 +959,7 @@ HRESULT NativeShellHost::Run()
 		DestroyWindows();
 		messageQueueWindow_.reset();
 		quickActionsWindow_.reset();
+		inputCandidatesWindow_.reset();
 		inputWindow_.reset();
 		dwriteFactory_.Reset();
 		d2dFactory_.Reset();
@@ -851,12 +1011,17 @@ HRESULT NativeShellHost::Run()
 	DestroyWindows();
 	messageQueueWindow_.reset();
 	quickActionsWindow_.reset();
+	inputCandidatesWindow_.reset();
 	inputWindow_.reset();
 	dwriteFactory_.Reset();
 	d2dFactory_.Reset();
 	previousForegroundHwnd_ = nullptr;
 	inputSubmittedCallback_ = nullptr;
 	inputSubmittedContext_ = nullptr;
+	inputChangedCallback_ = nullptr;
+	inputChangedContext_ = nullptr;
+	candidateActivatedCallback_ = nullptr;
+	candidateActivatedContext_ = nullptr;
 	quickActionActivatedCallback_ = nullptr;
 	quickActionActivatedContext_ = nullptr;
 
@@ -890,13 +1055,17 @@ HRESULT NativeShellHost::CreateWindows()
 	auto result = CreateWindowForKind(WindowKind::Input);
 	if (FAILED(result)) return result;
 
+	result = CreateWindowForKind(WindowKind::InputCandidates);
+	if (FAILED(result))
+	{
+		DestroyWindows();
+		return result;
+	}
+
 	result = CreateWindowForKind(WindowKind::QuickActions);
 	if (FAILED(result))
 	{
-		if (inputWindow_ != nullptr && inputWindow_->WindowHandle() != nullptr)
-		{
-			DestroyWindow(inputWindow_->WindowHandle());
-		}
+		DestroyWindows();
 		return result;
 	}
 
@@ -930,6 +1099,14 @@ HRESULT NativeShellHost::CreateWindowForKind(WindowKind kind)
 		width = inputWindow_->PixelWidth();
 		height = inputWindow_->PixelHeight();
 		context = &inputWindowContext_;
+		break;
+	case WindowKind::InputCandidates:
+		className = InputCandidatesWindowClassName;
+		title = L"LuvLetter Input Candidates";
+		width = inputCandidatesWindow_->PixelWidth();
+		height = inputCandidatesWindow_->PixelHeight();
+		context = &inputCandidatesWindowContext_;
+		extendedStyle |= WS_EX_NOACTIVATE;
 		break;
 	case WindowKind::QuickActions:
 		className = QuickActionsWindowClassName;
@@ -984,6 +1161,11 @@ HRESULT NativeShellHost::CreateWindowForKind(WindowKind kind)
 	case WindowKind::Input:
 		attachResult = inputWindow_->Attach(window);
 		break;
+	case WindowKind::InputCandidates:
+		attachResult = inputCandidatesWindow_->Attach(
+			window,
+			inputWindow_->WindowHandle());
+		break;
 	case WindowKind::QuickActions:
 		attachResult = quickActionsWindow_->Attach(window);
 		break;
@@ -1008,6 +1190,11 @@ void NativeShellHost::DestroyWindows() noexcept
 	if (quickActionsWindow_ != nullptr && quickActionsWindow_->WindowHandle() != nullptr)
 	{
 		DestroyWindow(quickActionsWindow_->WindowHandle());
+	}
+	if (inputCandidatesWindow_ != nullptr
+		&& inputCandidatesWindow_->WindowHandle() != nullptr)
+	{
+		DestroyWindow(inputCandidatesWindow_->WindowHandle());
 	}
 	if (inputWindow_ != nullptr && inputWindow_->WindowHandle() != nullptr)
 	{
@@ -1034,13 +1221,17 @@ void NativeShellHost::CapturePreviousForegroundWindow() noexcept
 {
 	const auto foreground = GetForegroundWindow();
 	const auto input = inputWindow_ == nullptr ? nullptr : inputWindow_->WindowHandle();
+	const auto inputCandidates = inputCandidatesWindow_ == nullptr
+		? nullptr
+		: inputCandidatesWindow_->WindowHandle();
 	const auto quickActions = quickActionsWindow_ == nullptr
 		? nullptr
 		: quickActionsWindow_->WindowHandle();
 	const auto messageQueue = messageQueueWindow_ == nullptr
 		? nullptr
 		: messageQueueWindow_->WindowHandle();
-	if (foreground != nullptr && foreground != input && foreground != quickActions
+	if (foreground != nullptr && foreground != input && foreground != inputCandidates
+		&& foreground != quickActions
 		&& foreground != messageQueue)
 	{
 		previousForegroundHwnd_ = foreground;
@@ -1115,6 +1306,44 @@ void NativeShellHost::OnInputSubmitted(const std::wstring& text, int32_t inputMo
 	}
 }
 
+void NativeShellHost::OnInputChanged(
+	const std::wstring& text,
+	int32_t inputMode,
+	uint64_t revision) noexcept
+{
+	if (inputCandidatesWindow_ != nullptr)
+	{
+		inputCandidatesWindow_->Clear();
+	}
+	const auto callback = inputChangedCallback_;
+	const auto context = inputChangedContext_;
+	if (callback == nullptr) return;
+	const auto length = static_cast<int32_t>((std::min)(
+		text.size(),
+		static_cast<size_t>((std::numeric_limits<int32_t>::max)())));
+	__try
+	{
+		callback(text.c_str(), length, inputMode, revision, context);
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+	}
+}
+
+void NativeShellHost::OnCandidateActivated(uint64_t token, int32_t action) noexcept
+{
+	const auto callback = candidateActivatedCallback_;
+	const auto context = candidateActivatedContext_;
+	if (callback == nullptr) return;
+	__try
+	{
+		callback(token, action, context);
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+	}
+}
+
 void NativeShellHost::OnQuickActionActivated(uint64_t token) noexcept
 {
 	const auto callback = quickActionActivatedCallback_;
@@ -1139,7 +1368,19 @@ LRESULT NativeShellHost::DispatchWindowMessage(
 	switch (kind)
 	{
 	case WindowKind::Input:
-		return inputWindow_->HandleMessage(window, message, wParam, lParam);
+	{
+		const auto result = inputWindow_->HandleMessage(window, message, wParam, lParam);
+		if (inputCandidatesWindow_ != nullptr
+			&& (message == WM_WINDOWPOSCHANGED
+				|| message == WM_SIZE
+				|| message == WM_DPICHANGED))
+		{
+			inputCandidatesWindow_->SynchronizeToInputWindow();
+		}
+		return result;
+	}
+	case WindowKind::InputCandidates:
+		return inputCandidatesWindow_->HandleMessage(window, message, wParam, lParam);
 	case WindowKind::QuickActions:
 		return quickActionsWindow_->HandleMessage(window, message, wParam, lParam);
 	case WindowKind::MessageQueue:

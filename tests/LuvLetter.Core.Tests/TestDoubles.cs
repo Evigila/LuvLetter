@@ -11,11 +11,15 @@ namespace LuvLetter.Core.Tests;
 
 internal sealed class FakeNativeShellApi : INativeShellApi
 {
-    public uint AbiVersion => 4;
+    public uint AbiVersion => 5;
 
     public int CompatibilityChecks { get; private set; }
 
     public NativeInputSubmittedCallback? InputSubmittedCallback { get; private set; }
+
+    public NativeInputChangedCallback? InputChangedCallback { get; private set; }
+
+    public NativeCandidateActivatedCallback? CandidateActivatedCallback { get; private set; }
 
     public NativeFeatureActivatedCallback? QuickActionActivatedCallback { get; private set; }
 
@@ -24,6 +28,11 @@ internal sealed class FakeNativeShellApi : INativeShellApi
     public NativeFeatureWindowConfig? LastQuickActionsConfig { get; private set; }
 
     public IReadOnlyList<(ulong Token, string Label)> QuickActionItems { get; private set; } = [];
+
+    public IReadOnlyList<(ulong Token, CandidateKind Kind, string Primary, string Secondary)>
+        InputCandidates { get; private set; } = [];
+
+    public ulong InputCandidateRevision { get; private set; }
 
     public int SetFeatureItemsResult { get; set; }
 
@@ -129,6 +138,39 @@ internal sealed class FakeNativeShellApi : INativeShellApi
         return 0;
     }
 
+    public int SetInputChangedCallback(NativeInputChangedCallback? callback, IntPtr context)
+    {
+        _ = context;
+        InputChangedCallback = callback;
+        return 0;
+    }
+
+    public int SetCandidateActivatedCallback(
+        NativeCandidateActivatedCallback? callback,
+        IntPtr context)
+    {
+        _ = context;
+        CandidateActivatedCallback = callback;
+        return 0;
+    }
+
+    public int SetInputCandidates(NativeInputCandidate[] items, int count, ulong revision)
+    {
+        var copied = new (ulong, CandidateKind, string, string)[count];
+        for (var index = 0; index < count; index++)
+        {
+            copied[index] = (
+                items[index].Token,
+                (CandidateKind)items[index].Kind,
+                Marshal.PtrToStringUni(items[index].PrimaryText) ?? string.Empty,
+                Marshal.PtrToStringUni(items[index].SecondaryText) ?? string.Empty);
+        }
+
+        InputCandidates = copied;
+        InputCandidateRevision = revision;
+        return 0;
+    }
+
     public int EnqueueMessage(string text, int length)
     {
         EnqueuedMessages.Add((text, length));
@@ -174,6 +216,33 @@ internal sealed class FakeNativeShellApi : INativeShellApi
             Marshal.FreeHGlobal(pointer);
         }
     }
+
+    public void RaiseInputChanged(
+        string value,
+        InputMode mode = InputMode.General,
+        ulong revision = 1)
+    {
+        var pointer = value.Length == 0 ? IntPtr.Zero : Marshal.StringToHGlobalUni(value);
+        try
+        {
+            InputChangedCallback?.Invoke(
+                pointer,
+                value.Length,
+                (int)mode,
+                revision,
+                IntPtr.Zero);
+        }
+        finally
+        {
+            if (pointer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(pointer);
+            }
+        }
+    }
+
+    public void RaiseCandidateActivated(ulong token, CandidateAction action) =>
+        CandidateActivatedCallback?.Invoke(token, (int)action, IntPtr.Zero);
 }
 
 internal sealed class FakeConfigurationStore(LuvLetterConfiguration current)
@@ -242,6 +311,10 @@ internal sealed class FakeNativeShell : INativeShell
 {
     public event Action<InputSubmission>? InputSubmitted;
 
+    public event Action<InputChanged>? InputChanged;
+
+    public event Action<CandidateActivated>? CandidateActivated;
+
     public event Action<string>? QuickActionActivated;
 
     public event Action? QuickActionUnavailable;
@@ -249,6 +322,9 @@ internal sealed class FakeNativeShell : INativeShell
     public int AppliedConfigurations { get; private set; }
 
     public List<IReadOnlyList<QuickActionSnapshot>> SynchronizedSnapshots { get; } = [];
+
+    public List<(IReadOnlyList<InputCandidate> Candidates, ulong Revision)> CandidateSnapshots
+    { get; } = [];
 
     public int ToggleCommandInputCalls { get; private set; }
 
@@ -278,6 +354,9 @@ internal sealed class FakeNativeShell : INativeShell
     public void SynchronizeQuickActions(IReadOnlyList<QuickActionSnapshot> quickActions) =>
         SynchronizedSnapshots.Add(quickActions.ToArray());
 
+    public void SetInputCandidates(IReadOnlyList<InputCandidate> candidates, ulong revision) =>
+        CandidateSnapshots.Add((candidates.ToArray(), revision));
+
     public void ToggleCommandInput() => ToggleCommandInputCalls++;
 
     public void HideCommandInput() => HideCommandInputCalls++;
@@ -296,6 +375,15 @@ internal sealed class FakeNativeShell : INativeShell
 
     public void RaiseInputSubmitted(string text, InputMode mode = InputMode.General) =>
         InputSubmitted?.Invoke(new InputSubmission(text, mode));
+
+    public void RaiseInputChanged(
+        string text,
+        InputMode mode = InputMode.General,
+        ulong revision = 1) =>
+        InputChanged?.Invoke(new InputChanged(text, mode, revision));
+
+    public void RaiseCandidateActivated(ulong token, CandidateAction action = CandidateAction.Open) =>
+        CandidateActivated?.Invoke(new CandidateActivated(token, action));
 
     public void RaiseQuickActionActivated(string quickActionId) =>
         QuickActionActivated?.Invoke(quickActionId);
@@ -323,6 +411,68 @@ internal sealed class FakeGeneralInputMatcher(
     {
         Inputs.Add(input);
         return tryHandle(input);
+    }
+}
+
+internal sealed class FakeFileIndexClient : IFileIndexClient
+{
+    private readonly object stateLock = new();
+    private Func<string, int, ulong, CancellationToken, ValueTask<IReadOnlyList<FileIndexMatch>>>
+        query = static (_, _, _, _) => ValueTask.FromResult<IReadOnlyList<FileIndexMatch>>([]);
+
+    public List<(string Query, int MaximumResults, ulong Revision)> Queries { get; } = [];
+
+    public event Action? IndexChanged;
+
+    public void SetQuery(
+        Func<string, int, ulong, CancellationToken, ValueTask<IReadOnlyList<FileIndexMatch>>> value)
+    {
+        lock (stateLock)
+        {
+            query = value;
+        }
+    }
+
+    public ValueTask<IReadOnlyList<FileIndexMatch>> QueryAsync(
+        string value,
+        int maximumResults,
+        ulong editorRevision,
+        CancellationToken cancellationToken)
+    {
+        Func<string, int, ulong, CancellationToken, ValueTask<IReadOnlyList<FileIndexMatch>>>
+            handler;
+        lock (stateLock)
+        {
+            Queries.Add((value, maximumResults, editorRevision));
+            handler = query;
+        }
+
+        return handler(value, maximumResults, editorRevision, cancellationToken);
+    }
+
+    public void RaiseIndexChanged() => IndexChanged?.Invoke();
+}
+
+internal sealed class FakeFileCandidateLauncher : IFileCandidateLauncher
+{
+    public bool OpenResult { get; set; } = true;
+
+    public bool RevealResult { get; set; } = true;
+
+    public List<string> Opened { get; } = [];
+
+    public List<string> Revealed { get; } = [];
+
+    public bool Open(string fullPath)
+    {
+        Opened.Add(fullPath);
+        return OpenResult;
+    }
+
+    public bool Reveal(string fullPath)
+    {
+        Revealed.Add(fullPath);
+        return RevealResult;
     }
 }
 

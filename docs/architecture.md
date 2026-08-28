@@ -1,8 +1,8 @@
 # LuvLetter Architecture
 
 LuvLetter is a Windows command shell with a WPF presentation shell, a WPF-independent
-Core application layer, and a native Win32/Direct2D renderer. `Microsoft.Extensions.Hosting`
-owns dependency composition and service lifecycle.
+Core application layer, a native Win32/Direct2D renderer, and an out-of-process C++ file
+indexer. `Microsoft.Extensions.Hosting` owns dependency composition and service lifecycle.
 
 ## Dependency direction
 
@@ -10,6 +10,8 @@ owns dependency composition and service lifecycle.
 LuvLetter (WPF views + Windows adapters + composition)
     -> LuvLetter.Core (application coordination + business modules + contracts)
     -> LuvLetter.Native (only through the versioned C ABI at runtime)
+    -> LuvLetter.Indexer (only through the versioned Named Pipe protocol at runtime)
+           -> LuvLetter.IndexKernel
 ```
 
 Core targets `net10.0` and does not reference WPF or Windows Forms. WPF page code calls
@@ -24,6 +26,8 @@ Windows implementations through `IApplicationShell`, `IActivationGestureService`
 - `View/Settings`: the settings page, control binding, and keyboard-event capture only.
   Parsing, validation, immutable mapping, apply, persistence, and rollback live in Core.
 - `Platform/Activation`: the low-level Windows keyboard hook and Dispatcher adapter.
+- `Platform/Indexing`: companion-process supervision, the Named Pipe client and protocol
+  validation, default index roots, and Windows file open/reveal behavior.
 - `Platform/Tray`: notification-area UI and settings-view lifetime.
 - `Hosting`: Generic Host registrations and the WPF-specific `IHostLifetime`.
 - `Program`: the STA/single-instance entry point. It builds and starts the Host, delegates
@@ -31,12 +35,15 @@ Windows implementations through `IApplicationShell`, `IActivationGestureService`
 
 ### `src/LuvLetter.Core`
 
-- `Application/ApplicationCoordinator`: the single application `IHostedService`. It applies the
+- `Application/ApplicationCoordinator`: the primary business coordinator. It applies the
   initial configuration, loads built-in and external plugins, synchronizes Quick
   Actions, subscribes runtime events, starts gestures, routes General/Ask/Command input,
   and performs idempotent shutdown. General mode first recognizes registered commands,
   then offers the text to ordered `IGeneralInputMatcher` implementations before falling
   back to an Echo response.
+- `Application/InputCandidateCoordinator`: a separate hosted input pipeline. It consumes
+  only the latest editor revision, combines file and command candidates according to the
+  active mode, owns activation tokens, and rejects stale results before Native display.
 - `Modules/Settings`: one cohesive settings capability containing the public service port,
   editor DTOs, validation/mapping, transactional apply/rollback, and the non-removable
   built-in settings plugin.
@@ -61,17 +68,39 @@ composition and cannot be removed; optional assemblies are discovered from `plug
 - `configuration`: native defaults and defensive ABI validation.
 - `host/NativeShellHost`: the Native UI-thread owner and request serializer.
 - `windows/InputWindow`: input editing, history, IME, animation driving, and rendering.
+- `windows/InputCandidatesWindow`: the non-activating, keyboard-driven candidate list
+  positioned above InputWindow. It stores copied display data and applies only the
+  candidate snapshot matching the current editor revision.
 - `windows/QuickActionsWindow`: top-aligned Quick Action paging, hotkeys, animation,
   geometry, and rendering.
 - `windows/MessageQueueWindow`: a read-only, non-activating bottom-left notification stack.
   It renders up to six compact, independent notification bubbles without taking focus.
 - `rendering`: shared animation and layered-window surface primitives.
 
-The internal Native vocabulary is `QuickActions`. ABI v4 deliberately retains its
+The internal Native vocabulary is `QuickActions`. ABI v5 deliberately retains its
 historic `Feature*` struct names and layouts; those names are compatibility wire
-identifiers, not domain modules. The v4 version gate adds the submitted input mode to
-the callback contract while retaining the message-queue and atomic `HidePopups`
-exports, so a new Managed assembly cannot silently pair with an older DLL.
+identifiers, not domain modules. The v5 version gate adds revisioned input-change and
+candidate-activation callbacks plus atomic candidate snapshots while retaining the
+submitted input mode, message queue, and `HidePopups` exports. A new Managed assembly
+therefore cannot silently pair with an older DLL.
+
+### `src/LuvLetter.IndexKernel`
+
+- A C++20 static library containing the compact immutable filename index.
+- Directory components and file names are stored in continuous tables and a shared
+  UTF-16 string pool instead of one full path allocation per entry.
+- Prefix queries use the sorted filename records and reconstruct full paths only for the
+  bounded result set.
+- The persisted snapshot validates its magic, schema, sizes, references, and ordering
+  before it is accepted.
+
+### `src/LuvLetter.Indexer`
+
+- A hidden, ordinary-user companion process owned by the main application.
+- It connects to a per-run random Named Pipe, exits when the pipe closes or its parent
+  process ends, serves queries from the current immutable snapshot, and rebuilds on a
+  below-normal-priority maintenance thread.
+- It is deliberately not a Windows Service and does not require administrator access.
 
 ## Host lifecycle
 
@@ -83,13 +112,14 @@ while Host shutdown requests WPF dispatcher shutdown. If Host startup fails befo
 dispatcher starts, shutdown completes without waiting for an `Application.Exit` event
 that cannot occur. The Host owns singleton disposal and `IHostedService` start/stop.
 
-`ApplicationCoordinator` is the only hosted business coordinator. Startup order is:
+Hosted services have a fixed dependency order:
 
-1. Apply current InputBox and QuickActions configuration to Native.
-2. Load the mandatory built-in plugins, then discover external plugins from `plugins`.
-3. Synchronize the Quick Action snapshot.
-4. Subscribe command, Native, registry, and gesture events.
-5. Start activation gestures; the lazily created settings window remains closed.
+1. `FileIndexCompanionClient` starts its supervisor in the background; a missing or
+   incompatible companion degrades to no file candidates instead of blocking startup.
+2. `InputCandidateCoordinator` subscribes the revisioned Native input stream.
+3. `ApplicationCoordinator` applies Native configuration, loads built-in and external
+   plugins, synchronizes Quick Actions, subscribes runtime events, and starts activation
+   gestures. The lazily created settings window remains closed.
 
 Plugin and initial-load diagnostics are recoverable warnings. A gesture-hook failure
 opens Settings as a degraded mode. Fatal partial startup executes compensating cleanup.
@@ -141,7 +171,8 @@ ordinary hide path.
 editor semantics: Shift navigation and mouse dragging maintain a visible selection;
 Ctrl navigation moves by word; Ctrl+A/C/X/V use the normal selection and clipboard
 rules; Backspace, Delete, text input, paste, and IME results replace or remove the
-selection first. Up and Down remain reserved for command history.
+selection first. Up and Down navigate candidates when a candidate snapshot is present,
+and otherwise retain command-history navigation.
 The caret timer starts only while InputWindow is both foreground and focused; focus or
 application deactivation stops the timer and removes the caret immediately. Window
 visibility alone is never treated as proof of keyboard ownership.
@@ -171,8 +202,21 @@ Submitted text crosses the Native boundary as an `InputSubmission` containing bo
 text and its mode. `Ask` always produces an Echo response. `Cmd` always uses strict
 command dispatch, including the existing unknown-command diagnostic. `Gen` recognizes
 registered commands first, then invokes `IGeneralInputMatcher` extensions, and finally
-produces Echo when no matcher accepts the text. The matcher boundary is intentionally
-WPF-independent and is reserved for the built-in file-index capability.
+produces Echo when no matcher accepts the text.
+
+Real-time candidate production is separate from final submission. Each actual text or
+mode change increments an editor revision, immediately clears the old Native snapshot,
+and enters a capacity-one latest-wins pipeline. `Gen` queries files first, fills any
+remaining direct-result capacity with command prefixes, then appends the reserved Global
+Search row. `Ask` publishes no candidates. `Cmd` queries commands only. The default
+configuration allows five direct results and one Global Search row, while the limit is
+owned by `InputCandidateOptions` rather than Native rendering code.
+
+A newly published candidate list has no selection. Up or Down creates and moves the
+selection. Enter activates the selection; Shift+Enter reveals a selected file in
+Explorer. A successful file or command activation closes InputWindow, while Enter with
+no selected candidate follows ordinary submission and does not close it. Global Search
+currently reports its reserved status through the message queue and keeps the input open.
 
 The built-in settings plugin is always Quick Action slot 1 and is displayed as
 `Control Center`. Quick Actions exposes the numeric slots 1 through 9. Selecting an
@@ -197,6 +241,24 @@ boundary. Manually hiding the surface therefore pauses rendering, not message li
 
 Writes use a same-directory temporary file, flush it, atomically replace the old file,
 and only then publish the new in-memory snapshot.
+
+## File-index lifecycle and protocol
+
+The default root is the current user profile. The last valid snapshot is loaded from
+`%LocalAppData%\LuvLetter\Index\v1\file-index-v2.bin`, so queries can use the previous
+generation while a startup rebuild runs. A complete low-priority background rescan
+reconciles the index every six hours; the first version intentionally omits MFT/USN
+integration, fuzzy matching, pinyin matching, and privileged services.
+
+The `LLIX` protocol uses a fixed 20-byte little-endian header, UTF-8 length-prefixed
+strings, request IDs, editor revisions, and a 1 MiB payload ceiling. Managed owns the
+single pipe server and starts `LuvLetter.Indexer.exe` with the pipe name, parent process
+ID, and data directory. The pipe is restricted to the current user. Protocol, timeout,
+or process failures invalidate the whole session and trigger bounded background restart;
+the command and Echo paths remain available. A compact status request reports the index
+generation and rebuild state. Session readiness and completed generations requeue the
+latest unchanged editor revision, so a user does not need to type another character
+after the initial background build or a companion restart.
 
 ## Build and tests
 
@@ -250,7 +312,9 @@ Build the complete Debug application, including `LuvLetter.Native.dll`, with:
 & $msbuild LuvLetter.slnx /restore /m /p:Configuration=Debug
 ```
 
-Run it directly from the shared managed/native output directory:
+The full build places `LuvLetter.Native.dll` and `LuvLetter.Indexer.exe` beside the
+application. Run it directly from that shared output directory; the application starts
+and supervises the indexer automatically:
 
 ```powershell
 & .\src\LuvLetter\bin\Debug\net10.0-windows\LuvLetter.exe
@@ -281,9 +345,10 @@ The same managed-only build can be combined with launching the application:
 dotnet run --project src/LuvLetter/LuvLetter.csproj -c Debug -p:SkipNativeBuild=true
 ```
 
-`SkipNativeBuild=true` is not a first-build workaround. Starting the application without
-a current ABI-compatible `LuvLetter.Native.dll` beside the executable fails during Host
-startup.
+`SkipNativeBuild=true` is not a first-build workaround. A managed-only iteration reuses
+both native outputs from the preceding complete build. Starting without a current
+ABI-compatible `LuvLetter.Native.dll` fails Host startup; starting without the matching
+`LuvLetter.Indexer.exe` safely disables file candidates and retries in the background.
 
 Run the Core smoke scenarios with:
 
@@ -296,4 +361,11 @@ Run the Native suite with:
 ```powershell
 & $msbuild tests/LuvLetter.Native.Tests/LuvLetter.Native.Tests.vcxproj /m /p:Configuration=Release /p:Platform=x64
 & .\tests\LuvLetter.Native.Tests\bin\x64\Release\LuvLetter.Native.Tests.exe
+```
+
+Run the C++ index-kernel suite with:
+
+```powershell
+& $msbuild tests/LuvLetter.IndexKernel.Tests/LuvLetter.IndexKernel.Tests.vcxproj /m /p:Configuration=Release /p:Platform=x64
+& .\tests\LuvLetter.IndexKernel.Tests\bin\x64\Release\LuvLetter.IndexKernel.Tests.exe
 ```

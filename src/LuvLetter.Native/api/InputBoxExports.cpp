@@ -110,6 +110,49 @@ int LUVLETTER_NATIVE_CALL ToggleFeatureWindow()
 	catch (...) { return E_FAIL; }
 }
 
+int LUVLETTER_NATIVE_CALL SetInputChangedCallback(
+	LuvLetterInputChangedCallback callback,
+	void* context)
+{
+	try
+	{
+		return NativeShellHost::Instance().SetInputChangedCallback(callback, context);
+	}
+	catch (...)
+	{
+		return E_FAIL;
+	}
+}
+
+int LUVLETTER_NATIVE_CALL SetCandidateActivatedCallback(
+	LuvLetterCandidateActivatedCallback callback,
+	void* context)
+{
+	try
+	{
+		return NativeShellHost::Instance().SetCandidateActivatedCallback(callback, context);
+	}
+	catch (...)
+	{
+		return E_FAIL;
+	}
+}
+
+int LUVLETTER_NATIVE_CALL SetInputCandidates(
+	const LuvLetterInputCandidate* items,
+	int32_t count,
+	uint64_t revision)
+{
+	try
+	{
+		return NativeShellHost::Instance().SetInputCandidates(items, count, revision);
+	}
+	catch (...)
+	{
+		return E_FAIL;
+	}
+}
+
 int LUVLETTER_NATIVE_CALL EnqueueMessage(const wchar_t* text, int32_t length)
 {
 	try { return NativeShellHost::Instance().EnqueueMessage(text, length); }

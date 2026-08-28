@@ -10,6 +10,12 @@ internal interface INativeShellApi
 
     int SetInputSubmittedCallback(NativeInputSubmittedCallback? callback, IntPtr context);
 
+    int SetInputChangedCallback(NativeInputChangedCallback? callback, IntPtr context);
+
+    int SetCandidateActivatedCallback(NativeCandidateActivatedCallback? callback, IntPtr context);
+
+    int SetInputCandidates(NativeInputCandidate[] items, int count, ulong revision);
+
     int ShowInputBox();
 
     int HideInputBox();

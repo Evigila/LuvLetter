@@ -10,6 +10,10 @@ public interface INativeShell
 {
     event Action<InputSubmission>? InputSubmitted;
 
+    event Action<InputChanged>? InputChanged;
+
+    event Action<CandidateActivated>? CandidateActivated;
+
     event Action<string>? QuickActionActivated;
 
     event Action? QuickActionUnavailable;
@@ -19,6 +23,8 @@ public interface INativeShell
         QuickActionsConfiguration quickActionsConfiguration);
 
     void SynchronizeQuickActions(IReadOnlyList<QuickActionSnapshot> quickActions);
+
+    void SetInputCandidates(IReadOnlyList<InputCandidate> candidates, ulong revision);
 
     void ToggleCommandInput();
 

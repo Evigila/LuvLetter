@@ -21,7 +21,11 @@ public:
 	InputWindow(
 		ID2D1Factory* d2dFactory,
 		IDWriteFactory* dwriteFactory,
-		std::function<void(const std::wstring&, int32_t)> submitted);
+		std::function<void(const std::wstring&, int32_t)> submitted,
+		std::function<void(const std::wstring&, int32_t, uint64_t)> changed,
+		std::function<bool(int)> moveCandidateSelection,
+		std::function<bool(int32_t)> activateCandidate,
+		std::function<void()> hideCandidates);
 	~InputWindow() = default;
 	InputWindow(const InputWindow&) = delete;
 	InputWindow& operator=(const InputWindow&) = delete;
@@ -34,6 +38,7 @@ public:
 	void HideImmediately();
 	bool IsVisible() const noexcept { return visible_; }
 	bool HasKeyboardFocus() const noexcept;
+	uint64_t CurrentRevision() const noexcept { return revision_; }
 	void SetPreviousForegroundWindow(HWND window) noexcept { previousForegroundHwnd_ = window; }
 	void RefreshFocusVisuals();
 	HWND WindowHandle() const noexcept { return hwnd_; }
@@ -53,6 +58,7 @@ private:
 	void CompleteHide();
 	void UpdateWindowPosition(bool applyAnimation = true) const;
 	void SetFocusIndicatorTarget(bool focused) noexcept;
+	void PublishInputChanged();
 
 	void Reset();
 	void Submit();
@@ -110,6 +116,7 @@ private:
 	UINT dpi_ = LuvLetterNative::DefaultDpi;
 	bool visible_ = false;
 	bool caretVisible_ = false;
+	uint64_t revision_ = 0;
 	ULONGLONG animationTimestamp_ = 0;
 	bool caretDirtyValid_ = false;
 	RECT caretDirtyRect_{};
@@ -134,6 +141,10 @@ private:
 
 	LuvLetterInputBoxConfig config_{};
 	std::function<void(const std::wstring&, int32_t)> submitted_;
+	std::function<void(const std::wstring&, int32_t, uint64_t)> changed_;
+	std::function<bool(int)> moveCandidateSelection_;
+	std::function<bool(int32_t)> activateCandidate_;
+	std::function<void()> hideCandidates_;
 
 	Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory_;
 	Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;

@@ -1,7 +1,10 @@
 <Solution>
   <Project Path="src/LuvLetter.Core/LuvLetter.Core.csproj" />
+  <Project Path="src/LuvLetter.IndexKernel/LuvLetter.IndexKernel.vcxproj" Id="533d6b2e-e5d0-4158-bf28-5ebc97d9e40c" />
+  <Project Path="src/LuvLetter.Indexer/LuvLetter.Indexer.vcxproj" Id="4c2f1b1f-e0e1-44bf-9215-1d0e19c0ae3f" />
   <Project Path="src/LuvLetter.Native/LuvLetter.Native.vcxproj" Id="dbab9404-5805-db04-b489-7cebc616287a" />
   <Project Path="src/LuvLetter/LuvLetter.csproj" />
   <Project Path="tests/LuvLetter.Core.Tests/LuvLetter.Core.Tests.csproj" />
+  <Project Path="tests/LuvLetter.IndexKernel.Tests/LuvLetter.IndexKernel.Tests.vcxproj" Id="8a0654e5-a20f-45ce-8834-d64e04ffee74" />
   <Project Path="tests/LuvLetter.Native.Tests/LuvLetter.Native.Tests.vcxproj" Id="815538f8-c658-4d11-b4a9-d14cc8629b9e" />
 </Solution>

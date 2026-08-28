@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
+using LuvLetter.Core.Application;
 using LuvLetter.Core.Configuration;
 using LuvLetter.Core.Modules.QuickActions;
 using LuvLetter.Core.Modules.Settings;
@@ -9,6 +10,7 @@ namespace LuvLetter.Core.NativeShell;
 public sealed class NativeShellService : INativeShell, INativeConfigurationSink, IDisposable
 {
     private const int MaximumQuickActionCount = 4096;
+    private const int MaximumCandidateCount = InputCandidateOptions.MaximumCandidateCount;
     private const int MaximumCallbackTextLength = 1_048_576;
     private const int MaximumQuickActionLabelLength = 96;
     private const int MaximumMessageLength = 4096;
@@ -22,8 +24,11 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
     private readonly INativeShellApi nativeApi;
     private readonly QuickActionTokenRegistry quickActionTokenRegistry = new();
     private readonly BoundedCallbackDispatcher<CallbackNotification> notificationDispatcher;
+    private readonly LatestCallbackDispatcher<InputChanged> inputChangedDispatcher;
     private readonly NativeFeatureActivatedCallback quickActionActivatedCallback;
     private readonly NativeInputSubmittedCallback inputSubmittedCallback;
+    private readonly NativeInputChangedCallback inputChangedCallback;
+    private readonly NativeCandidateActivatedCallback candidateActivatedCallback;
     private IReadOnlyDictionary<ulong, string> activeQuickActionIds = EmptyQuickActionMap;
     private int disposed;
 
@@ -38,8 +43,11 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
         this.nativeApi = nativeApi;
         nativeApi.EnsureCompatible();
         notificationDispatcher = new(MaximumPendingNotifications, RaiseNotification);
+        inputChangedDispatcher = new(RaiseInputChanged);
         quickActionActivatedCallback = HandleNativeQuickActionActivated;
         inputSubmittedCallback = HandleNativeInputSubmitted;
+        inputChangedCallback = HandleNativeInputChanged;
+        candidateActivatedCallback = HandleNativeCandidateActivated;
 
         try
         {
@@ -47,17 +55,26 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
                 nativeApi.SetInputSubmittedCallback(inputSubmittedCallback, IntPtr.Zero),
                 "SetInputSubmittedCallback");
             ThrowIfFailed(
+                nativeApi.SetInputChangedCallback(inputChangedCallback, IntPtr.Zero),
+                "SetInputChangedCallback");
+            ThrowIfFailed(
+                nativeApi.SetCandidateActivatedCallback(candidateActivatedCallback, IntPtr.Zero),
+                "SetCandidateActivatedCallback");
+            ThrowIfFailed(
                 nativeApi.SetFeatureActivatedCallback(quickActionActivatedCallback, IntPtr.Zero),
                 "SetFeatureActivatedCallback");
         }
         catch
         {
             notificationDispatcher.Dispose();
+            inputChangedDispatcher.Dispose();
             var callbacksDetached = TryUnregisterCallbacks();
             var shutdownSucceeded = TryShutdown();
             if (!callbacksDetached && !shutdownSucceeded)
             {
                 FailedShutdownCallbackRoots.Add(inputSubmittedCallback);
+                FailedShutdownCallbackRoots.Add(inputChangedCallback);
+                FailedShutdownCallbackRoots.Add(candidateActivatedCallback);
                 FailedShutdownCallbackRoots.Add(quickActionActivatedCallback);
             }
             throw;
@@ -65,6 +82,10 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
     }
 
     public event Action<InputSubmission>? InputSubmitted;
+
+    public event Action<InputChanged>? InputChanged;
+
+    public event Action<CandidateActivated>? CandidateActivated;
 
     public event Action<string>? QuickActionActivated;
 
@@ -160,6 +181,88 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
                     if (nativeItem.Label != IntPtr.Zero)
                     {
                         Marshal.FreeHGlobal(nativeItem.Label);
+                    }
+                }
+            }
+        }
+    }
+
+    public void SetInputCandidates(IReadOnlyList<InputCandidate> candidates, ulong revision)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(candidates);
+        if (candidates.Count > MaximumCandidateCount)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(candidates),
+                $"At most {MaximumCandidateCount} input candidates can be synchronized.");
+        }
+
+        lock (operationSyncRoot)
+        {
+            ThrowIfDisposed();
+            var nativeItems = candidates.Count == 0
+                ? Array.Empty<NativeInputCandidate>()
+                : new NativeInputCandidate[candidates.Count];
+            try
+            {
+                for (var index = 0; index < candidates.Count; index++)
+                {
+                    var candidate = candidates[index];
+                    if (candidate.Token == 0 || !Enum.IsDefined(candidate.Kind))
+                    {
+                        throw new ArgumentException(
+                            "Candidates must have a non-zero token and a defined kind.",
+                            nameof(candidates));
+                    }
+
+                    var primaryText = IntPtr.Zero;
+                    var secondaryText = IntPtr.Zero;
+                    try
+                    {
+                        primaryText = Marshal.StringToHGlobalUni(
+                            candidate.PrimaryText ?? string.Empty);
+                        secondaryText = Marshal.StringToHGlobalUni(
+                            candidate.SecondaryText ?? string.Empty);
+                        nativeItems[index] = new NativeInputCandidate
+                        {
+                            Token = candidate.Token,
+                            Kind = (int)candidate.Kind,
+                            PrimaryText = primaryText,
+                            SecondaryText = secondaryText,
+                        };
+                    }
+                    catch
+                    {
+                        if (primaryText != IntPtr.Zero)
+                        {
+                            Marshal.FreeHGlobal(primaryText);
+                        }
+
+                        if (secondaryText != IntPtr.Zero)
+                        {
+                            Marshal.FreeHGlobal(secondaryText);
+                        }
+                        throw;
+                    }
+                }
+
+                ThrowIfFailed(
+                    nativeApi.SetInputCandidates(nativeItems, nativeItems.Length, revision),
+                    "SetInputCandidates");
+            }
+            finally
+            {
+                foreach (var item in nativeItems)
+                {
+                    if (item.PrimaryText != IntPtr.Zero)
+                    {
+                        Marshal.FreeHGlobal(item.PrimaryText);
+                    }
+
+                    if (item.SecondaryText != IntPtr.Zero)
+                    {
+                        Marshal.FreeHGlobal(item.SecondaryText);
                     }
                 }
             }
@@ -282,6 +385,7 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
 
             Volatile.Write(ref activeQuickActionIds, EmptyQuickActionMap);
             notificationDispatcher.Dispose();
+            inputChangedDispatcher.Dispose();
 
             var callbacksDetached = TryUnregisterCallbacks();
             var shutdownSucceeded = TryShutdown();
@@ -290,6 +394,8 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
                 // A failed detach followed by a failed bounded shutdown could leave Native
                 // holding these function pointers. Root them for the remaining process life.
                 FailedShutdownCallbackRoots.Add(inputSubmittedCallback);
+                FailedShutdownCallbackRoots.Add(inputChangedCallback);
+                FailedShutdownCallbackRoots.Add(candidateActivatedCallback);
                 FailedShutdownCallbackRoots.Add(quickActionActivatedCallback);
             }
         }
@@ -321,6 +427,59 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
                     new InputSubmission(ownedText, (InputMode)inputMode),
                     CallbackNotificationKind.InputSubmitted));
             }
+        }
+        catch
+        {
+            // No managed exception may cross the native callback boundary.
+        }
+    }
+
+    private void HandleNativeInputChanged(
+        IntPtr text,
+        int length,
+        int inputMode,
+        ulong revision,
+        IntPtr context)
+    {
+        _ = context;
+        try
+        {
+            if (Volatile.Read(ref disposed) != 0
+                || length < 0
+                || length > MaximumCallbackTextLength
+                || (length > 0 && text == IntPtr.Zero)
+                || !Enum.IsDefined((InputMode)inputMode))
+            {
+                return;
+            }
+
+            var ownedText = length == 0
+                ? string.Empty
+                : Marshal.PtrToStringUni(text, length) ?? string.Empty;
+            inputChangedDispatcher.TryPublish(
+                new InputChanged(ownedText, (InputMode)inputMode, revision));
+        }
+        catch
+        {
+            // No managed exception may cross the native callback boundary.
+        }
+    }
+
+    private void HandleNativeCandidateActivated(ulong token, int action, IntPtr context)
+    {
+        _ = context;
+        try
+        {
+            if (Volatile.Read(ref disposed) != 0
+                || token == 0
+                || !Enum.IsDefined((CandidateAction)action))
+            {
+                return;
+            }
+
+            QueueNotification(new CallbackNotification(
+                new CandidateActivated(token, (CandidateAction)action),
+                CallbackNotificationKind.CandidateActivated));
         }
         catch
         {
@@ -411,6 +570,28 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
             return;
         }
 
+        if (notification.Kind == CallbackNotificationKind.CandidateActivated)
+        {
+            if (notification.Value is not CandidateActivated activation)
+            {
+                return;
+            }
+
+            foreach (Action<CandidateActivated> handler in CandidateActivated?.GetInvocationList()
+                .Cast<Action<CandidateActivated>>() ?? Array.Empty<Action<CandidateActivated>>())
+            {
+                try
+                {
+                    handler(activation);
+                }
+                catch
+                {
+                    // One consumer cannot terminate delivery to other consumers.
+                }
+            }
+            return;
+        }
+
         if (notification.Value is not string value)
         {
             return;
@@ -430,12 +611,51 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
         }
     }
 
+    private void RaiseInputChanged(InputChanged change)
+    {
+        if (Volatile.Read(ref disposed) != 0)
+        {
+            return;
+        }
+
+        foreach (Action<InputChanged> handler in InputChanged?.GetInvocationList()
+            .Cast<Action<InputChanged>>() ?? Array.Empty<Action<InputChanged>>())
+        {
+            try
+            {
+                handler(change);
+            }
+            catch
+            {
+                // One consumer cannot terminate delivery to other consumers.
+            }
+        }
+    }
+
     private bool TryUnregisterCallbacks()
     {
         var succeeded = true;
         try
         {
             succeeded &= nativeApi.SetInputSubmittedCallback(null, IntPtr.Zero) >= 0;
+        }
+        catch
+        {
+            succeeded = false;
+        }
+
+        try
+        {
+            succeeded &= nativeApi.SetInputChangedCallback(null, IntPtr.Zero) >= 0;
+        }
+        catch
+        {
+            succeeded = false;
+        }
+
+        try
+        {
+            succeeded &= nativeApi.SetCandidateActivatedCallback(null, IntPtr.Zero) >= 0;
         }
         catch
         {
@@ -500,6 +720,7 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
     private enum CallbackNotificationKind
     {
         InputSubmitted,
+        CandidateActivated,
         QuickActionActivated,
         QuickActionUnavailable,
     }

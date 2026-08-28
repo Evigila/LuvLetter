@@ -12,6 +12,7 @@
 #include <string>
 
 class InputWindow;
+class InputCandidatesWindow;
 class MessageQueueWindow;
 class QuickActionsWindow;
 
@@ -22,6 +23,14 @@ public:
 
 	HRESULT ApplyConfig(const LuvLetterInputBoxConfig& config);
 	HRESULT SetInputSubmittedCallback(LuvLetterInputSubmittedCallback callback, void* context);
+	HRESULT SetInputChangedCallback(LuvLetterInputChangedCallback callback, void* context);
+	HRESULT SetCandidateActivatedCallback(
+		LuvLetterCandidateActivatedCallback callback,
+		void* context);
+	HRESULT SetInputCandidates(
+		const LuvLetterInputCandidate* items,
+		int32_t count,
+		uint64_t revision);
 	HRESULT Show();
 	HRESULT Hide();
 	HRESULT Toggle();
@@ -43,6 +52,7 @@ private:
 	enum class WindowKind : uint8_t
 	{
 		Input,
+		InputCandidates,
 		QuickActions,
 		MessageQueue,
 	};
@@ -74,6 +84,11 @@ private:
 	void CapturePreviousForegroundWindow() noexcept;
 	bool TryActivateInteractiveWindow(HWND target, HWND previousForeground) noexcept;
 	void OnInputSubmitted(const std::wstring& text, int32_t inputMode) noexcept;
+	void OnInputChanged(
+		const std::wstring& text,
+		int32_t inputMode,
+		uint64_t revision) noexcept;
+	void OnCandidateActivated(uint64_t token, int32_t action) noexcept;
 	void OnQuickActionActivated(uint64_t token) noexcept;
 	LRESULT DispatchWindowMessage(
 		WindowKind kind,
@@ -94,16 +109,22 @@ private:
 	bool stopping_ = false;
 
 	WindowContext inputWindowContext_{ this, WindowKind::Input };
+	WindowContext inputCandidatesWindowContext_{ this, WindowKind::InputCandidates };
 	WindowContext quickActionsWindowContext_{ this, WindowKind::QuickActions };
 	WindowContext messageQueueWindowContext_{ this, WindowKind::MessageQueue };
 	Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory_;
 	Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;
 	std::unique_ptr<InputWindow> inputWindow_;
+	std::unique_ptr<InputCandidatesWindow> inputCandidatesWindow_;
 	std::unique_ptr<QuickActionsWindow> quickActionsWindow_;
 	std::unique_ptr<MessageQueueWindow> messageQueueWindow_;
 	HWND previousForegroundHwnd_ = nullptr;
 	LuvLetterInputSubmittedCallback inputSubmittedCallback_ = nullptr;
 	void* inputSubmittedContext_ = nullptr;
+	LuvLetterInputChangedCallback inputChangedCallback_ = nullptr;
+	void* inputChangedContext_ = nullptr;
+	LuvLetterCandidateActivatedCallback candidateActivatedCallback_ = nullptr;
+	void* candidateActivatedContext_ = nullptr;
 	LuvLetterFeatureActivatedCallback quickActionActivatedCallback_ = nullptr;
 	void* quickActionActivatedContext_ = nullptr;
 };

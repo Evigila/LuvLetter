@@ -12,13 +12,26 @@
 
 extern "C"
 {
-	inline constexpr uint32_t LUVLETTER_NATIVE_ABI_VERSION = 4;
+	inline constexpr uint32_t LUVLETTER_NATIVE_ABI_VERSION = 5;
 
 	enum LuvLetterInputMode : int32_t
 	{
 		LuvLetterInputModeGeneral = 0,
 		LuvLetterInputModeAsk = 1,
 		LuvLetterInputModeCommand = 2,
+	};
+
+	enum LuvLetterCandidateKind : int32_t
+	{
+		LuvLetterCandidateKindFile = 1,
+		LuvLetterCandidateKindCommand = 2,
+		LuvLetterCandidateKindGlobalSearch = 3,
+	};
+
+	enum LuvLetterCandidateAction : int32_t
+	{
+		LuvLetterCandidateActionOpen = 0,
+		LuvLetterCandidateActionReveal = 1,
 	};
 
 	struct LuvLetterInputBoxConfig
@@ -83,6 +96,14 @@ extern "C"
 		const wchar_t* label;
 	};
 
+	struct LuvLetterInputCandidate
+	{
+		uint64_t token;
+		int32_t kind;
+		const wchar_t* primaryText;
+		const wchar_t* secondaryText;
+	};
+
 	using LuvLetterFeatureActivatedCallback = void (LUVLETTER_NATIVE_CALL*)(
 		uint64_t token,
 		void* context);
@@ -91,6 +112,16 @@ extern "C"
 		int32_t length,
 		int32_t inputMode,
 		void* context);
+	using LuvLetterInputChangedCallback = void (LUVLETTER_NATIVE_CALL*)(
+		const wchar_t* text,
+		int32_t length,
+		int32_t inputMode,
+		uint64_t revision,
+		void* context);
+	using LuvLetterCandidateActivatedCallback = void (LUVLETTER_NATIVE_CALL*)(
+		uint64_t token,
+		int32_t action,
+		void* context);
 
 	LUVLETTER_NATIVE_EXPORT uint32_t LUVLETTER_NATIVE_CALL GetNativeApiVersion();
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ApplyInputBoxConfig(
@@ -98,6 +129,16 @@ extern "C"
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL SetInputSubmittedCallback(
 		LuvLetterInputSubmittedCallback callback,
 		void* context);
+	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL SetInputChangedCallback(
+		LuvLetterInputChangedCallback callback,
+		void* context);
+	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL SetCandidateActivatedCallback(
+		LuvLetterCandidateActivatedCallback callback,
+		void* context);
+	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL SetInputCandidates(
+		const LuvLetterInputCandidate* items,
+		int32_t count,
+		uint64_t revision);
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ShowInputBox();
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL HideInputBox();
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ToggleInputBox();
@@ -126,3 +167,4 @@ extern "C"
 static_assert(sizeof(LuvLetterInputBoxConfig) == 104);
 static_assert(sizeof(LuvLetterFeatureWindowConfig) == 88);
 static_assert(sizeof(LuvLetterFeatureItem) == 16);
+static_assert(sizeof(LuvLetterInputCandidate) == 32);

@@ -20,6 +20,7 @@ internal static partial class Program
         ("Settings editor mapping", TestSettingsEditorMapping),
         ("Application coordinator lifecycle", TestApplicationCoordinatorLifecycle),
         ("Input mode routing", TestInputModeRouting),
+        ("Input candidate routing and activation", TestInputCandidates),
         ("Plugin loading and registration isolation", TestPluginLoader),
         ("Configuration store round-trip and migration", TestConfigurationStore),
     ];

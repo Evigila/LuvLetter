@@ -67,6 +67,15 @@ internal struct NativeFeatureItem
     public IntPtr Label;
 }
 
+[StructLayout(LayoutKind.Sequential)]
+internal struct NativeInputCandidate
+{
+    public ulong Token;
+    public int Kind;
+    public IntPtr PrimaryText;
+    public IntPtr SecondaryText;
+}
+
 [UnmanagedFunctionPointer(CallingConvention.StdCall)]
 internal delegate void NativeFeatureActivatedCallback(ulong token, IntPtr context);
 
@@ -77,9 +86,23 @@ internal delegate void NativeInputSubmittedCallback(
     int inputMode,
     IntPtr context);
 
+[UnmanagedFunctionPointer(CallingConvention.StdCall)]
+internal delegate void NativeInputChangedCallback(
+    IntPtr text,
+    int length,
+    int inputMode,
+    ulong revision,
+    IntPtr context);
+
+[UnmanagedFunctionPointer(CallingConvention.StdCall)]
+internal delegate void NativeCandidateActivatedCallback(
+    ulong token,
+    int action,
+    IntPtr context);
+
 internal sealed class NativeShellApi : INativeShellApi
 {
-    private const uint CurrentAbiVersion = 4;
+    private const uint CurrentAbiVersion = 5;
 
     internal static INativeShellApi Instance { get; } = new NativeShellApi();
 
@@ -113,6 +136,34 @@ internal sealed class NativeShellApi : INativeShellApi
         internal static extern int SetInputSubmittedCallback(
             NativeInputSubmittedCallback? callback,
             IntPtr context);
+
+        [DllImport(
+            "LuvLetter.Native.dll",
+            EntryPoint = "SetInputChangedCallback",
+            ExactSpelling = true,
+            CallingConvention = CallingConvention.StdCall)]
+        internal static extern int SetInputChangedCallback(
+            NativeInputChangedCallback? callback,
+            IntPtr context);
+
+        [DllImport(
+            "LuvLetter.Native.dll",
+            EntryPoint = "SetCandidateActivatedCallback",
+            ExactSpelling = true,
+            CallingConvention = CallingConvention.StdCall)]
+        internal static extern int SetCandidateActivatedCallback(
+            NativeCandidateActivatedCallback? callback,
+            IntPtr context);
+
+        [DllImport(
+            "LuvLetter.Native.dll",
+            EntryPoint = "SetInputCandidates",
+            ExactSpelling = true,
+            CallingConvention = CallingConvention.StdCall)]
+        internal static extern int SetInputCandidates(
+            [In] NativeInputCandidate[] items,
+            int count,
+            ulong revision);
 
         [DllImport(
             "LuvLetter.Native.dll",
@@ -228,6 +279,22 @@ internal sealed class NativeShellApi : INativeShellApi
         IntPtr context) =>
         NativeMethods.SetInputSubmittedCallback(callback, context);
 
+    public int SetInputChangedCallback(
+        NativeInputChangedCallback? callback,
+        IntPtr context) =>
+        NativeMethods.SetInputChangedCallback(callback, context);
+
+    public int SetCandidateActivatedCallback(
+        NativeCandidateActivatedCallback? callback,
+        IntPtr context) =>
+        NativeMethods.SetCandidateActivatedCallback(callback, context);
+
+    public int SetInputCandidates(
+        NativeInputCandidate[] items,
+        int count,
+        ulong revision) =>
+        NativeMethods.SetInputCandidates(items, count, revision);
+
     public int ShowInputBox() => NativeMethods.ShowInputBox();
 
     public int HideInputBox() => NativeMethods.HideInputBox();
@@ -274,6 +341,7 @@ internal sealed class NativeShellApi : INativeShellApi
         EnsureSize<NativeInputBoxConfig>(104);
         EnsureSize<NativeFeatureWindowConfig>(88);
         EnsureSize<NativeFeatureItem>(16);
+        EnsureSize<NativeInputCandidate>(32);
     }
 
     private static void EnsureSize<T>(int expected)
