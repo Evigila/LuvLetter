@@ -36,6 +36,12 @@ internal interface INativeShellApi
 
     int EnqueueMessage(string text, int length);
 
+    int BeginMessageActivity(ulong token, string text, int length);
+
+    int UpdateMessageActivity(ulong token, string text, int length);
+
+    int CompleteMessageActivity(ulong token, string? finalText, int length);
+
     int ToggleMessageQueue();
 
     int HideMessageQueue();

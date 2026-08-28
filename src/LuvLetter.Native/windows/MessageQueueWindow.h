@@ -1,13 +1,13 @@
 #pragma once
 
 #include "rendering/LayeredWindowSurface.h"
+#include "windows/MessageQueueEntry.h"
 
 #include <Windows.h>
 #include <d2d1.h>
 #include <dwrite.h>
 #include <wrl/client.h>
 
-#include <chrono>
 #include <deque>
 #include <memory>
 #include <string>
@@ -21,7 +21,14 @@ public:
 	MessageQueueWindow& operator=(const MessageQueueWindow&) = delete;
 
 	HRESULT Attach(HWND window);
-	void Enqueue(std::wstring message, HMONITOR targetMonitor);
+	HRESULT Enqueue(std::wstring message, HMONITOR targetMonitor);
+	HRESULT BeginActivity(uint64_t token, std::wstring message, HMONITOR targetMonitor);
+	HRESULT UpdateActivity(uint64_t token, std::wstring message);
+	HRESULT CompleteActivity(
+		uint64_t token,
+		std::wstring finalMessage,
+		bool retainFinalMessage,
+		HMONITOR targetMonitor);
 	void Show(HMONITOR targetMonitor);
 	void Hide() noexcept;
 	void Toggle(HMONITOR targetMonitor);
@@ -33,14 +40,7 @@ public:
 	LRESULT HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 
 private:
-	using Clock = std::chrono::steady_clock;
-
-	struct QueuedMessage final
-	{
-		std::wstring text;
-		Clock::time_point createdAt;
-		Clock::time_point expiresAt;
-	};
+	using Clock = LuvLetterNative::MessageQueueClock;
 
 	static constexpr size_t MaximumMessageCount = 6;
 	static constexpr size_t MaximumMessageLength = 4096;
@@ -55,6 +55,7 @@ private:
 	float WindowHeightDip() const noexcept;
 	size_t VisibleMessageCount() const noexcept;
 	bool RemoveCompletedMessages(Clock::time_point now);
+	bool MakeRoomForMessage() noexcept;
 	void ScheduleMessageTimer(Clock::time_point now) noexcept;
 	void StopMessageTimer() noexcept;
 	void Render(Clock::time_point now);
@@ -66,7 +67,7 @@ private:
 	bool visible_ = false;
 	bool updatingGeometry_ = false;
 	bool messageTimerActive_ = false;
-	std::deque<QueuedMessage> messages_;
+	std::deque<LuvLetterNative::MessageQueueEntry> messages_;
 
 	Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory_;
 	Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;

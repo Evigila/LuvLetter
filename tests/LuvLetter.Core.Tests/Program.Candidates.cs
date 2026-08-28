@@ -38,6 +38,9 @@ internal static partial class Program
                 new(3, FileSystemEntryKind.File, "banner.PNG", @"C:\images\banner.PNG"),
                 new(4, FileSystemEntryKind.File, "bundle.zip", @"C:\packages\bundle.zip"),
             ]));
+        fileIndex.SetState(new FileIndexRuntimeState(
+            FileIndexRuntimeActivity.InitialBuild,
+            0));
 
         using var coordinator = new InputCandidateCoordinator(
             nativeShell,
@@ -48,6 +51,31 @@ internal static partial class Program
         await coordinator.StartAsync(CancellationToken.None);
         try
         {
+            Assert.SequenceEqual(
+                ["正在生成索引表"],
+                nativeShell.BegunMessageActivities);
+
+            fileIndex.SetState(new FileIndexRuntimeState(
+                FileIndexRuntimeActivity.Updating,
+                1));
+            Assert.SequenceEqual(
+                ["正在更新索引"],
+                nativeShell.UpdatedMessageActivities);
+
+            fileIndex.SetState(new FileIndexRuntimeState(
+                FileIndexRuntimeActivity.Ready,
+                2));
+            Assert.SequenceEqual(
+                ["索引已就绪"],
+                nativeShell.CompletedMessageActivities);
+            fileIndex.SetState(new FileIndexRuntimeState(
+                FileIndexRuntimeActivity.Ready,
+                3));
+            Assert.Equal(
+                1,
+                nativeShell.CompletedMessageActivities.Count,
+                "A stable generation change must not repeat the ready message.");
+
             nativeShell.RaiseInputChanged("b", InputMode.General, revision: 1);
             Assert.True(
                 SpinWait.SpinUntil(

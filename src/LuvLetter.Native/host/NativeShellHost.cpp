@@ -54,6 +54,9 @@ namespace
 		HideQuickActions,
 		ToggleQuickActions,
 		EnqueueMessage,
+		BeginMessageActivity,
+		UpdateMessageActivity,
+		CompleteMessageActivity,
 		ToggleMessageQueue,
 		HideMessageQueue,
 		HidePopups,
@@ -132,6 +135,8 @@ struct NativeShellHost::HostRequest
 	std::vector<QuickActionItem> quickActions;
 	std::vector<InputCandidateItem> inputCandidates;
 	std::wstring message;
+	uint64_t messageActivityToken = 0;
+	bool retainFinalMessage = false;
 	uint64_t revision = 0;
 	LuvLetterInputSubmittedCallback inputCallback = nullptr;
 	LuvLetterInputChangedCallback inputChangedCallback = nullptr;
@@ -295,6 +300,88 @@ HRESULT NativeShellHost::EnqueueMessage(const wchar_t* text, int32_t length)
 	try
 	{
 		request->message.assign(text, static_cast<size_t>(length));
+	}
+	catch (...)
+	{
+		request->Release();
+		return E_OUTOFMEMORY;
+	}
+	return DispatchRequest(request, true);
+}
+
+HRESULT NativeShellHost::BeginMessageActivity(
+	uint64_t token,
+	const wchar_t* text,
+	int32_t length)
+{
+	if (token == 0 || text == nullptr || length <= 0 || length > MaxMessageLength)
+	{
+		return E_INVALIDARG;
+	}
+
+	auto* request = new (std::nothrow) HostRequest(RequestKind::BeginMessageActivity, true);
+	if (request == nullptr) return E_OUTOFMEMORY;
+	request->messageActivityToken = token;
+	try
+	{
+		request->message.assign(text, static_cast<size_t>(length));
+	}
+	catch (...)
+	{
+		request->Release();
+		return E_OUTOFMEMORY;
+	}
+	return DispatchRequest(request, true);
+}
+
+HRESULT NativeShellHost::UpdateMessageActivity(
+	uint64_t token,
+	const wchar_t* text,
+	int32_t length)
+{
+	if (token == 0 || text == nullptr || length <= 0 || length > MaxMessageLength)
+	{
+		return E_INVALIDARG;
+	}
+
+	auto* request = new (std::nothrow) HostRequest(RequestKind::UpdateMessageActivity, true);
+	if (request == nullptr) return E_OUTOFMEMORY;
+	request->messageActivityToken = token;
+	try
+	{
+		request->message.assign(text, static_cast<size_t>(length));
+	}
+	catch (...)
+	{
+		request->Release();
+		return E_OUTOFMEMORY;
+	}
+	return DispatchRequest(request, true);
+}
+
+HRESULT NativeShellHost::CompleteMessageActivity(
+	uint64_t token,
+	const wchar_t* finalText,
+	int32_t length)
+{
+	if (token == 0
+		|| length < 0
+		|| length > MaxMessageLength
+		|| (length > 0 && finalText == nullptr))
+	{
+		return E_INVALIDARG;
+	}
+
+	auto* request = new (std::nothrow) HostRequest(RequestKind::CompleteMessageActivity, true);
+	if (request == nullptr) return E_OUTOFMEMORY;
+	request->messageActivityToken = token;
+	request->retainFinalMessage = length > 0;
+	try
+	{
+		if (length > 0)
+		{
+			request->message.assign(finalText, static_cast<size_t>(length));
+		}
 	}
 	catch (...)
 	{
@@ -771,10 +858,24 @@ HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 		}
 		return S_OK;
 	case RequestKind::EnqueueMessage:
-		messageQueueWindow_->Enqueue(
+		return messageQueueWindow_->Enqueue(
 			std::move(request.message),
 			CaptureTargetMonitor());
-		return S_OK;
+	case RequestKind::BeginMessageActivity:
+		return messageQueueWindow_->BeginActivity(
+			request.messageActivityToken,
+			std::move(request.message),
+			CaptureTargetMonitor());
+	case RequestKind::UpdateMessageActivity:
+		return messageQueueWindow_->UpdateActivity(
+			request.messageActivityToken,
+			std::move(request.message));
+	case RequestKind::CompleteMessageActivity:
+		return messageQueueWindow_->CompleteActivity(
+			request.messageActivityToken,
+			std::move(request.message),
+			request.retainFinalMessage,
+			CaptureTargetMonitor());
 	case RequestKind::ToggleMessageQueue:
 		messageQueueWindow_->Toggle(CaptureTargetMonitor());
 		return S_OK;

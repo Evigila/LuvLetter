@@ -16,10 +16,13 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IHostedServic
     private static readonly TimeSpan StablePollInterval = TimeSpan.FromMilliseconds(250);
 
     private readonly FileIndexClientOptions options;
+    private readonly object sessionStateLock = new();
     private CancellationTokenSource? lifetimeCancellation;
     private Task? supervisorTask;
     private Session? currentSession;
+    private FileIndexRuntimeState currentState = FileIndexRuntimeState.Unavailable;
     private long nextRequestId;
+    private long currentSessionEpoch;
     private int started;
     private int disposed;
 
@@ -31,6 +34,10 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IHostedServic
     }
 
     public event Action? IndexChanged;
+
+    public event Action<FileIndexRuntimeState>? StateChanged;
+
+    public FileIndexRuntimeState CurrentState => Volatile.Read(ref currentState);
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -113,14 +120,19 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IHostedServic
         while (!cancellationToken.IsCancellationRequested)
         {
             Session? session = null;
+            long sessionEpoch = 0;
             try
             {
                 session = await StartSessionAsync(cancellationToken).ConfigureAwait(false);
-                Volatile.Write(ref currentSession, session);
+                lock (sessionStateLock)
+                {
+                    sessionEpoch = ++currentSessionEpoch;
+                    Volatile.Write(ref currentSession, session);
+                }
                 RaiseIndexChanged();
 
                 var cancellationTask = Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
-                var statusTask = PollStatusAsync(session, cancellationToken);
+                var statusTask = PollStatusAsync(session, sessionEpoch, cancellationToken);
                 await Task.WhenAny(
                     session.Process.WaitForExitAsync(),
                     session.Faulted,
@@ -138,7 +150,16 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IHostedServic
             {
                 if (session is not null)
                 {
-                    Interlocked.CompareExchange(ref currentSession, null, session);
+                    lock (sessionStateLock)
+                    {
+                        if (ReferenceEquals(currentSession, session)
+                            && currentSessionEpoch == sessionEpoch)
+                        {
+                            Volatile.Write(ref currentSession, null);
+                            ++currentSessionEpoch;
+                            PublishState(FileIndexRuntimeState.Unavailable);
+                        }
+                    }
                     await session.StopAsync(cancellationToken.IsCancellationRequested)
                         .ConfigureAwait(false);
                 }
@@ -232,7 +253,10 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IHostedServic
     private ulong NextRequestId() =>
         unchecked((ulong)Interlocked.Increment(ref nextRequestId));
 
-    private async Task PollStatusAsync(Session session, CancellationToken cancellationToken)
+    private async Task PollStatusAsync(
+        Session session,
+        long sessionEpoch,
+        CancellationToken cancellationToken)
     {
         using var pollingCancellation = CancellationTokenSource.CreateLinkedTokenSource(
             cancellationToken,
@@ -249,6 +273,26 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IHostedServic
                 if (status is null)
                 {
                     return;
+                }
+
+                var nextState = new FileIndexRuntimeState(
+                    status.Value.Activity switch
+                    {
+                        FileIndexActivity.Ready => FileIndexRuntimeActivity.Ready,
+                        FileIndexActivity.InitialBuild => FileIndexRuntimeActivity.InitialBuild,
+                        FileIndexActivity.Updating => FileIndexRuntimeActivity.Updating,
+                        _ => FileIndexRuntimeActivity.Unavailable,
+                    },
+                    status.Value.IndexGeneration);
+                lock (sessionStateLock)
+                {
+                    if (!ReferenceEquals(currentSession, session)
+                        || currentSessionEpoch != sessionEpoch)
+                    {
+                        return;
+                    }
+
+                    PublishState(nextState);
                 }
 
                 if ((previous is null && !status.Value.Rebuilding)
@@ -279,6 +323,29 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IHostedServic
             try
             {
                 handler();
+            }
+            catch
+            {
+                // One observer cannot terminate companion supervision.
+            }
+        }
+    }
+
+    private void PublishState(FileIndexRuntimeState next)
+    {
+        var previous = Interlocked.Exchange(ref currentState, next);
+        if (previous == next)
+        {
+            return;
+        }
+
+        foreach (Action<FileIndexRuntimeState> handler in
+            StateChanged?.GetInvocationList().Cast<Action<FileIndexRuntimeState>>()
+                ?? Array.Empty<Action<FileIndexRuntimeState>>())
+        {
+            try
+            {
+                handler(next);
             }
             catch
             {

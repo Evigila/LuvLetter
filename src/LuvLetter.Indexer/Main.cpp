@@ -249,9 +249,12 @@ public:
 
             const std::uint64_t currentStatus = status_.load(std::memory_order_relaxed);
             const std::uint64_t generation = hasCompatibleSnapshot
-                ? (std::max)(1ULL, currentStatus >> 1U)
-                : currentStatus >> 1U;
-            status_.store((generation << 1U) | 1ULL, std::memory_order_release);
+                ? (std::max)(1ULL, currentStatus >> kActivityBits)
+                : currentStatus >> kActivityBits;
+            const auto activity = hasCompatibleSnapshot
+                ? protocol::IndexActivity::Updating
+                : protocol::IndexActivity::InitialBuild;
+            status_.store(PackStatus(generation, activity), std::memory_order_release);
             roots_ = std::move(roots);
             hasConfiguration_ = true;
             ++configurationGeneration_;
@@ -283,16 +286,37 @@ public:
 
     [[nodiscard]] protocol::IndexStatus Status() const noexcept {
         const std::uint64_t state = status_.load(std::memory_order_acquire);
-        return protocol::IndexStatus{state >> 1U, (state & 1U) != 0};
+        return protocol::IndexStatus{
+            state >> kActivityBits,
+            static_cast<protocol::IndexActivity>(state & kActivityMask)};
     }
 
 private:
+    static constexpr unsigned kActivityBits = 2;
+    static constexpr std::uint64_t kActivityMask = (1ULL << kActivityBits) - 1ULL;
+
+    [[nodiscard]] static constexpr std::uint64_t PackStatus(
+        const std::uint64_t generation,
+        const protocol::IndexActivity activity) noexcept {
+        return (generation << kActivityBits) | static_cast<std::uint64_t>(activity);
+    }
+
+    void SetActivity(const protocol::IndexActivity activity) noexcept {
+        std::uint64_t current = status_.load(std::memory_order_acquire);
+        while (!status_.compare_exchange_weak(
+            current,
+            (current & ~kActivityMask) | static_cast<std::uint64_t>(activity),
+            std::memory_order_release,
+            std::memory_order_acquire)) {
+        }
+    }
+
     void ApplyFileSystemChanges(
         std::vector<luvletter::indexer::FileSystemChange> changes,
         const bool uncertain) {
         const bool deltaLimitReached = delta_.Apply(changes);
         if (!changes.empty()) {
-            status_.fetch_add(2ULL, std::memory_order_acq_rel);
+            status_.fetch_add(1ULL << kActivityBits, std::memory_order_acq_rel);
         }
         if (!uncertain && !deltaLimitReached) {
             return;
@@ -303,7 +327,10 @@ private:
             if (stopping_ || !hasConfiguration_) {
                 return;
             }
-            status_.fetch_or(1ULL, std::memory_order_release);
+            const auto current = Status();
+            SetActivity(current.activity == protocol::IndexActivity::InitialBuild
+                ? protocol::IndexActivity::InitialBuild
+                : protocol::IndexActivity::Updating);
             ++configurationGeneration_;
             cancelBuild_.store(true, std::memory_order_relaxed);
         }
@@ -349,7 +376,9 @@ private:
                 std::uint64_t currentStatus = status_.load(std::memory_order_acquire);
                 while (!status_.compare_exchange_weak(
                     currentStatus,
-                    ((currentStatus >> 1U) + 1U) << 1U,
+                    PackStatus(
+                        (currentStatus >> kActivityBits) + 1U,
+                        protocol::IndexActivity::Ready),
                     std::memory_order_release,
                     std::memory_order_acquire)) {
                 }
@@ -370,7 +399,7 @@ private:
                     kRefreshInterval,
                     [this, generation] { return stopping_ || configurationGeneration_ != generation; });
                 if (!reconfigured && !stopping_) {
-                    status_.fetch_or(1ULL, std::memory_order_release);
+                    SetActivity(protocol::IndexActivity::Updating);
                     ++configurationGeneration_;
                 }
             }

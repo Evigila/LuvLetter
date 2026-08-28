@@ -23,12 +23,22 @@ internal readonly record struct FileIndexFrame(
 
 internal readonly record struct FileIndexStatus(
     ulong IndexGeneration,
-    bool Rebuilding);
+    FileIndexActivity Activity)
+{
+    internal bool Rebuilding => Activity != FileIndexActivity.Ready;
+}
+
+internal enum FileIndexActivity : byte
+{
+    Ready = 0,
+    InitialBuild = 1,
+    Updating = 2,
+}
 
 internal static class FileIndexProtocol
 {
     internal const uint Magic = 0x58494C4C;
-    internal const ushort MajorVersion = 2;
+    internal const ushort MajorVersion = 3;
     internal const int HeaderSize = 20;
     internal const int MaximumPayloadLength = 1024 * 1024;
 
@@ -171,13 +181,13 @@ internal static class FileIndexProtocol
         }
 
         var generation = BinaryPrimitives.ReadUInt64LittleEndian(payload.AsSpan(0, 8));
-        var rebuilding = payload[8];
-        if (rebuilding > 1)
+        var activity = payload[8];
+        if (activity > (byte)FileIndexActivity.Updating)
         {
-            throw new InvalidDataException("The file-index rebuilding flag is invalid.");
+            throw new InvalidDataException("The file-index activity value is invalid.");
         }
 
-        return new FileIndexStatus(generation, rebuilding != 0);
+        return new FileIndexStatus(generation, (FileIndexActivity)activity);
     }
 
     private static byte[] FinishPayload(MemoryStream stream)

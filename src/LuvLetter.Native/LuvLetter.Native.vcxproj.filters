@@ -68,6 +68,9 @@
     <ClInclude Include="windows\MessageQueueWindow.h">
       <Filter>Header Files\windows</Filter>
     </ClInclude>
+    <ClInclude Include="windows\MessageQueueEntry.h">
+      <Filter>Header Files\windows</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="api\InputBoxExports.cpp">

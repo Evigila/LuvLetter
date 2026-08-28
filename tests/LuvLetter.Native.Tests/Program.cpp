@@ -1,6 +1,7 @@
 #include "api/InputBoxApi.h"
 #include "rendering/InputBoxAnimator.h"
 #include "windows/InputCandidateState.h"
+#include "windows/MessageQueueEntry.h"
 
 #include <cmath>
 #include <functional>
@@ -81,7 +82,7 @@ namespace
 
 	void TestAbiContract()
 	{
-		Assert(LUVLETTER_NATIVE_ABI_VERSION == 6, "Native ABI must expose candidate icons.");
+		Assert(LUVLETTER_NATIVE_ABI_VERSION == 7, "Native ABI must expose message activities.");
 		Assert(sizeof(LuvLetterInputBoxConfig) == 104, "Input config ABI size changed unexpectedly.");
 		Assert(sizeof(LuvLetterFeatureWindowConfig) == 88, "Quick Actions config ABI size changed unexpectedly.");
 		Assert(sizeof(LuvLetterFeatureItem) == 16, "Quick Action item ABI size changed unexpectedly.");
@@ -95,6 +96,61 @@ namespace
 		Assert(LuvLetterCandidateIconKindFolder == 2, "Folder icon kind changed unexpectedly.");
 		Assert(LuvLetterCandidateIconKindImage == 3, "Image icon kind changed unexpectedly.");
 		Assert(LuvLetterCandidateIconKindSearch == 10, "Search icon kind changed unexpectedly.");
+	}
+
+	void TestMessageActivityTimeline()
+	{
+		using namespace LuvLetterNative;
+		const auto started = MessageQueueClock::time_point{};
+		MessageQueueEntry activity{
+			91,
+			L"Indexing",
+			started,
+			(MessageQueueClock::time_point::max)(),
+			true,
+		};
+		Assert(activity.IsActiveActivity(), "A loading token must be an active message activity.");
+		Assert(!activity.HasFiniteLifetime(), "An active message activity must not expire after five seconds.");
+		Assert(!activity.IsRemovalDue(started + std::chrono::hours(24)),
+			"An active message activity must remain after an arbitrarily long operation.");
+
+		const auto originalCreatedAt = activity.createdAt;
+		activity.Update(L"Indexed 10 files");
+		Assert(activity.text == L"Indexed 10 files", "Activity updates must replace text in place.");
+		Assert(activity.createdAt == originalCreatedAt, "Activity updates must not restart spinner or entrance time.");
+
+		AssertNear(0.0, CalculateMessageSpinnerRadians(started, started),
+			"Spinner must begin at zero radians.");
+		AssertNear(3.14159265358979323846,
+			CalculateMessageSpinnerRadians(started, started + std::chrono::milliseconds(400)),
+			"Spinner must reach half a turn at half its period.");
+		AssertNear(0.0,
+			CalculateMessageSpinnerRadians(started, started + std::chrono::milliseconds(800)),
+			"Spinner phase must wrap after one period.");
+
+		const auto completedAt = started + std::chrono::seconds(10);
+		activity.Complete(L"Index ready", true, completedAt);
+		Assert(!activity.IsActiveActivity(), "Completing an activity must stop its spinner.");
+		Assert(activity.text == L"Index ready", "Completion must retain the supplied final text.");
+		Assert(activity.expiresAt == completedAt + MessageLifetime,
+			"A final activity message must use the ordinary five-second lifetime.");
+		Assert(!activity.IsRemovalDue(activity.expiresAt + MessageHideDuration - std::chrono::milliseconds(1)),
+			"A completed activity must remain through its exit animation.");
+		Assert(activity.IsRemovalDue(activity.expiresAt + MessageHideDuration),
+			"A completed activity must be removable at the exit endpoint.");
+
+		MessageQueueEntry dismissed{
+			92,
+			L"Waiting",
+			started,
+			(MessageQueueClock::time_point::max)(),
+			true,
+		};
+		dismissed.Complete({}, false, completedAt);
+		Assert(dismissed.expiresAt == completedAt,
+			"Completion without final text must begin the exit immediately.");
+		Assert(dismissed.IsRemovalDue(completedAt + MessageHideDuration),
+			"Dismissed activity must be removed after the ordinary exit duration.");
 	}
 
 	std::vector<InputCandidateItem> CreateCandidateItems()
@@ -115,43 +171,49 @@ namespace
 		Assert(state.Apply(CreateCandidateItems(), 7, 7), "Current candidate revision must be accepted.");
 		Assert(state.Revision() == 7, "Accepted candidate revision must be retained.");
 		Assert(state.Items().size() == 2, "Accepted candidates must be retained.");
-		Assert(!state.SelectedIndex().has_value(), "New candidates must start without a selection.");
+		Assert(state.SelectedIndex() == 0, "New candidates must select the first activatable item.");
 
 		InputCandidateActivation activation{};
-		Assert(!state.TryActivate(LuvLetterCandidateActionOpen, activation),
-			"Enter without a selected candidate must not activate an item.");
+		Assert(state.TryActivate(LuvLetterCandidateActionOpen, activation),
+			"Enter must activate the default candidate selection.");
+		Assert(activation.token == 11 && activation.action == LuvLetterCandidateActionOpen,
+			"The default selection must route the first token with the Open action.");
 		Assert(!state.Apply({}, 6, 7), "Stale candidate revision must be rejected.");
 		Assert(state.Items().size() == 2, "Rejected stale candidates must not replace the current list.");
 		Assert(state.Revision() == 7, "Rejected stale candidates must not change the accepted revision.");
+		Assert(state.SelectedIndex() == 0,
+			"Rejected stale candidates must not change the current selection.");
 	}
 
 	void TestCandidateKeyboardSelectionAndActions()
 	{
 		InputCandidateState state;
 		Assert(state.Apply(CreateCandidateItems(), 9, 9), "Candidate list must be accepted for navigation.");
+		Assert(state.SelectedIndex() == 0, "The first candidate must be selected before navigation.");
 
-		Assert(state.MoveSelection(1), "Down must begin candidate selection.");
-		Assert(state.SelectedIndex() == 0, "Down from no selection must select the first candidate.");
+		Assert(state.MoveSelection(1), "Down must advance the default candidate selection.");
+		Assert(state.SelectedIndex() == 1, "Down from the first candidate must select the next candidate.");
 		InputCandidateActivation activation{};
 		Assert(state.TryActivate(LuvLetterCandidateActionOpen, activation),
 			"Enter must activate a selected candidate.");
-		Assert(activation.token == 11 && activation.action == LuvLetterCandidateActionOpen,
+		Assert(activation.token == 22 && activation.action == LuvLetterCandidateActionOpen,
 			"Enter must route the selected token with the Open action.");
 
-		Assert(state.MoveSelection(1), "A second Down must advance selection.");
-		Assert(state.SelectedIndex() == 1, "A second Down must select the next candidate.");
+		Assert(state.MoveSelection(-1), "Up must return to the first candidate.");
+		Assert(state.SelectedIndex() == 0, "Up from the second candidate must select the first candidate.");
 		Assert(state.TryActivate(LuvLetterCandidateActionReveal, activation),
 			"Shift+Enter must activate a selected candidate.");
-		Assert(activation.token == 22 && activation.action == LuvLetterCandidateActionReveal,
+		Assert(activation.token == 11 && activation.action == LuvLetterCandidateActionReveal,
 			"Shift+Enter must route the selected token with the Reveal action.");
 
+		Assert(state.MoveSelection(-1), "Up at the first candidate must remain navigable.");
+		Assert(state.SelectedIndex() == 1, "Up at the first candidate must wrap to the last.");
 		Assert(state.MoveSelection(1), "Down at the last candidate must remain navigable.");
 		Assert(state.SelectedIndex() == 0, "Down at the last candidate must wrap to the first.");
-		Assert(state.MoveSelection(-1), "Up must move candidate selection.");
-		Assert(state.SelectedIndex() == 1, "Up at the first candidate must wrap to the last.");
 
 		Assert(state.Apply({}, 10, 10), "An empty current result must clear candidates.");
 		Assert(state.IsEmpty(), "An empty result must leave no candidates.");
+		Assert(!state.SelectedIndex().has_value(), "An empty result must clear the default selection.");
 		Assert(!state.MoveSelection(1), "Direction keys must not be consumed by an empty candidate list.");
 	}
 
@@ -159,8 +221,8 @@ namespace
 	{
 		InputCandidateState state;
 		Assert(state.Apply(CreateCandidateItems(), 12, 12), "Initial candidate list must be accepted.");
-		Assert(state.MoveSelection(1), "Down must select the first candidate.");
-		Assert(state.MoveSelection(1), "A second Down must select the command candidate.");
+		Assert(state.SelectedIndex() == 0, "The initial list must default to its first candidate.");
+		Assert(state.MoveSelection(1), "Down must select the command candidate.");
 
 		auto reordered = CreateCandidateItems();
 		std::swap(reordered[0], reordered[1]);
@@ -177,8 +239,11 @@ namespace
 		removed.erase(removed.begin() + 1);
 		Assert(state.Apply(std::move(removed), 12, 12),
 			"A same-revision refresh without the selected item must be accepted.");
-		Assert(!state.SelectedIndex().has_value(),
-			"Selection must clear when the selected token no longer exists.");
+		Assert(state.SelectedIndex() == 0,
+			"Selection must fall back to the first candidate when the selected token disappears.");
+		Assert(state.TryActivate(LuvLetterCandidateActionOpen, activation)
+			&& activation.token == 11,
+			"The fallback selection must activate the first remaining candidate.");
 	}
 
 	void TestShowHideEndpointsAndRepeatedDirection()
@@ -388,6 +453,7 @@ int main()
 	const std::vector<std::pair<std::string, std::function<void()>>> tests
 	{
 		{ "Native ABI contract", TestAbiContract },
+		{ "Message activity timeline", TestMessageActivityTimeline },
 		{ "Candidate revision and default selection", TestCandidateRevisionAndDefaultSelection },
 		{ "Candidate keyboard selection and actions", TestCandidateKeyboardSelectionAndActions },
 		{ "Candidate selection survives same-revision refresh", TestCandidateSelectionSurvivesSameRevisionRefresh },

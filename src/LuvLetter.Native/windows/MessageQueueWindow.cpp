@@ -21,9 +21,10 @@ namespace
 	constexpr float MessageGapDip = 4.0f;
 	constexpr float WorkAreaMarginDip = 16.0f;
 	constexpr float FontSizeDip = 14.0f;
-	constexpr auto MessageLifetime = std::chrono::seconds(5);
-	constexpr auto MessageShowDuration = std::chrono::milliseconds(180);
-	constexpr auto MessageHideDuration = std::chrono::milliseconds(140);
+	constexpr float SpinnerSlotWidthDip = 24.0f;
+	constexpr float SpinnerRadiusDip = 6.0f;
+	constexpr float SpinnerDotRadiusDip = 1.35f;
+	constexpr size_t SpinnerDotCount = 8;
 	constexpr UINT MessageAnimationFrameMs = 16;
 	constexpr UINT_PTR MessageTimerId = 1;
 
@@ -99,23 +100,116 @@ HRESULT MessageQueueWindow::Attach(HWND window)
 	return S_OK;
 }
 
-void MessageQueueWindow::Enqueue(std::wstring message, HMONITOR targetMonitor)
+HRESULT MessageQueueWindow::Enqueue(std::wstring message, HMONITOR targetMonitor)
 {
 	message = NormalizeMessage(std::move(message));
-	if (message.empty()) return;
+	if (message.empty()) return S_FALSE;
 
 	const auto now = Clock::now();
 	RemoveCompletedMessages(now);
-	if (messages_.size() == MaximumMessageCount)
+	if (!MakeRoomForMessage())
 	{
-		messages_.pop_front();
+		return S_FALSE;
 	}
-	messages_.push_back(QueuedMessage{
+	messages_.push_back(MessageQueueEntry{
+		0,
 		std::move(message),
 		now,
 		now + MessageLifetime,
+		false,
 	});
 	Show(targetMonitor);
+	return S_OK;
+}
+
+HRESULT MessageQueueWindow::BeginActivity(
+	uint64_t token,
+	std::wstring message,
+	HMONITOR targetMonitor)
+{
+	message = NormalizeMessage(std::move(message));
+	if (token == 0 || message.empty()) return E_INVALIDARG;
+
+	const auto now = Clock::now();
+	RemoveCompletedMessages(now);
+	const auto duplicate = std::find_if(
+		messages_.begin(),
+		messages_.end(),
+		[token](const MessageQueueEntry& item) { return item.token == token; });
+	if (duplicate != messages_.end()) return E_INVALIDARG;
+	if (!MakeRoomForMessage())
+	{
+		return HRESULT_FROM_WIN32(ERROR_NOT_ENOUGH_QUOTA);
+	}
+
+	messages_.push_back(MessageQueueEntry{
+		token,
+		std::move(message),
+		now,
+		(Clock::time_point::max)(),
+		true,
+	});
+	Show(targetMonitor);
+	return S_OK;
+}
+
+HRESULT MessageQueueWindow::UpdateActivity(uint64_t token, std::wstring message)
+{
+	message = NormalizeMessage(std::move(message));
+	if (token == 0 || message.empty()) return E_INVALIDARG;
+
+	const auto now = Clock::now();
+	RemoveCompletedMessages(now);
+	const auto existing = std::find_if(
+		messages_.begin(),
+		messages_.end(),
+		[token](const MessageQueueEntry& item) { return item.token == token; });
+	if (existing == messages_.end() || !existing->IsActiveActivity())
+	{
+		return HRESULT_FROM_WIN32(ERROR_NOT_FOUND);
+	}
+
+	existing->Update(std::move(message));
+	if (visible_)
+	{
+		Render(now);
+	}
+	ScheduleMessageTimer(now);
+	return S_OK;
+}
+
+HRESULT MessageQueueWindow::CompleteActivity(
+	uint64_t token,
+	std::wstring finalMessage,
+	bool retainFinalMessage,
+	HMONITOR targetMonitor)
+{
+	if (token == 0) return E_INVALIDARG;
+	if (retainFinalMessage)
+	{
+		finalMessage = NormalizeMessage(std::move(finalMessage));
+		retainFinalMessage = !finalMessage.empty();
+	}
+
+	const auto now = Clock::now();
+	RemoveCompletedMessages(now);
+	const auto existing = std::find_if(
+		messages_.begin(),
+		messages_.end(),
+		[token](const MessageQueueEntry& item) { return item.token == token; });
+	if (existing == messages_.end() || !existing->IsActiveActivity()) return S_FALSE;
+
+	existing->Complete(std::move(finalMessage), retainFinalMessage, now);
+	if (retainFinalMessage)
+	{
+		Show(targetMonitor);
+	}
+	else
+	{
+		if (visible_) Render(now);
+		ScheduleMessageTimer(now);
+	}
+	return S_OK;
 }
 
 void MessageQueueWindow::Show(HMONITOR targetMonitor)
@@ -401,12 +495,30 @@ size_t MessageQueueWindow::VisibleMessageCount() const noexcept
 bool MessageQueueWindow::RemoveCompletedMessages(Clock::time_point now)
 {
 	const auto originalSize = messages_.size();
-	while (!messages_.empty()
-		&& messages_.front().expiresAt + MessageHideDuration <= now)
+	for (auto message = messages_.begin(); message != messages_.end();)
 	{
-		messages_.pop_front();
+		if (message->IsRemovalDue(now))
+		{
+			message = messages_.erase(message);
+		}
+		else
+		{
+			++message;
+		}
 	}
 	return messages_.size() != originalSize;
+}
+
+bool MessageQueueWindow::MakeRoomForMessage() noexcept
+{
+	if (messages_.size() < MaximumMessageCount) return true;
+	const auto transient = std::find_if(
+		messages_.begin(),
+		messages_.end(),
+		[](const MessageQueueEntry& item) { return !item.IsActiveActivity(); });
+	if (transient == messages_.end()) return false;
+	messages_.erase(transient);
+	return true;
 }
 
 void MessageQueueWindow::ScheduleMessageTimer(Clock::time_point now) noexcept
@@ -419,13 +531,17 @@ void MessageQueueWindow::ScheduleMessageTimer(Clock::time_point now) noexcept
 	for (const auto& message : messages_)
 	{
 		const auto showEnd = message.createdAt + MessageShowDuration;
-		const auto hideEnd = message.expiresAt + MessageHideDuration;
-		if (now < showEnd)
+		if (visible_ && (now < showEnd || message.IsActiveActivity()))
 		{
-			needsAnimationFrame = needsAnimationFrame || visible_;
-			nextWake = (std::min)(nextWake, showEnd);
+			needsAnimationFrame = true;
 		}
-		else if (now < message.expiresAt)
+		if (!message.HasFiniteLifetime())
+		{
+			continue;
+		}
+
+		const auto hideEnd = message.expiresAt + MessageHideDuration;
+		if (now < message.expiresAt)
 		{
 			nextWake = (std::min)(nextWake, message.expiresAt);
 		}
@@ -436,7 +552,9 @@ void MessageQueueWindow::ScheduleMessageTimer(Clock::time_point now) noexcept
 		}
 	}
 
-	auto remaining = int64_t{ 1 };
+	if (!needsAnimationFrame && nextWake == (Clock::time_point::max)()) return;
+
+	auto remaining = int64_t{ MessageAnimationFrameMs };
 	if (needsAnimationFrame)
 	{
 		remaining = static_cast<int64_t>(MessageAnimationFrameMs);
@@ -517,16 +635,40 @@ void MessageQueueWindow::Render(Clock::time_point now)
 			SurfaceBorderThickness);
 		backgroundBrush_->SetOpacity(animationFrame.opacity);
 		borderBrush_->SetOpacity(animationFrame.opacity);
-		textBrush_->SetOpacity(animationFrame.opacity);
 		renderTarget_->FillRoundedRectangle(bubble, backgroundBrush_.Get());
 		renderTarget_->DrawRoundedRectangle(
 			bubble,
 			borderBrush_.Get(),
 			SurfaceBorderThickness);
 
+		if (queuedMessage.IsActiveActivity())
+		{
+			constexpr double TwoPi = 6.283185307179586476925286766559;
+			const auto phase = CalculateMessageSpinnerRadians(
+				queuedMessage.createdAt,
+				now);
+			const auto centerX = left + HorizontalPaddingDip + SpinnerSlotWidthDip * 0.42f;
+			const auto centerY = top + MessageHeightDip * 0.5f;
+			for (size_t dot = 0; dot < SpinnerDotCount; ++dot)
+			{
+				const auto angle = phase
+					- static_cast<double>(dot) * TwoPi / static_cast<double>(SpinnerDotCount);
+				const auto x = centerX + SpinnerRadiusDip * static_cast<float>(std::cos(angle));
+				const auto y = centerY + SpinnerRadiusDip * static_cast<float>(std::sin(angle));
+				const auto trailOpacity = 1.0f
+					- static_cast<float>(dot) / static_cast<float>(SpinnerDotCount) * 0.78f;
+				textBrush_->SetOpacity(animationFrame.opacity * trailOpacity);
+				renderTarget_->FillEllipse(
+					D2D1::Ellipse(D2D1::Point2F(x, y), SpinnerDotRadiusDip, SpinnerDotRadiusDip),
+					textBrush_.Get());
+			}
+		}
+
 		const auto& message = queuedMessage.text;
+		textBrush_->SetOpacity(animationFrame.opacity);
 		const auto textRect = D2D1::RectF(
-			left + HorizontalPaddingDip,
+			left + HorizontalPaddingDip
+				+ (queuedMessage.IsActiveActivity() ? SpinnerSlotWidthDip : 0.0f),
 			top,
 			left + WindowWidthDip - HorizontalPaddingDip,
 			top + MessageHeightDip);

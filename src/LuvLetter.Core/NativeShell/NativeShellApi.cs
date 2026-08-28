@@ -103,7 +103,7 @@ internal delegate void NativeCandidateActivatedCallback(
 
 internal sealed class NativeShellApi : INativeShellApi
 {
-    private const uint CurrentAbiVersion = 6;
+    private const uint CurrentAbiVersion = 7;
 
     internal static INativeShellApi Instance { get; } = new NativeShellApi();
 
@@ -245,6 +245,39 @@ internal sealed class NativeShellApi : INativeShellApi
 
         [DllImport(
             "LuvLetter.Native.dll",
+            EntryPoint = "BeginMessageActivity",
+            ExactSpelling = true,
+            CharSet = CharSet.Unicode,
+            CallingConvention = CallingConvention.StdCall)]
+        internal static extern int BeginMessageActivity(
+            ulong token,
+            [MarshalAs(UnmanagedType.LPWStr)] string text,
+            int length);
+
+        [DllImport(
+            "LuvLetter.Native.dll",
+            EntryPoint = "UpdateMessageActivity",
+            ExactSpelling = true,
+            CharSet = CharSet.Unicode,
+            CallingConvention = CallingConvention.StdCall)]
+        internal static extern int UpdateMessageActivity(
+            ulong token,
+            [MarshalAs(UnmanagedType.LPWStr)] string text,
+            int length);
+
+        [DllImport(
+            "LuvLetter.Native.dll",
+            EntryPoint = "CompleteMessageActivity",
+            ExactSpelling = true,
+            CharSet = CharSet.Unicode,
+            CallingConvention = CallingConvention.StdCall)]
+        internal static extern int CompleteMessageActivity(
+            ulong token,
+            [MarshalAs(UnmanagedType.LPWStr)] string? finalText,
+            int length);
+
+        [DllImport(
+            "LuvLetter.Native.dll",
             EntryPoint = "ToggleMessageQueue",
             ExactSpelling = true,
             CallingConvention = CallingConvention.StdCall)]
@@ -321,6 +354,15 @@ internal sealed class NativeShellApi : INativeShellApi
 
     public int EnqueueMessage(string text, int length) =>
         NativeMethods.EnqueueMessage(text, length);
+
+    public int BeginMessageActivity(ulong token, string text, int length) =>
+        NativeMethods.BeginMessageActivity(token, text, length);
+
+    public int UpdateMessageActivity(ulong token, string text, int length) =>
+        NativeMethods.UpdateMessageActivity(token, text, length);
+
+    public int CompleteMessageActivity(ulong token, string? finalText, int length) =>
+        NativeMethods.CompleteMessageActivity(token, finalText, length);
 
     public int ToggleMessageQueue() => NativeMethods.ToggleMessageQueue();
 

@@ -12,7 +12,7 @@
 
 extern "C"
 {
-	inline constexpr uint32_t LUVLETTER_NATIVE_ABI_VERSION = 6;
+	inline constexpr uint32_t LUVLETTER_NATIVE_ABI_VERSION = 7;
 
 	enum LuvLetterInputMode : int32_t
 	{
@@ -172,6 +172,18 @@ extern "C"
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ToggleFeatureWindow();
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL EnqueueMessage(
 		const wchar_t* text,
+		int32_t length);
+	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL BeginMessageActivity(
+		uint64_t token,
+		const wchar_t* text,
+		int32_t length);
+	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL UpdateMessageActivity(
+		uint64_t token,
+		const wchar_t* text,
+		int32_t length);
+	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL CompleteMessageActivity(
+		uint64_t token,
+		const wchar_t* finalText,
 		int32_t length);
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ToggleMessageQueue();
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL HideMessageQueue();

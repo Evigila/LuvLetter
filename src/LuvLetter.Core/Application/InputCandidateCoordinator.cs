@@ -18,6 +18,7 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
     private readonly InputCandidateOptions options;
     private readonly Channel<InputChanged> pendingChanges;
     private readonly object stateLock = new();
+    private readonly object indexActivityLock = new();
     private IReadOnlyDictionary<ulong, CandidateTarget> activeTargets =
         new Dictionary<ulong, CandidateTarget>();
     private IReadOnlyDictionary<string, ulong> activeIdentityTokens =
@@ -26,6 +27,9 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
     private CancellationTokenSource? activeQueryCancellation;
     private InputChanged? lastInputChange;
     private Task? consumeTask;
+    private IMessageActivity? indexMessageActivity;
+    private FileIndexRuntimeActivity displayedIndexActivity = FileIndexRuntimeActivity.Unavailable;
+    private bool indexWorkObserved;
     private ulong latestRevision;
     private ulong activeCandidateRevision;
     private long nextToken;
@@ -74,7 +78,9 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         nativeShell.InputChanged += HandleInputChanged;
         nativeShell.CandidateActivated += HandleCandidateActivated;
         fileIndexClient.IndexChanged += HandleIndexChanged;
+        fileIndexClient.StateChanged += HandleIndexStateChanged;
         consumeTask = ConsumeAsync(lifetimeCancellation.Token);
+        HandleIndexStateChanged(fileIndexClient.CurrentState);
         return Task.CompletedTask;
     }
 
@@ -85,6 +91,7 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
             return;
         }
 
+        fileIndexClient.StateChanged -= HandleIndexStateChanged;
         fileIndexClient.IndexChanged -= HandleIndexChanged;
         nativeShell.CandidateActivated -= HandleCandidateActivated;
         nativeShell.InputChanged -= HandleInputChanged;
@@ -122,6 +129,7 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
             new Dictionary<ulong, CandidateTarget>());
         activeIdentityTokens = new Dictionary<string, ulong>(StringComparer.OrdinalIgnoreCase);
         activeCandidateRevision = 0;
+        EndIndexActivity(sendReadyMessage: false);
     }
 
     public void Dispose()
@@ -134,12 +142,14 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         nativeShell.CandidateActivated -= HandleCandidateActivated;
         nativeShell.InputChanged -= HandleInputChanged;
         fileIndexClient.IndexChanged -= HandleIndexChanged;
+        fileIndexClient.StateChanged -= HandleIndexStateChanged;
         pendingChanges.Writer.TryComplete();
         lock (stateLock)
         {
             activeQueryCancellation?.Cancel();
             lifetimeCancellation?.Cancel();
         }
+        EndIndexActivity(sendReadyMessage: false);
     }
 
     private void HandleInputChanged(InputChanged change)
@@ -182,6 +192,130 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         }
 
         pendingChanges.Writer.TryWrite(change);
+    }
+
+    private void HandleIndexStateChanged(FileIndexRuntimeState state)
+    {
+        if (Volatile.Read(ref started) == 0 || Volatile.Read(ref disposed) != 0)
+        {
+            return;
+        }
+
+        lock (indexActivityLock)
+        {
+            if (Volatile.Read(ref started) == 0 || Volatile.Read(ref disposed) != 0)
+            {
+                return;
+            }
+
+            switch (state.Activity)
+            {
+                case FileIndexRuntimeActivity.InitialBuild:
+                    indexWorkObserved = true;
+                    ShowOrUpdateIndexActivity(
+                        FileIndexRuntimeActivity.InitialBuild,
+                        "正在生成索引表");
+                    break;
+                case FileIndexRuntimeActivity.Updating:
+                    indexWorkObserved = true;
+                    ShowOrUpdateIndexActivity(
+                        FileIndexRuntimeActivity.Updating,
+                        "正在更新索引");
+                    break;
+                case FileIndexRuntimeActivity.Ready:
+                    EndIndexActivityLocked(sendReadyMessage: indexWorkObserved);
+                    indexWorkObserved = false;
+                    break;
+                case FileIndexRuntimeActivity.Unavailable:
+                    EndIndexActivityLocked(sendReadyMessage: false);
+                    break;
+            }
+        }
+    }
+
+    private void ShowOrUpdateIndexActivity(
+        FileIndexRuntimeActivity activity,
+        string message)
+    {
+        if (displayedIndexActivity == activity && indexMessageActivity is not null)
+        {
+            return;
+        }
+
+        try
+        {
+            if (indexMessageActivity is null)
+            {
+                indexMessageActivity = nativeShell.BeginMessageActivity(message);
+            }
+            else
+            {
+                indexMessageActivity.Update(message);
+            }
+            displayedIndexActivity = activity;
+        }
+        catch
+        {
+            indexMessageActivity = null;
+            displayedIndexActivity = FileIndexRuntimeActivity.Unavailable;
+        }
+    }
+
+    private void EndIndexActivity(bool sendReadyMessage)
+    {
+        lock (indexActivityLock)
+        {
+            EndIndexActivityLocked(sendReadyMessage);
+            if (!sendReadyMessage)
+            {
+                indexWorkObserved = false;
+            }
+        }
+    }
+
+    private void EndIndexActivityLocked(bool sendReadyMessage)
+    {
+        var activity = indexMessageActivity;
+        indexMessageActivity = null;
+        displayedIndexActivity = FileIndexRuntimeActivity.Unavailable;
+
+        if (activity is not null)
+        {
+            try
+            {
+                if (sendReadyMessage)
+                {
+                    activity.Complete("索引已就绪");
+                }
+                else
+                {
+                    activity.Dispose();
+                }
+                return;
+            }
+            catch
+            {
+                try
+                {
+                    activity.Dispose();
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        if (sendReadyMessage)
+        {
+            try
+            {
+                nativeShell.EnqueueMessage("索引已就绪");
+            }
+            catch
+            {
+                // Index status presentation must not terminate candidate coordination.
+            }
+        }
     }
 
     private void HandleCandidateActivated(CandidateActivated activation)

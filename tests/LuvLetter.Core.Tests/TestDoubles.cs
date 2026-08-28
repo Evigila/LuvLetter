@@ -11,7 +11,7 @@ namespace LuvLetter.Core.Tests;
 
 internal sealed class FakeNativeShellApi : INativeShellApi
 {
-    public uint AbiVersion => 6;
+    public uint AbiVersion => 7;
 
     public int CompatibilityChecks { get; private set; }
 
@@ -47,6 +47,12 @@ internal sealed class FakeNativeShellApi : INativeShellApi
 
     public int EnqueueMessageResult { get; set; }
 
+    public int BeginMessageActivityResult { get; set; }
+
+    public int UpdateMessageActivityResult { get; set; }
+
+    public int CompleteMessageActivityResult { get; set; }
+
     public int ToggleMessageQueueResult { get; set; }
 
     public int HideMessageQueueResult { get; set; }
@@ -60,6 +66,12 @@ internal sealed class FakeNativeShellApi : INativeShellApi
     public int HideQuickActionsCalls { get; private set; }
 
     public List<(string Text, int Length)> EnqueuedMessages { get; } = [];
+
+    public List<(ulong Token, string Text, int Length)> BegunMessageActivities { get; } = [];
+
+    public List<(ulong Token, string Text, int Length)> UpdatedMessageActivities { get; } = [];
+
+    public List<(ulong Token, string? Text, int Length)> CompletedMessageActivities { get; } = [];
 
     public int ToggleMessageQueueCalls { get; private set; }
 
@@ -181,6 +193,24 @@ internal sealed class FakeNativeShellApi : INativeShellApi
     {
         EnqueuedMessages.Add((text, length));
         return EnqueueMessageResult;
+    }
+
+    public int BeginMessageActivity(ulong token, string text, int length)
+    {
+        BegunMessageActivities.Add((token, text, length));
+        return BeginMessageActivityResult;
+    }
+
+    public int UpdateMessageActivity(ulong token, string text, int length)
+    {
+        UpdatedMessageActivities.Add((token, text, length));
+        return UpdateMessageActivityResult;
+    }
+
+    public int CompleteMessageActivity(ulong token, string? finalText, int length)
+    {
+        CompletedMessageActivities.Add((token, finalText, length));
+        return CompleteMessageActivityResult;
     }
 
     public int ToggleMessageQueue()
@@ -342,6 +372,14 @@ internal sealed class FakeNativeShell : INativeShell
 
     public List<string> EnqueuedMessages { get; } = [];
 
+    public List<string> BegunMessageActivities { get; } = [];
+
+    public List<string> UpdatedMessageActivities { get; } = [];
+
+    public List<string?> CompletedMessageActivities { get; } = [];
+
+    public int DisposedMessageActivities { get; private set; }
+
     public int ToggleMessageQueueCalls { get; private set; }
 
     public int HideMessageQueueCalls { get; private set; }
@@ -373,6 +411,12 @@ internal sealed class FakeNativeShell : INativeShell
 
     public void EnqueueMessage(string message) => EnqueuedMessages.Add(message);
 
+    public IMessageActivity BeginMessageActivity(string message)
+    {
+        BegunMessageActivities.Add(message);
+        return new FakeMessageActivity(this);
+    }
+
     public void ToggleMessageQueue() => ToggleMessageQueueCalls++;
 
     public void HideMessageQueue() => HideMessageQueueCalls++;
@@ -395,6 +439,33 @@ internal sealed class FakeNativeShell : INativeShell
         QuickActionActivated?.Invoke(quickActionId);
 
     public void RaiseQuickActionUnavailable() => QuickActionUnavailable?.Invoke();
+
+    private sealed class FakeMessageActivity(FakeNativeShell owner) : IMessageActivity
+    {
+        private int completed;
+
+        public void Update(string message)
+        {
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref completed) != 0, this);
+            owner.UpdatedMessageActivities.Add(message);
+        }
+
+        public void Complete(string? finalMessage = null)
+        {
+            if (Interlocked.Exchange(ref completed, 1) == 0)
+            {
+                owner.CompletedMessageActivities.Add(finalMessage);
+            }
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref completed, 1) == 0)
+            {
+                owner.DisposedMessageActivities++;
+            }
+        }
+    }
 }
 
 internal sealed class FakeApplicationShell : IApplicationShell
@@ -430,6 +501,11 @@ internal sealed class FakeFileIndexClient : IFileIndexClient
 
     public event Action? IndexChanged;
 
+    public event Action<FileIndexRuntimeState>? StateChanged;
+
+    public FileIndexRuntimeState CurrentState { get; private set; } =
+        FileIndexRuntimeState.Unavailable;
+
     public void SetQuery(
         Func<string, int, ulong, CancellationToken, ValueTask<IReadOnlyList<FileIndexMatch>>> value)
     {
@@ -457,6 +533,12 @@ internal sealed class FakeFileIndexClient : IFileIndexClient
     }
 
     public void RaiseIndexChanged() => IndexChanged?.Invoke();
+
+    public void SetState(FileIndexRuntimeState state)
+    {
+        CurrentState = state;
+        StateChanged?.Invoke(state);
+    }
 }
 
 internal sealed class FakeFileCandidateLauncher : IFileCandidateLauncher

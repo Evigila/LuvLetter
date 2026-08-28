@@ -159,6 +159,33 @@ int LUVLETTER_NATIVE_CALL EnqueueMessage(const wchar_t* text, int32_t length)
 	catch (...) { return E_FAIL; }
 }
 
+int LUVLETTER_NATIVE_CALL BeginMessageActivity(
+	uint64_t token,
+	const wchar_t* text,
+	int32_t length)
+{
+	try { return NativeShellHost::Instance().BeginMessageActivity(token, text, length); }
+	catch (...) { return E_FAIL; }
+}
+
+int LUVLETTER_NATIVE_CALL UpdateMessageActivity(
+	uint64_t token,
+	const wchar_t* text,
+	int32_t length)
+{
+	try { return NativeShellHost::Instance().UpdateMessageActivity(token, text, length); }
+	catch (...) { return E_FAIL; }
+}
+
+int LUVLETTER_NATIVE_CALL CompleteMessageActivity(
+	uint64_t token,
+	const wchar_t* finalText,
+	int32_t length)
+{
+	try { return NativeShellHost::Instance().CompleteMessageActivity(token, finalText, length); }
+	catch (...) { return E_FAIL; }
+}
+
 int LUVLETTER_NATIVE_CALL ToggleMessageQueue()
 {
 	try { return NativeShellHost::Instance().ToggleMessageQueue(); }

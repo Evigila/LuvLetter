@@ -78,12 +78,14 @@ composition and cannot be removed; optional assemblies are discovered from `plug
   It renders up to six compact, independent notification bubbles without taking focus.
 - `rendering`: shared animation and layered-window surface primitives.
 
-The internal Native vocabulary is `QuickActions`. ABI v6 deliberately retains its
+The internal Native vocabulary is `QuickActions`. ABI v7 deliberately retains its
 historic `Feature*` struct names and layouts; those names are compatibility wire
 identifiers, not domain modules. The version gate includes revisioned input-change and
 candidate-activation callbacks, atomic candidate snapshots, and a bounded candidate icon
-category while retaining the submitted input mode, message queue, and `HidePopups`
-exports. A new Managed assembly therefore cannot silently pair with an older DLL.
+category. It also provides token-based begin, update, and complete operations for
+persistent message activities while retaining the submitted input mode, ordinary message
+queue, and `HidePopups` exports. A new Managed assembly therefore cannot silently pair
+with an older DLL.
 
 ### `src/LuvLetter.IndexKernel`
 
@@ -217,11 +219,12 @@ Search row. `Ask` publishes no candidates. `Cmd` queries commands only. The defa
 configuration allows five direct results and one Global Search row, while the limit is
 owned by `InputCandidateOptions` rather than Native rendering code.
 
-A new editor revision has no selection. A same-revision index refresh reuses stable
-candidate tokens and preserves the selected token when it still exists. Up or Down
-creates and moves the selection. Enter opens a selected file or folder; Shift+Enter
-reveals it in Explorer. A successful filesystem or command activation closes
-InputWindow, while Enter with no selected candidate follows ordinary submission and does
+A non-empty new editor revision selects and visibly highlights its first candidate. A
+same-revision index refresh reuses stable candidate tokens and preserves the selected
+token when it still exists; if that token disappears, selection falls back to the first
+candidate. Up or Down moves the selection. Enter opens the selected file or folder;
+Shift+Enter reveals it in Explorer. A successful filesystem or command activation closes
+InputWindow, while Enter when no candidates exist follows ordinary submission and does
 not close it. Global Search currently reports its reserved status through the message
 queue and keeps the input open.
 
@@ -231,20 +234,25 @@ unassigned slot closes the Quick Actions window and reports a diagnostic through
 message queue. All coordinator status reports are mirrored to that queue and retain
 their existing WPF/tray status fallback.
 
-The message queue starts empty and hidden. Enqueuing a non-empty message shows it
-without activating it. Each bubble has its own five-second lifetime; expiry continues
-while the window is manually hidden, and the window hides automatically when the last
-bubble expires. Alt+Backspace hides a visible queue or shows the unexpired bubbles; it
-is a no-op when none remain. A subsequent message shows the queue again. Escape
-deliberately does not hide this read-only status surface. The active stack is bounded
-at six bubbles, discarding the oldest on overflow; long text is kept to one line and
-trimmed with an ellipsis.
+The message queue starts empty and hidden. Enqueuing a non-empty ordinary message shows
+it without activating it. Each ordinary bubble has its own five-second lifetime; expiry
+continues while the window is manually hidden, and the window hides automatically when
+the last bubble expires. Alt+Backspace hides a visible queue or shows the remaining
+bubbles; it is a no-op when none remain. A subsequent message shows the queue again.
+Escape deliberately does not hide this read-only status surface. The active stack is
+bounded at six bubbles. Overflow evicts transient bubbles before active persistent
+activities, and long text is kept to one line and trimmed with an ellipsis.
 
 Each bubble owns an independent monotonic timeline: it enters from the left over 180 ms,
-starts its reverse leftward exit five seconds after enqueue, and is removed after the
-140 ms exit completes. One adaptive timer renders 16 ms frames only while the queue is
-visible and a transition is active; otherwise it sleeps until the next lifecycle
-boundary. Manually hiding the surface therefore pauses rendering, not message lifetime.
+starts its reverse leftward exit five seconds after ordinary enqueue, and is removed
+after the 140 ms exit completes. A message activity instead has a stable token, remains
+until completion, can update its text in place, and displays an eight-dot rotating
+spinner. Completing it without text begins its exit; completing it with final text turns
+the same bubble into an ordinary five-second notification. One adaptive timer renders
+16 ms frames only while the queue is visible and animation is required; otherwise it
+sleeps until the next lifecycle boundary. Manually hiding the surface therefore pauses
+rendering rather than activity lifetime, and a hidden persistent-only queue does not run
+a background animation timer.
 
 Snapshot writes use a same-directory temporary file, flush it, and atomically replace the
 old file. Query publication is independent: a completed in-memory generation can continue
@@ -260,15 +268,20 @@ namespace and is independent of snapshot schema v3. A complete background rescan
 the six-hour correctness safety net; MFT/USN integration, fuzzy matching, pinyin matching,
 and privileged services remain outside this phase.
 
-The `LLIX` v2 protocol uses a fixed 20-byte little-endian header, UTF-8 length-prefixed
+The `LLIX` v3 protocol uses a fixed 20-byte little-endian header, UTF-8 length-prefixed
 strings, request IDs, editor revisions, and a 1 MiB payload ceiling. Managed owns the
 single pipe server and starts `LuvLetter.Indexer.exe` with the pipe name, parent process
 ID, and data directory. The pipe is restricted to the current user. Protocol, timeout,
 or process failures invalidate the whole session and trigger bounded background restart;
 the command and Echo paths remain available. A compact status request reports the index
-generation and rebuild state. Session readiness and completed generations requeue the
-latest unchanged editor revision, so a user does not need to type another character
-after the initial background build, a live Delta publication, or a companion restart.
+generation and an explicit `Ready`, `InitialBuild`, or `Updating` activity. Core maps an
+initial build to the persistent `正在生成索引表` activity, maintenance rebuilds including
+the six-hour reconciliation to `正在更新索引`, and a successfully published generation to
+the five-second `索引已就绪` completion. Session loss maps locally to `Unavailable`,
+dismisses the spinner without a false completion, and rejects stale session state. Session
+readiness and completed generations requeue the latest unchanged editor revision, so a
+user does not need to type another character after the initial background build, a live
+Delta publication, or a companion restart.
 
 ## Build and tests
 

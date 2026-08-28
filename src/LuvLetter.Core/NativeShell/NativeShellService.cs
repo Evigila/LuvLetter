@@ -30,6 +30,7 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
     private readonly NativeInputChangedCallback inputChangedCallback;
     private readonly NativeCandidateActivatedCallback candidateActivatedCallback;
     private IReadOnlyDictionary<ulong, string> activeQuickActionIds = EmptyQuickActionMap;
+    private long nextMessageActivityToken;
     private int disposed;
 
     public NativeShellService()
@@ -348,6 +349,21 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
                 nativeApi.EnqueueMessage(normalized, normalized.Length),
                 "EnqueueMessage");
         }
+    }
+
+    public IMessageActivity BeginMessageActivity(string message)
+    {
+        var normalized = NormalizeRequiredMessage(message, nameof(message));
+        var token = NextMessageActivityToken();
+        lock (operationSyncRoot)
+        {
+            ThrowIfDisposed();
+            ThrowIfFailed(
+                nativeApi.BeginMessageActivity(token, normalized, normalized.Length),
+                "BeginMessageActivity");
+        }
+
+        return new NativeMessageActivity(this, token);
     }
 
     public void ToggleMessageQueue()
@@ -718,6 +734,113 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
         return normalized.Length <= MaximumMessageLength
             ? normalized
             : normalized[..MaximumMessageLength];
+    }
+
+    private static string NormalizeRequiredMessage(string message, string parameterName)
+    {
+        ArgumentNullException.ThrowIfNull(message, parameterName);
+        var normalized = NormalizeMessage(message);
+        if (normalized.Length == 0)
+        {
+            throw new ArgumentException("A message activity requires non-empty text.", parameterName);
+        }
+
+        return normalized;
+    }
+
+    private ulong NextMessageActivityToken()
+    {
+        var token = unchecked((ulong)Interlocked.Increment(ref nextMessageActivityToken));
+        return token == 0
+            ? unchecked((ulong)Interlocked.Increment(ref nextMessageActivityToken))
+            : token;
+    }
+
+    private void UpdateMessageActivity(ulong token, string message)
+    {
+        var normalized = NormalizeRequiredMessage(message, nameof(message));
+        lock (operationSyncRoot)
+        {
+            ThrowIfDisposed();
+            ThrowIfFailed(
+                nativeApi.UpdateMessageActivity(token, normalized, normalized.Length),
+                "UpdateMessageActivity");
+        }
+    }
+
+    private void CompleteMessageActivity(ulong token, string? finalMessage)
+    {
+        var normalized = finalMessage is null ? string.Empty : NormalizeMessage(finalMessage);
+        lock (operationSyncRoot)
+        {
+            ThrowIfDisposed();
+            ThrowIfFailed(
+                nativeApi.CompleteMessageActivity(
+                    token,
+                    normalized.Length == 0 ? null : normalized,
+                    normalized.Length),
+                "CompleteMessageActivity");
+        }
+    }
+
+    private sealed class NativeMessageActivity : IMessageActivity
+    {
+        private readonly object syncRoot = new();
+        private NativeShellService? owner;
+        private readonly ulong token;
+
+        internal NativeMessageActivity(NativeShellService owner, ulong token)
+        {
+            this.owner = owner;
+            this.token = token;
+        }
+
+        public void Update(string message)
+        {
+            lock (syncRoot)
+            {
+                ObjectDisposedException.ThrowIf(owner is null, this);
+                owner.UpdateMessageActivity(token, message);
+            }
+        }
+
+        public void Complete(string? finalMessage = null)
+        {
+            lock (syncRoot)
+            {
+                if (owner is null)
+                {
+                    return;
+                }
+
+                owner.CompleteMessageActivity(token, finalMessage);
+                owner = null;
+            }
+        }
+
+        public void Dispose()
+        {
+            NativeShellService? activityOwner;
+            lock (syncRoot)
+            {
+                activityOwner = owner;
+                owner = null;
+            }
+
+            if (activityOwner is null)
+            {
+                return;
+            }
+
+            try
+            {
+                activityOwner.CompleteMessageActivity(token, null);
+            }
+            catch
+            {
+                // Dispose is best-effort; Host shutdown also destroys every activity.
+            }
+        }
     }
 
     private enum CallbackNotificationKind

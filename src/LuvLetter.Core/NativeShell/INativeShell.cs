@@ -36,6 +36,8 @@ public interface INativeShell
 
     void EnqueueMessage(string message);
 
+    IMessageActivity BeginMessageActivity(string message);
+
     void ToggleMessageQueue();
 
     void HideMessageQueue();

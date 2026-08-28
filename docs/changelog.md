@@ -32,6 +32,12 @@ reserved product capabilities. Architectural ownership and dependency rules rema
   through candidate options for future configuration.
 - Added keyboard candidate selection. Up and Down select or move through results; Enter
   opens a selected file, while Shift+Enter opens its containing location in Explorer.
+- Added persistent message activities that update one bubble in place, remain visible
+  until completion, and display a rotating progress indicator without changing the
+  existing five-second lifetime of ordinary messages.
+- Added explicit index lifecycle feedback. Initial construction reports
+  `正在生成索引表`, background maintenance reports `正在更新索引`, and successful
+  publication completes the activity with `索引已就绪`.
 - Added command-name candidates from the registered command snapshot. `Gen` gives file
   results priority and uses commands as remaining direct matches; `Cmd` shows commands
   only; `Ask` shows no candidates.
@@ -62,11 +68,12 @@ reserved product capabilities. Architectural ownership and dependency rules rema
   for the next text or caret update.
 - `Cmd` mode preserves strict command behavior and reports unknown commands through the
   message queue; `Ask` bypasses command matching entirely.
-- Native ABI version 6 adds lightweight candidate icon categories while retaining the
-  revisioned input-change, candidate-snapshot, candidate-activation, and selected-mode
-  contracts introduced in version 5.
+- Native ABI version 7 adds token-based persistent message activity operations while
+  retaining the candidate icon categories from version 6 and the revisioned input,
+  activation, and selected-mode contracts introduced in version 5.
 - Enter now closes the input only after a selected file or command is successfully
-  activated. With no candidate selected, Enter remains ordinary input submission.
+  activated. A non-empty candidate list now selects and visibly highlights its first row
+  by default; when no candidates exist, Enter remains ordinary input submission.
 - Replaced one recursive filesystem iterator with an explicit Win32 per-directory work
   queue. An unreadable, disappearing, or long-path directory no longer truncates all
   later sibling directories in the user profile.
@@ -76,8 +83,10 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 - Changed filesystem ranking to exact display name, then exact stem, then prefix, with
   deterministic folder-first ties. Same-revision refreshes reuse stable tokens and retain
   the selected candidate when it still exists.
-- Upgraded the companion wire protocol to LLIX v2 so each result carries an explicit file
-  or directory type.
+- Upgraded the companion wire protocol to LLIX v3. It retains the explicit file or
+  directory result type introduced in v2 and adds `Ready`, `InitialBuild`, and `Updating`
+  status values so presentation does not infer work type from generation numbers.
+- Hidden persistent-only message queues no longer run a continuous animation timer.
 
 ### Reserved
 

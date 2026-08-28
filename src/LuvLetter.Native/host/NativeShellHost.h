@@ -43,6 +43,9 @@ public:
 	HRESULT HideQuickActionsWindow();
 	HRESULT ToggleQuickActionsWindow();
 	HRESULT EnqueueMessage(const wchar_t* text, int32_t length);
+	HRESULT BeginMessageActivity(uint64_t token, const wchar_t* text, int32_t length);
+	HRESULT UpdateMessageActivity(uint64_t token, const wchar_t* text, int32_t length);
+	HRESULT CompleteMessageActivity(uint64_t token, const wchar_t* finalText, int32_t length);
 	HRESULT ToggleMessageQueue();
 	HRESULT HideMessageQueue();
 	HRESULT HidePopups();

@@ -12,9 +12,30 @@ public sealed record FileIndexMatch(
     string DisplayName,
     string FullPath);
 
+public enum FileIndexRuntimeActivity
+{
+    Unavailable,
+    Ready,
+    InitialBuild,
+    Updating,
+}
+
+public sealed record FileIndexRuntimeState(
+    FileIndexRuntimeActivity Activity,
+    ulong Generation)
+{
+    public static FileIndexRuntimeState Unavailable { get; } = new(
+        FileIndexRuntimeActivity.Unavailable,
+        0);
+}
+
 public interface IFileIndexClient
 {
     event Action? IndexChanged;
+
+    event Action<FileIndexRuntimeState>? StateChanged;
+
+    FileIndexRuntimeState CurrentState { get; }
 
     ValueTask<IReadOnlyList<FileIndexMatch>> QueryAsync(
         string query,

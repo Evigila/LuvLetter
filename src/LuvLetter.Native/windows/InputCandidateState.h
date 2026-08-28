@@ -61,6 +61,10 @@ public:
 				}
 			}
 		}
+		if (!selectedIndex_.has_value() && !items_.empty())
+		{
+			selectedIndex_ = 0;
+		}
 		return true;
 	}
 

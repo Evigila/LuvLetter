@@ -95,6 +95,7 @@
     <ClInclude Include="rendering\SurfaceStyleDefaults.h" />
     <ClInclude Include="windows\QuickActionsWindow.h" />
     <ClInclude Include="windows\InputCandidateState.h" />
+    <ClInclude Include="windows\MessageQueueEntry.h" />
     <ClInclude Include="windows\InputCandidatesWindow.h" />
     <ClInclude Include="windows\InputWindow.h" />
     <ClInclude Include="windows\MessageQueueWindow.h" />

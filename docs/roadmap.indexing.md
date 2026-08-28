@@ -20,10 +20,10 @@ The following rules apply to every phase:
 - `Gen` gives indexed filesystem candidates priority, then uses command candidates for
   remaining direct-result capacity. `Cmd` uses command candidates only, and `Ask` never
   queries the filesystem index.
-- A new editor revision starts with no candidate selection. A same-revision index refresh
-  preserves selection only when the same stable candidate token remains present. Enter
-  without a selection submits input; it does not close the input merely because
-  candidates are visible.
+- A non-empty new editor revision selects and highlights its first candidate. A
+  same-revision index refresh preserves selection when the same stable candidate token
+  remains present and falls back to the first candidate otherwise. When no candidates
+  exist, Enter submits input and does not close the input.
 - Candidate capacity is policy owned by managed options, not a rendering constant. The
   current default is five direct results and one reserved Global Search row.
 - Full paths are reconstructed only for bounded results. Per-entry runtime storage must
@@ -136,6 +136,16 @@ No edit distance, token score, usage history, or pinyin score participates in Ph
   Mixed versions fail the session explicitly instead of interpreting old memory or wire
   data as a new structure.
 
+### Index lifecycle feedback
+
+- Report `Ready`, `InitialBuild`, and `Updating` explicitly in LLIX status responses.
+  Generation changes alone do not distinguish the first scan from background maintenance.
+- Present initial construction as the persistent `正在生成索引表` activity and later
+  rebuilds, including the six-hour reconciliation, as `正在更新索引`.
+- Keep the activity visible with a rotating indicator until a generation is successfully
+  published, then convert it in place to the ordinary five-second `索引已就绪` message.
+  Disconnects and shutdown dismiss the activity without reporting a false completion.
+
 ### Activation behavior and verification
 
 - Validate the candidate path and expected filesystem kind immediately before activation.
@@ -147,9 +157,9 @@ No edit distance, token score, usage history, or pinyin score participates in Ph
   deterministic ranking, overlapping roots, v3 persistence, provenance mismatch,
   checksum corruption, Delta ordering, ancestor tombstones, rebuild-cutoff pruning, and
   live create/rename/delete notifications.
-- Core and Native suites cover LLIX v2 decoding, Native ABI v6, icon categories, stale
-  revision rejection, same-revision token/selection preservation, and file/folder
-  activation success or failure.
+- Core and Native suites cover LLIX v3 activity decoding, Native ABI v7, icon categories,
+  default and same-revision selection, persistent message timelines, stale revision
+  rejection, and file/folder activation success or failure.
 
 Phase 2 is implemented. The manual acceptance checklist remains the release-validation
 surface for focus, Shell activation, redirected Known Folders, notification overflow,
@@ -306,8 +316,10 @@ candidates, persistence, or activation:
    results, and repeat the query after restart to confirm deterministic ordering.
 10. Confirm file and folder rows have lightweight type glyphs without focus loss, shell
    icon extraction pauses, or candidate-window activation.
-11. Confirm a candidate list starts unselected, Up and Down move selection, Enter without
-   a selection submits normally, and Escape follows the ordinary input-hide path.
+11. Confirm a non-empty candidate list starts with its first row visibly selected, Down
+    moves to the second row, Up returns to the first, and Enter activates the highlighted
+    row. With no candidates, confirm Enter submits normally and Escape follows the
+    ordinary input-hide path.
 12. Confirm Enter opens a selected file or folder and closes InputWindow only on success;
    confirm Shift+Enter reveals the selected item in its containing location.
 13. Delete or replace a selected item before activation and confirm validation reports a
@@ -322,6 +334,11 @@ candidates, persistence, or activation:
     submission rules remain isolated.
 18. Observe a large rebuild on battery and AC power and confirm Windows reports background
     processing behavior while input animation and keyboard navigation remain smooth.
+19. Start without a compatible snapshot and confirm `正在生成索引表` remains visible with a
+    rotating indicator until publication, then becomes `索引已就绪` for five seconds.
+20. Start with a compatible snapshot or trigger scheduled maintenance and confirm the
+    persistent activity reads `正在更新索引`; hiding the queue must not consume continuous
+    animation CPU, and showing it again must resume the spinner.
 
 Automated suites cover deterministic logic and protocol boundaries, but they do not
 replace these user-driven focus, shell-activation, and perceived-performance checks.

@@ -10,7 +10,7 @@
 namespace luvletter::indexing::protocol {
 
 inline constexpr std::uint32_t kMagic = 0x58494C4C;
-inline constexpr std::uint16_t kMajorVersion = 2;
+inline constexpr std::uint16_t kMajorVersion = 3;
 inline constexpr std::uint32_t kHeaderSize = 20;
 inline constexpr std::uint32_t kMaximumPayloadSize = 1U * 1024U * 1024U;
 
@@ -33,9 +33,15 @@ struct FrameHeader final {
     std::uint64_t requestId = 0;
 };
 
+enum class IndexActivity : std::uint8_t {
+    Ready = 0,
+    InitialBuild = 1,
+    Updating = 2,
+};
+
 struct IndexStatus final {
     std::uint64_t generation = 0;
-    bool rebuilding = false;
+    IndexActivity activity = IndexActivity::Ready;
 };
 
 inline void AppendU16(std::vector<std::byte>& destination, const std::uint16_t value) {
@@ -139,7 +145,7 @@ inline std::vector<std::byte> EncodeStatus(const IndexStatus status) {
     std::vector<std::byte> bytes;
     bytes.reserve(9);
     AppendU64(bytes, status.generation);
-    bytes.push_back(status.rebuilding ? std::byte{1} : std::byte{0});
+    bytes.push_back(static_cast<std::byte>(status.activity));
     return bytes;
 }
 
@@ -151,11 +157,11 @@ inline bool DecodeStatus(const std::span<const std::byte> bytes, IndexStatus& st
     if (!ReadU64(bytes, cursor, status.generation)) {
         return false;
     }
-    const auto rebuilding = std::to_integer<std::uint8_t>(bytes[cursor]);
-    if (rebuilding > 1) {
+    const auto activity = std::to_integer<std::uint8_t>(bytes[cursor]);
+    if (activity > static_cast<std::uint8_t>(IndexActivity::Updating)) {
         return false;
     }
-    status.rebuilding = rebuilding != 0;
+    status.activity = static_cast<IndexActivity>(activity);
     return true;
 }
 

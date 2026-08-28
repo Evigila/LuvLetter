@@ -145,7 +145,7 @@ internal static partial class Program
         var service = new NativeShellService(nativeApi);
         try
         {
-            Assert.Equal(6U, nativeApi.AbiVersion);
+            Assert.Equal(7U, nativeApi.AbiVersion);
             Assert.Equal(1, nativeApi.CompatibilityChecks);
             Assert.NotNull(nativeApi.InputSubmittedCallback);
             Assert.NotNull(nativeApi.InputChangedCallback);
@@ -278,6 +278,34 @@ internal static partial class Program
             service.ToggleQuickActions();
             service.EnqueueMessage("  hello queue  ");
             service.EnqueueMessage("   ");
+
+            var messageActivity = service.BeginMessageActivity("  Indexing files  ");
+            Assert.Equal(1, nativeApi.BegunMessageActivities.Count);
+            var messageActivityToken = nativeApi.BegunMessageActivities[0].Token;
+            Assert.NotEqual(0UL, messageActivityToken);
+            Assert.Equal("Indexing files", nativeApi.BegunMessageActivities[0].Text);
+            messageActivity.Update("  Indexed 10 files  ");
+            Assert.Equal(1, nativeApi.UpdatedMessageActivities.Count);
+            Assert.Equal(messageActivityToken, nativeApi.UpdatedMessageActivities[0].Token);
+            Assert.Equal("Indexed 10 files", nativeApi.UpdatedMessageActivities[0].Text);
+            messageActivity.Complete("  Index ready  ");
+            messageActivity.Complete("ignored duplicate completion");
+            Assert.Equal(1, nativeApi.CompletedMessageActivities.Count);
+            Assert.Equal(messageActivityToken, nativeApi.CompletedMessageActivities[0].Token);
+            Assert.Equal("Index ready", nativeApi.CompletedMessageActivities[0].Text);
+            Assert.Throws<ObjectDisposedException>(() => messageActivity.Update("too late"));
+
+            var disposedActivity = service.BeginMessageActivity("Waiting");
+            var disposedToken = nativeApi.BegunMessageActivities[^1].Token;
+            Assert.NotEqual(messageActivityToken, disposedToken);
+            disposedActivity.Dispose();
+            disposedActivity.Dispose();
+            Assert.Equal(2, nativeApi.CompletedMessageActivities.Count);
+            Assert.Equal(disposedToken, nativeApi.CompletedMessageActivities[^1].Token);
+            Assert.True(nativeApi.CompletedMessageActivities[^1].Text is null);
+            Assert.Equal(0, nativeApi.CompletedMessageActivities[^1].Length);
+            Assert.Throws<ArgumentException>(() => service.BeginMessageActivity("   "));
+
             service.ToggleMessageQueue();
             service.HideMessageQueue();
             service.HidePopups();
@@ -298,6 +326,17 @@ internal static partial class Program
             Assert.Throws<ExternalException>(service.HidePopups);
             nativeApi.EnqueueMessageResult = unchecked((int)0x80004005);
             Assert.Throws<ExternalException>(() => service.EnqueueMessage("failure"));
+            nativeApi.BeginMessageActivityResult = unchecked((int)0x80004005);
+            Assert.Throws<ExternalException>(() => service.BeginMessageActivity("failure"));
+            nativeApi.BeginMessageActivityResult = 0;
+            var failingActivity = service.BeginMessageActivity("starting");
+            nativeApi.UpdateMessageActivityResult = unchecked((int)0x80004005);
+            Assert.Throws<ExternalException>(() => failingActivity.Update("failure"));
+            nativeApi.UpdateMessageActivityResult = 0;
+            nativeApi.CompleteMessageActivityResult = unchecked((int)0x80004005);
+            Assert.Throws<ExternalException>(() => failingActivity.Complete("failure"));
+            nativeApi.CompleteMessageActivityResult = 0;
+            failingActivity.Complete();
             nativeApi.ToggleMessageQueueResult = unchecked((int)0x80004005);
             Assert.Throws<ExternalException>(service.ToggleMessageQueue);
             nativeApi.HideMessageQueueResult = unchecked((int)0x80004005);

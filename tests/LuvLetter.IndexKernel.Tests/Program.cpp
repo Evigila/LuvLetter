@@ -66,7 +66,7 @@ void TestProtocolHeaderRoundTrip() {
     const auto encoded = EncodeHeader(expected);
     FrameHeader actual{};
     Expect(encoded.size() == kHeaderSize, L"protocol header must remain exactly 20 bytes");
-    Expect(kMajorVersion == 2, L"directory-aware QueryResult requires LLIX protocol major version 2");
+    Expect(kMajorVersion == 3, L"activity-aware status requires LLIX protocol major version 3");
     Expect(DecodeHeader(encoded, actual), L"protocol header should decode");
     Expect(actual.magic == expected.magic && actual.majorVersion == expected.majorVersion &&
         actual.type == expected.type && actual.payloadLength == expected.payloadLength &&
@@ -76,17 +76,17 @@ void TestProtocolHeaderRoundTrip() {
 
 void TestStatusPayloadRoundTrip() {
     using namespace luvletter::indexing::protocol;
-    const IndexStatus expected{42, true};
+    const IndexStatus expected{42, IndexActivity::Updating};
     const auto encoded = EncodeStatus(expected);
     IndexStatus actual{};
     Expect(encoded.size() == 9, L"status payload must remain exactly 9 bytes");
     Expect(DecodeStatus(encoded, actual), L"status payload should decode");
-    Expect(actual.generation == expected.generation && actual.rebuilding == expected.rebuilding,
-        L"status payload round-trip should preserve generation and rebuilding state");
+    Expect(actual.generation == expected.generation && actual.activity == expected.activity,
+        L"status payload round-trip should preserve generation and activity state");
 
     auto malformed = encoded;
-    malformed.back() = std::byte{2};
-    Expect(!DecodeStatus(malformed, actual), L"status payload should reject rebuilding values other than zero or one");
+    malformed.back() = std::byte{3};
+    Expect(!DecodeStatus(malformed, actual), L"status payload should reject unknown activity values");
 }
 
 void TestIndexBuildQueryAndPersistence() {
