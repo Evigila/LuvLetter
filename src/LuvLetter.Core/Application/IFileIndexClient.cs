@@ -1,7 +1,14 @@
 namespace LuvLetter.Core.Application;
 
+public enum FileSystemEntryKind
+{
+    File = 1,
+    Directory = 2,
+}
+
 public sealed record FileIndexMatch(
     ulong StableId,
+    FileSystemEntryKind EntryKind,
     string DisplayName,
     string FullPath);
 
@@ -18,7 +25,7 @@ public interface IFileIndexClient
 
 public interface IFileCandidateLauncher
 {
-    bool Open(string fullPath);
+    bool Open(string fullPath, FileSystemEntryKind entryKind);
 
-    bool Reveal(string fullPath);
+    bool Reveal(string fullPath, FileSystemEntryKind entryKind);
 }

@@ -69,37 +69,42 @@ composition and cannot be removed; optional assemblies are discovered from `plug
 - `host/NativeShellHost`: the Native UI-thread owner and request serializer.
 - `windows/InputWindow`: input editing, history, IME, animation driving, and rendering.
 - `windows/InputCandidatesWindow`: the non-activating, keyboard-driven candidate list
-  positioned above InputWindow. It stores copied display data and applies only the
-  candidate snapshot matching the current editor revision.
+  positioned above InputWindow. It stores copied display data, applies only the
+  candidate snapshot matching the current editor revision, and draws lightweight
+  Direct2D type glyphs without Shell icon or thumbnail I/O.
 - `windows/QuickActionsWindow`: top-aligned Quick Action paging, hotkeys, animation,
   geometry, and rendering.
 - `windows/MessageQueueWindow`: a read-only, non-activating bottom-left notification stack.
   It renders up to six compact, independent notification bubbles without taking focus.
 - `rendering`: shared animation and layered-window surface primitives.
 
-The internal Native vocabulary is `QuickActions`. ABI v5 deliberately retains its
+The internal Native vocabulary is `QuickActions`. ABI v6 deliberately retains its
 historic `Feature*` struct names and layouts; those names are compatibility wire
-identifiers, not domain modules. The v5 version gate adds revisioned input-change and
-candidate-activation callbacks plus atomic candidate snapshots while retaining the
-submitted input mode, message queue, and `HidePopups` exports. A new Managed assembly
-therefore cannot silently pair with an older DLL.
+identifiers, not domain modules. The version gate includes revisioned input-change and
+candidate-activation callbacks, atomic candidate snapshots, and a bounded candidate icon
+category while retaining the submitted input mode, message queue, and `HidePopups`
+exports. A new Managed assembly therefore cannot silently pair with an older DLL.
 
 ### `src/LuvLetter.IndexKernel`
 
-- A C++20 static library containing the compact immutable filename index.
-- Directory components and file names are stored in continuous tables and a shared
-  UTF-16 string pool instead of one full path allocation per entry.
+- A C++20 static library containing the compact immutable filesystem-name index.
+- Directory components plus searchable file and folder entities are stored in continuous
+  tables and a shared UTF-16 string pool instead of one full path allocation per entry.
 - Prefix queries use the sorted filename records and reconstruct full paths only for the
   bounded result set.
-- The persisted snapshot validates its magic, schema, sizes, references, and ordering
-  before it is accepted.
+- The v3 persisted snapshot validates its magic, schema, roots fingerprint, payload
+  checksum, sizes, references, and ordering before it is accepted.
 
 ### `src/LuvLetter.Indexer`
 
 - A hidden, ordinary-user companion process owned by the main application.
 - It connects to a per-run random Named Pipe, exits when the pipe closes or its parent
-  process ends, serves queries from the current immutable snapshot, and rebuilds on a
-  below-normal-priority maintenance thread.
+  process ends, serves queries from the current immutable snapshot plus a bounded live
+  Delta, and rebuilds on a Windows background-processing thread.
+- `ReadDirectoryChangesW` watchers coalesce file and folder name changes for 250 ms.
+  Upserts and tombstones are merged with the base generation; directory-prefix
+  tombstones hide stale descendants. Overflow, ambiguous directory rename recovery, and
+  Delta thresholds request a safe background rebuild.
 - It is deliberately not a Windows Service and does not require administrator access.
 
 ## Host lifecycle
@@ -212,11 +217,13 @@ Search row. `Ask` publishes no candidates. `Cmd` queries commands only. The defa
 configuration allows five direct results and one Global Search row, while the limit is
 owned by `InputCandidateOptions` rather than Native rendering code.
 
-A newly published candidate list has no selection. Up or Down creates and moves the
-selection. Enter activates the selection; Shift+Enter reveals a selected file in
-Explorer. A successful file or command activation closes InputWindow, while Enter with
-no selected candidate follows ordinary submission and does not close it. Global Search
-currently reports its reserved status through the message queue and keeps the input open.
+A new editor revision has no selection. A same-revision index refresh reuses stable
+candidate tokens and preserves the selected token when it still exists. Up or Down
+creates and moves the selection. Enter opens a selected file or folder; Shift+Enter
+reveals it in Explorer. A successful filesystem or command activation closes
+InputWindow, while Enter with no selected candidate follows ordinary submission and does
+not close it. Global Search currently reports its reserved status through the message
+queue and keeps the input open.
 
 The built-in settings plugin is always Quick Action slot 1 and is displayed as
 `Control Center`. Quick Actions exposes the numeric slots 1 through 9. Selecting an
@@ -239,18 +246,21 @@ starts its reverse leftward exit five seconds after enqueue, and is removed afte
 visible and a transition is active; otherwise it sleeps until the next lifecycle
 boundary. Manually hiding the surface therefore pauses rendering, not message lifetime.
 
-Writes use a same-directory temporary file, flush it, atomically replace the old file,
-and only then publish the new in-memory snapshot.
+Snapshot writes use a same-directory temporary file, flush it, and atomically replace the
+old file. Query publication is independent: a completed in-memory generation can continue
+serving when persistence fails, and an incompatible or damaged cache rebuilds safely.
 
 ## File-index lifecycle and protocol
 
-The default root is the current user profile. The last valid snapshot is loaded from
-`%LocalAppData%\LuvLetter\Index\v1\file-index-v2.bin`, so queries can use the previous
-generation while a startup rebuild runs. A complete low-priority background rescan
-reconciles the index every six hours; the first version intentionally omits MFT/USN
-integration, fuzzy matching, pinyin matching, and privileged services.
+The default scope is the current user profile plus redirected Windows Known Folders that
+resolve outside it; an explicitly configured reparse root is retained even when its path
+is textually below another root. The last scope-compatible snapshot is loaded from
+`%LocalAppData%\LuvLetter\Index\v1\file-index-v3.bin`. The `v1` directory is the cache
+namespace and is independent of snapshot schema v3. A complete background rescan remains
+the six-hour correctness safety net; MFT/USN integration, fuzzy matching, pinyin matching,
+and privileged services remain outside this phase.
 
-The `LLIX` protocol uses a fixed 20-byte little-endian header, UTF-8 length-prefixed
+The `LLIX` v2 protocol uses a fixed 20-byte little-endian header, UTF-8 length-prefixed
 strings, request IDs, editor revisions, and a 1 MiB payload ceiling. Managed owns the
 single pipe server and starts `LuvLetter.Indexer.exe` with the pipe name, parent process
 ID, and data directory. The pipe is restricted to the current user. Protocol, timeout,
@@ -258,7 +268,7 @@ or process failures invalidate the whole session and trigger bounded background 
 the command and Echo paths remain available. A compact status request reports the index
 generation and rebuild state. Session readiness and completed generations requeue the
 latest unchanged editor revision, so a user does not need to type another character
-after the initial background build or a companion restart.
+after the initial background build, a live Delta publication, or a companion restart.
 
 ## Build and tests
 

@@ -20,11 +20,14 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
     private readonly object stateLock = new();
     private IReadOnlyDictionary<ulong, CandidateTarget> activeTargets =
         new Dictionary<ulong, CandidateTarget>();
+    private IReadOnlyDictionary<string, ulong> activeIdentityTokens =
+        new Dictionary<string, ulong>(StringComparer.OrdinalIgnoreCase);
     private CancellationTokenSource? lifetimeCancellation;
     private CancellationTokenSource? activeQueryCancellation;
     private InputChanged? lastInputChange;
     private Task? consumeTask;
     private ulong latestRevision;
+    private ulong activeCandidateRevision;
     private long nextToken;
     private int started;
     private int disposed;
@@ -117,6 +120,8 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         Volatile.Write(
             ref activeTargets,
             new Dictionary<ulong, CandidateTarget>());
+        activeIdentityTokens = new Dictionary<string, ulong>(StringComparer.OrdinalIgnoreCase);
+        activeCandidateRevision = 0;
     }
 
     public void Dispose()
@@ -191,7 +196,10 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         switch (target.Kind)
         {
             case CandidateKind.File:
-                ActivateFile(target.Value, activation.Action);
+                if (target.EntryKind is { } entryKind)
+                {
+                    ActivateFileSystemEntry(target.Value, entryKind, activation.Action);
+                }
                 break;
             case CandidateKind.Command:
                 ActivateCommand(target.Value);
@@ -321,16 +329,20 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         foreach (var file in files.Take(directLimit))
         {
             if (string.IsNullOrWhiteSpace(file.DisplayName)
-                || string.IsNullOrWhiteSpace(file.FullPath))
+                || string.IsNullOrWhiteSpace(file.FullPath)
+                || !Enum.IsDefined(file.EntryKind))
             {
                 continue;
             }
 
             candidates.Add(new CandidateSpec(
                 CandidateKind.File,
+                CandidateIconClassifier.Classify(file.EntryKind, file.FullPath),
                 file.DisplayName,
+                ParentPath(file.FullPath),
                 file.FullPath,
-                file.FullPath));
+                file.EntryKind,
+                $"fs:{file.StableId:X16}:{file.FullPath}"));
             if (candidates.Count == directLimit)
             {
                 break;
@@ -347,9 +359,12 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         {
             candidates.Add(new CandidateSpec(
                 CandidateKind.GlobalSearch,
+                CandidateIconKind.Search,
                 options.GlobalSearchLabel,
                 $"{options.GlobalSearchDescription}: {query}",
-                query));
+                query,
+                null,
+                $"global:{query}"));
         }
 
         Publish(candidates, change.Revision);
@@ -373,9 +388,12 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
             .Take(limit)
             .Select(name => new CandidateSpec(
                 CandidateKind.Command,
+                CandidateIconKind.Command,
                 name,
                 options.CommandDescription,
-                ReplaceCommandPrefix(input, name)))
+                ReplaceCommandPrefix(input, name),
+                null,
+                $"command:{name}"))
             .ToArray();
     }
 
@@ -388,16 +406,26 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
 
         var candidates = new InputCandidate[specs.Count];
         var targets = new Dictionary<ulong, CandidateTarget>(specs.Count);
+        var identityTokens = new Dictionary<string, ulong>(
+            specs.Count,
+            StringComparer.OrdinalIgnoreCase);
+        var reusableTokens = revision == activeCandidateRevision
+            ? activeIdentityTokens
+            : new Dictionary<string, ulong>(StringComparer.OrdinalIgnoreCase);
         for (var index = 0; index < specs.Count; index++)
         {
             var spec = specs[index];
-            var token = NextToken();
+            var token = reusableTokens.TryGetValue(spec.Identity, out var reusableToken)
+                ? reusableToken
+                : NextToken();
             candidates[index] = new InputCandidate(
                 token,
                 spec.Kind,
+                spec.IconKind,
                 spec.PrimaryText,
                 spec.SecondaryText);
-            targets.Add(token, new CandidateTarget(spec.Kind, spec.Value));
+            targets.Add(token, new CandidateTarget(spec.Kind, spec.Value, spec.EntryKind));
+            identityTokens.Add(spec.Identity, token);
         }
 
         if (!IsLatest(revision))
@@ -424,6 +452,8 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         }
 
         Volatile.Write(ref activeTargets, targets);
+        activeIdentityTokens = identityTokens;
+        activeCandidateRevision = revision;
     }
 
     private bool IsLatest(ulong revision)
@@ -442,21 +472,27 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
             : token;
     }
 
-    private void ActivateFile(string fullPath, CandidateAction action)
+    private void ActivateFileSystemEntry(
+        string fullPath,
+        FileSystemEntryKind entryKind,
+        CandidateAction action)
     {
         try
         {
             var started = action == CandidateAction.Reveal
-                ? fileLauncher.Reveal(fullPath)
-                : fileLauncher.Open(fullPath);
+                ? fileLauncher.Reveal(fullPath, entryKind)
+                : fileLauncher.Open(fullPath, entryKind);
             if (started)
             {
                 nativeShell.HideCommandInput();
+                return;
             }
+
+            ReportStatus($"The indexed item is no longer available: {fullPath}");
         }
         catch (Exception exception)
         {
-            ReportStatus($"Cannot activate file candidate: {exception.Message}");
+            ReportStatus($"Cannot activate indexed item: {exception.Message}");
         }
     }
 
@@ -507,6 +543,21 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
             : string.Concat(commandName, trimmed[separator..]);
     }
 
+    private static string ParentPath(string fullPath)
+    {
+        try
+        {
+            var normalized = Path.TrimEndingDirectorySeparator(fullPath);
+            return Path.GetDirectoryName(normalized) is { Length: > 0 } parent
+                ? parent
+                : fullPath;
+        }
+        catch (ArgumentException)
+        {
+            return fullPath;
+        }
+    }
+
     private static int IndexOfWhitespace(ReadOnlySpan<char> value)
     {
         for (var index = 0; index < value.Length; index++)
@@ -522,9 +573,15 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
 
     private sealed record CandidateSpec(
         CandidateKind Kind,
+        CandidateIconKind IconKind,
         string PrimaryText,
         string SecondaryText,
-        string Value);
+        string Value,
+        FileSystemEntryKind? EntryKind,
+        string Identity);
 
-    private sealed record CandidateTarget(CandidateKind Kind, string Value);
+    private sealed record CandidateTarget(
+        CandidateKind Kind,
+        string Value,
+        FileSystemEntryKind? EntryKind);
 }

@@ -8,6 +8,19 @@ internal static partial class Program
 {
     private static async Task TestInputCandidates()
     {
+        Assert.Equal(
+            CandidateIconKind.GenericFile,
+            CandidateIconClassifier.Classify(FileSystemEntryKind.File, @"C:\data\item.unknown"));
+        Assert.Equal(
+            CandidateIconKind.Audio,
+            CandidateIconClassifier.Classify(FileSystemEntryKind.File, @"C:\media\song.flac"));
+        Assert.Equal(
+            CandidateIconKind.Video,
+            CandidateIconClassifier.Classify(FileSystemEntryKind.File, @"C:\media\movie.mkv"));
+        Assert.Equal(
+            CandidateIconKind.Executable,
+            CandidateIconClassifier.Classify(FileSystemEntryKind.File, @"C:\tools\run.exe"));
+
         using var commands = new CommandDispatcher();
         using var commandInvoked = new ManualResetEventSlim();
         Assert.True(commands.Register("build", _ => commandInvoked.Set()));
@@ -20,10 +33,10 @@ internal static partial class Program
         fileIndex.SetQuery(static (_, _, _, _) =>
             ValueTask.FromResult<IReadOnlyList<FileIndexMatch>>(
             [
-                new(1, "bbb.md", @"C:\aaa\bbb.md"),
-                new(2, "build.log", @"C:\logs\build.log"),
-                new(3, "beta.txt", @"C:\docs\beta.txt"),
-                new(4, "book.pdf", @"C:\docs\book.pdf"),
+                new(1, FileSystemEntryKind.File, "bbb.md", @"C:\aaa\bbb.md"),
+                new(2, FileSystemEntryKind.Directory, "builds", @"C:\logs\builds"),
+                new(3, FileSystemEntryKind.File, "banner.PNG", @"C:\images\banner.PNG"),
+                new(4, FileSystemEntryKind.File, "bundle.zip", @"C:\packages\bundle.zip"),
             ]));
 
         using var coordinator = new InputCandidateCoordinator(
@@ -54,6 +67,18 @@ internal static partial class Program
                 ],
                 general.Select(static item => item.Kind));
             Assert.Equal("beta", general[4].PrimaryText);
+            Assert.SequenceEqual(
+                [
+                    CandidateIconKind.Document,
+                    CandidateIconKind.Folder,
+                    CandidateIconKind.Image,
+                    CandidateIconKind.Archive,
+                    CandidateIconKind.Command,
+                    CandidateIconKind.Search,
+                ],
+                general.Select(static item => item.IconKind));
+            Assert.Equal(@"C:\aaa", general[0].SecondaryText);
+            Assert.Equal(@"C:\logs", general[1].SecondaryText);
             Assert.Equal(5, fileIndex.Queries.Single().MaximumResults);
 
             nativeShell.RaiseInputChanged("b", InputMode.Ask, revision: 2);
@@ -92,7 +117,8 @@ internal static partial class Program
                     TimeSpan.FromSeconds(2)),
                 "The delayed revision did not start querying.");
             nativeShell.RaiseInputChanged("new", InputMode.Ask, revision: 5);
-            delayed.SetResult([new(9, "old.txt", @"C:\old.txt")]);
+            delayed.SetResult(
+                [new(9, FileSystemEntryKind.File, "old.txt", @"C:\old.txt")]);
             Assert.True(
                 SpinWait.SpinUntil(
                     () => nativeShell.CandidateSnapshots.Any(item => item.Revision == 5),
@@ -104,7 +130,10 @@ internal static partial class Program
 
             fileIndex.SetQuery(static (_, _, _, _) =>
                 ValueTask.FromResult<IReadOnlyList<FileIndexMatch>>(
-                    [new(10, "bbb.md", @"C:\aaa\bbb.md")]));
+                    [
+                        new(10, FileSystemEntryKind.File, "bbb.md", @"C:\aaa\bbb.md"),
+                        new(11, FileSystemEntryKind.Directory, "builds", @"C:\logs\builds"),
+                    ]));
             nativeShell.RaiseInputChanged("b", InputMode.General, revision: 6);
             Assert.True(
                 SpinWait.SpinUntil(
@@ -113,6 +142,8 @@ internal static partial class Program
                 "Activation candidates were not published.");
             var revisionSixQueryCount = fileIndex.Queries.Count(
                 static item => item.Revision == 6);
+            var initialRevisionSixCandidates = nativeShell.CandidateSnapshots
+                .Last(item => item.Revision == 6).Candidates;
             fileIndex.RaiseIndexChanged();
             Assert.True(
                 SpinWait.SpinUntil(
@@ -128,25 +159,53 @@ internal static partial class Program
             var activationCandidates = nativeShell.CandidateSnapshots
                 .Last(item => item.Revision == 6).Candidates;
             var fileCandidate = activationCandidates.First(item => item.Kind == CandidateKind.File);
+            var directoryCandidate = activationCandidates.First(
+                item => item.Kind == CandidateKind.File && item.PrimaryText == "builds");
             var commandCandidate = activationCandidates.First(
                 item => item.Kind == CandidateKind.Command && item.PrimaryText == "build");
             var globalCandidate = activationCandidates.First(
                 item => item.Kind == CandidateKind.GlobalSearch);
 
+            foreach (var refreshed in activationCandidates)
+            {
+                var original = initialRevisionSixCandidates.Single(
+                    item => item.Kind == refreshed.Kind
+                        && item.PrimaryText == refreshed.PrimaryText);
+                Assert.Equal(
+                    original.Token,
+                    refreshed.Token,
+                    "An unchanged candidate must preserve its token during a same-revision refresh.");
+            }
+
             nativeShell.RaiseCandidateActivated(fileCandidate.Token, CandidateAction.Reveal);
             Assert.SequenceEqual([@"C:\aaa\bbb.md"], launcher.Revealed);
+            Assert.SequenceEqual([FileSystemEntryKind.File], launcher.RevealedKinds);
             Assert.Equal(1, nativeShell.HideCommandInputCalls);
+
+            nativeShell.RaiseCandidateActivated(directoryCandidate.Token, CandidateAction.Open);
+            Assert.SequenceEqual([@"C:\logs\builds"], launcher.Opened);
+            Assert.SequenceEqual([FileSystemEntryKind.Directory], launcher.OpenedKinds);
+            Assert.Equal(2, nativeShell.HideCommandInputCalls);
+
+            nativeShell.RaiseCandidateActivated(directoryCandidate.Token, CandidateAction.Reveal);
+            Assert.SequenceEqual(
+                [@"C:\aaa\bbb.md", @"C:\logs\builds"],
+                launcher.Revealed);
+            Assert.SequenceEqual(
+                [FileSystemEntryKind.File, FileSystemEntryKind.Directory],
+                launcher.RevealedKinds);
+            Assert.Equal(3, nativeShell.HideCommandInputCalls);
 
             nativeShell.RaiseCandidateActivated(commandCandidate.Token, CandidateAction.Open);
             Assert.True(
                 commandInvoked.Wait(TimeSpan.FromSeconds(2)),
                 "The selected command candidate did not dispatch.");
-            Assert.Equal(2, nativeShell.HideCommandInputCalls);
+            Assert.Equal(4, nativeShell.HideCommandInputCalls);
 
             nativeShell.RaiseCandidateActivated(globalCandidate.Token, CandidateAction.Open);
             Assert.Equal("全局搜索功能尚未实现。", nativeShell.EnqueuedMessages[^1]);
             Assert.Equal(
-                2,
+                4,
                 nativeShell.HideCommandInputCalls,
                 "The Global Search placeholder must keep the input window open.");
 

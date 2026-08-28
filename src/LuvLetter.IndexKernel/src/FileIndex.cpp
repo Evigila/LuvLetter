@@ -8,29 +8,30 @@
 #include <limits>
 #include <optional>
 #include <system_error>
-#include <unordered_map>
 #include <utility>
 
 namespace luvletter::indexing {
 namespace {
 
-static_assert(sizeof(IndexSnapshot::FileRecord) == 20, "FileRecord must remain compact.");
+static_assert(sizeof(IndexSnapshot::EntityRecord) == 24, "EntityRecord must remain compact.");
 
 constexpr std::uint32_t kSnapshotMagic = 0x49464C4C; // LLFI
-constexpr std::uint16_t kSnapshotVersion = 2;
-constexpr std::uint16_t kSnapshotHeaderSize = 64;
+constexpr std::uint16_t kSnapshotVersion = 3;
+constexpr std::uint16_t kSnapshotHeaderSize = 80;
 constexpr std::uint64_t kPersistedDirectorySize = 12;
-constexpr std::uint64_t kPersistedFileSize = 20;
+constexpr std::uint64_t kPersistedEntitySize = 24;
 constexpr std::uint32_t kNoParent = (std::numeric_limits<std::uint32_t>::max)();
 
 struct SnapshotMetadata final {
     std::uint64_t directoryCount = 0;
-    std::uint64_t fileCount = 0;
+    std::uint64_t entityCount = 0;
     std::uint64_t poolCharacterCount = 0;
     std::uint64_t directoryBytes = 0;
-    std::uint64_t fileBytes = 0;
+    std::uint64_t entityBytes = 0;
     std::uint64_t poolBytes = 0;
     std::uint64_t fileLength = 0;
+    std::uint64_t rootsFingerprint = 0;
+    std::uint64_t payloadChecksum = 0;
 };
 
 struct TemporaryDirectory final {
@@ -38,10 +39,16 @@ struct TemporaryDirectory final {
     std::wstring name;
 };
 
-struct TemporaryFile final {
+struct TemporaryEntity final {
     std::uint32_t directoryIndex;
     std::wstring name;
     std::uint64_t stableId;
+    SearchResultKind kind;
+};
+
+struct PendingDirectory final {
+    std::filesystem::path path;
+    std::uint32_t directoryIndex;
 };
 
 void AppendU16(std::vector<std::byte>& bytes, const std::uint16_t value) {
@@ -109,13 +116,24 @@ bool CheckedMultiply(const std::uint64_t left, const std::uint64_t right, std::u
     return true;
 }
 
-int CompareOrdinalIgnoreCase(const std::wstring_view left, const std::wstring_view right) noexcept {
+std::uint64_t HashBytes(
+    const std::span<const std::byte> bytes,
+    std::uint64_t hash = 14695981039346656037ULL) noexcept {
+    constexpr std::uint64_t prime = 1099511628211ULL;
+    for (const auto value : bytes) {
+        hash ^= std::to_integer<std::uint8_t>(value);
+        hash *= prime;
+    }
+    return hash;
+}
+
+int CompareOrdinal(const std::wstring_view left, const std::wstring_view right, const BOOL ignoreCase) noexcept {
     const int result = CompareStringOrdinal(
         left.data(),
         static_cast<int>(left.size()),
         right.data(),
         static_cast<int>(right.size()),
-        TRUE);
+        ignoreCase);
     if (result == CSTR_LESS_THAN) {
         return -1;
     }
@@ -123,6 +141,10 @@ int CompareOrdinalIgnoreCase(const std::wstring_view left, const std::wstring_vi
         return 1;
     }
     return 0;
+}
+
+int CompareOrdinalIgnoreCase(const std::wstring_view left, const std::wstring_view right) noexcept {
+    return CompareOrdinal(left, right, TRUE);
 }
 
 bool StartsWithOrdinalIgnoreCase(const std::wstring_view value, const std::wstring_view prefix) noexcept {
@@ -157,11 +179,9 @@ std::wstring FoldCase(const std::wstring_view value) {
     return folded;
 }
 
-std::uint64_t StablePathId(const std::wstring_view path) {
-    constexpr std::uint64_t offsetBasis = 14695981039346656037ULL;
+std::uint64_t HashFoldedText(const std::wstring_view text, std::uint64_t hash) {
     constexpr std::uint64_t prime = 1099511628211ULL;
-    std::uint64_t hash = offsetBasis;
-    const std::wstring folded = FoldCase(path);
+    const std::wstring folded = FoldCase(text);
     for (const wchar_t character : folded) {
         const auto value = static_cast<std::uint16_t>(character);
         hash ^= value & 0xFFU;
@@ -172,19 +192,51 @@ std::uint64_t StablePathId(const std::wstring_view path) {
     return hash;
 }
 
+std::uint64_t StablePathId(const std::wstring_view path) {
+    return HashFoldedText(path, 14695981039346656037ULL);
+}
+
 std::filesystem::path NormalizePath(const std::filesystem::path& path) {
     std::error_code error;
     auto absolute = std::filesystem::absolute(path, error);
     if (error) {
         absolute = path;
     }
-    return absolute.lexically_normal();
+    auto normalized = absolute.lexically_normal();
+    std::wstring text = normalized.native();
+    while (text.size() > normalized.root_path().native().size() &&
+           (text.back() == L'\\' || text.back() == L'/')) {
+        text.pop_back();
+    }
+    return std::filesystem::path(std::move(text));
+}
+
+std::filesystem::path ExtendedPath(const std::filesystem::path& path) {
+    const std::wstring text = path.native();
+    if (text.starts_with(L"\\\\?\\")) {
+        return path;
+    }
+    if (text.starts_with(L"\\\\")) {
+        return std::filesystem::path(L"\\\\?\\UNC\\" + text.substr(2));
+    }
+    return std::filesystem::path(L"\\\\?\\" + text);
+}
+
+DWORD AttributesOf(const std::filesystem::path& path) {
+    return GetFileAttributesW(ExtendedPath(path).c_str());
+}
+
+bool IsExplicitReparseRoot(const std::filesystem::path& path) {
+    const DWORD attributes = AttributesOf(path);
+    return attributes != INVALID_FILE_ATTRIBUTES &&
+        (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0 &&
+        (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
 }
 
 bool IsDirectoryCoveredBy(const std::filesystem::path& candidate, const std::filesystem::path& retainedRoot) {
     const std::wstring_view candidateText = candidate.native();
     const std::wstring_view rootText = retainedRoot.native();
-    if (candidateText.size() <= rootText.size() ||
+    if (rootText.empty() || candidateText.size() <= rootText.size() ||
         CompareStringOrdinal(
             candidateText.data(),
             static_cast<int>(rootText.size()),
@@ -195,6 +247,76 @@ bool IsDirectoryCoveredBy(const std::filesystem::path& candidate, const std::fil
     }
     const auto isSeparator = [](const wchar_t character) { return character == L'\\' || character == L'/'; };
     return isSeparator(rootText.back()) || isSeparator(candidateText[rootText.size()]);
+}
+
+std::vector<std::filesystem::path> NormalizeRoots(const std::span<const std::filesystem::path> roots) {
+    std::vector<std::filesystem::path> normalized;
+    normalized.reserve(roots.size());
+    for (const auto& root : roots) {
+        if (!root.empty()) {
+            normalized.push_back(NormalizePath(root));
+        }
+    }
+    std::sort(normalized.begin(), normalized.end(), [](const auto& left, const auto& right) {
+        const int foldedOrder = CompareOrdinalIgnoreCase(left.native(), right.native());
+        return foldedOrder != 0 ? foldedOrder < 0 : CompareOrdinal(left.native(), right.native(), FALSE) < 0;
+    });
+    normalized.erase(
+        std::unique(normalized.begin(), normalized.end(), [](const auto& left, const auto& right) {
+            return CompareOrdinalIgnoreCase(left.native(), right.native()) == 0;
+        }),
+        normalized.end());
+
+    std::vector<std::filesystem::path> disjoint;
+    disjoint.reserve(normalized.size());
+    for (const auto& candidate : normalized) {
+        const bool covered = !IsExplicitReparseRoot(candidate) &&
+            std::any_of(disjoint.begin(), disjoint.end(), [&](const auto& retained) {
+                return IsDirectoryCoveredBy(candidate, retained);
+            });
+        if (!covered) {
+            disjoint.push_back(candidate);
+        }
+    }
+    return disjoint;
+}
+
+std::uint64_t ComputeRootsFingerprint(const std::span<const std::filesystem::path> normalizedRoots) {
+    constexpr std::uint64_t offsetBasis = 14695981039346656037ULL;
+    constexpr std::uint64_t prime = 1099511628211ULL;
+    std::uint64_t hash = offsetBasis;
+    for (const auto& root : normalizedRoots) {
+        hash = HashFoldedText(root.native(), hash);
+        hash ^= 0xFFU;
+        hash *= prime;
+    }
+    return hash;
+}
+
+bool IsValidKind(const std::uint32_t kind) noexcept {
+    return kind == static_cast<std::uint32_t>(SearchResultKind::File) ||
+        kind == static_cast<std::uint32_t>(SearchResultKind::Directory);
+}
+
+bool BaseEntityLess(
+    const std::wstring_view leftName,
+    const SearchResultKind leftKind,
+    const std::uint64_t leftStableId,
+    const std::wstring_view rightName,
+    const SearchResultKind rightKind,
+    const std::uint64_t rightStableId) noexcept {
+    const int foldedOrder = CompareOrdinalIgnoreCase(leftName, rightName);
+    if (foldedOrder != 0) {
+        return foldedOrder < 0;
+    }
+    const int ordinalOrder = CompareOrdinal(leftName, rightName, FALSE);
+    if (ordinalOrder != 0) {
+        return ordinalOrder < 0;
+    }
+    if (leftKind != rightKind) {
+        return leftKind == SearchResultKind::Directory;
+    }
+    return leftStableId < rightStableId;
 }
 
 bool WriteAll(const HANDLE file, const std::span<const std::byte> bytes) {
@@ -232,12 +354,14 @@ std::vector<std::byte> EncodeMetadata(const SnapshotMetadata& metadata) {
     AppendU16(bytes, kSnapshotVersion);
     AppendU16(bytes, kSnapshotHeaderSize);
     AppendU64(bytes, metadata.directoryCount);
-    AppendU64(bytes, metadata.fileCount);
+    AppendU64(bytes, metadata.entityCount);
     AppendU64(bytes, metadata.poolCharacterCount);
     AppendU64(bytes, metadata.directoryBytes);
-    AppendU64(bytes, metadata.fileBytes);
+    AppendU64(bytes, metadata.entityBytes);
     AppendU64(bytes, metadata.poolBytes);
     AppendU64(bytes, metadata.fileLength);
+    AppendU64(bytes, metadata.rootsFingerprint);
+    AppendU64(bytes, metadata.payloadChecksum);
     return bytes;
 }
 
@@ -250,23 +374,81 @@ bool DecodeMetadata(const std::span<const std::byte> bytes, SnapshotMetadata& me
         ReadU16(bytes, cursor, version) && version == kSnapshotVersion &&
         ReadU16(bytes, cursor, headerSize) && headerSize == kSnapshotHeaderSize &&
         ReadU64(bytes, cursor, metadata.directoryCount) &&
-        ReadU64(bytes, cursor, metadata.fileCount) &&
+        ReadU64(bytes, cursor, metadata.entityCount) &&
         ReadU64(bytes, cursor, metadata.poolCharacterCount) &&
         ReadU64(bytes, cursor, metadata.directoryBytes) &&
-        ReadU64(bytes, cursor, metadata.fileBytes) &&
+        ReadU64(bytes, cursor, metadata.entityBytes) &&
         ReadU64(bytes, cursor, metadata.poolBytes) &&
-        ReadU64(bytes, cursor, metadata.fileLength);
+        ReadU64(bytes, cursor, metadata.fileLength) &&
+        ReadU64(bytes, cursor, metadata.rootsFingerprint) &&
+        ReadU64(bytes, cursor, metadata.payloadChecksum) &&
+        cursor == bytes.size();
 }
 
 } // namespace
 
+SearchMatchQuality ClassifySearchMatch(
+    const std::wstring_view name,
+    const SearchResultKind kind,
+    const std::wstring_view query) noexcept {
+    if (name.empty() || query.empty()) {
+        return SearchMatchQuality::None;
+    }
+    if (CompareOrdinalIgnoreCase(name, query) == 0) {
+        return SearchMatchQuality::ExactName;
+    }
+    if (kind == SearchResultKind::File) {
+        const auto dot = name.find_last_of(L'.');
+        if (dot != std::wstring_view::npos && dot != 0 &&
+            CompareOrdinalIgnoreCase(name.substr(0, dot), query) == 0) {
+            return SearchMatchQuality::ExactStem;
+        }
+    }
+    return StartsWithOrdinalIgnoreCase(name, query)
+        ? SearchMatchQuality::Prefix
+        : SearchMatchQuality::None;
+}
+
+bool IsBetterSearchResult(
+    const SearchResult& left,
+    const SearchResult& right,
+    const std::wstring_view query) noexcept {
+    const auto leftQuality = ClassifySearchMatch(left.displayName, left.kind, query);
+    const auto rightQuality = ClassifySearchMatch(right.displayName, right.kind, query);
+    if (leftQuality != rightQuality) {
+        return static_cast<std::uint32_t>(leftQuality) < static_cast<std::uint32_t>(rightQuality);
+    }
+    if (BaseEntityLess(
+            left.displayName,
+            left.kind,
+            left.stableId,
+            right.displayName,
+            right.kind,
+            right.stableId)) {
+        return true;
+    }
+    if (BaseEntityLess(
+            right.displayName,
+            right.kind,
+            right.stableId,
+            left.displayName,
+            left.kind,
+            left.stableId)) {
+        return false;
+    }
+    const int pathOrder = CompareOrdinalIgnoreCase(left.fullPath, right.fullPath);
+    return pathOrder != 0 ? pathOrder < 0 : CompareOrdinal(left.fullPath, right.fullPath, FALSE) < 0;
+}
+
 IndexSnapshot::IndexSnapshot(
     std::vector<DirectoryRecord> directories,
-    std::vector<FileRecord> files,
-    std::vector<wchar_t> stringPool)
+    std::vector<EntityRecord> entities,
+    std::vector<wchar_t> stringPool,
+    const std::uint64_t rootsFingerprint)
     : directories_(std::move(directories)),
-      files_(std::move(files)),
-      stringPool_(std::move(stringPool)) {}
+      entities_(std::move(entities)),
+      stringPool_(std::move(stringPool)),
+      rootsFingerprint_(rootsFingerprint) {}
 
 std::wstring_view IndexSnapshot::PoolString(const std::uint32_t offset, const std::uint32_t length) const noexcept {
     if (offset > stringPool_.size() || length > stringPool_.size() - offset) {
@@ -275,7 +457,7 @@ std::wstring_view IndexSnapshot::PoolString(const std::uint32_t offset, const st
     return {stringPool_.data() + offset, length};
 }
 
-std::wstring IndexSnapshot::ReconstructPath(const FileRecord& record) const {
+std::wstring IndexSnapshot::ReconstructPath(const EntityRecord& record) const {
     if (record.directoryIndex >= directories_.size()) {
         return {};
     }
@@ -309,78 +491,151 @@ std::wstring IndexSnapshot::ReconstructPath(const FileRecord& record) const {
     return path;
 }
 
-std::vector<SearchResult> IndexSnapshot::Query(const std::wstring_view query, const std::size_t maximumResults) const {
+std::vector<SearchResult> IndexSnapshot::Query(
+    const std::wstring_view query,
+    const std::size_t maximumResults) const {
+    return Query(query, maximumResults, {});
+}
+
+std::vector<SearchResult> IndexSnapshot::Query(
+    const std::wstring_view query,
+    const std::size_t maximumResults,
+    const SearchResultFilter& filter) const {
     std::vector<SearchResult> results;
-    if (query.empty() || maximumResults == 0 || files_.empty() || query.size() > INT_MAX) {
+    if (query.empty() || maximumResults == 0 || entities_.empty() || query.size() > INT_MAX) {
         return results;
     }
 
     const auto first = std::lower_bound(
-        files_.begin(),
-        files_.end(),
+        entities_.begin(),
+        entities_.end(),
         query,
-        [this](const FileRecord& record, const std::wstring_view key) {
+        [this](const EntityRecord& record, const std::wstring_view key) {
             return CompareOrdinalIgnoreCase(PoolString(record.nameOffset, record.nameLength), key) < 0;
         });
 
-    results.reserve((std::min)(maximumResults, static_cast<std::size_t>(16)));
-    for (auto iterator = first; iterator != files_.end() && results.size() < maximumResults; ++iterator) {
+    results.reserve((std::min)(maximumResults, static_cast<std::size_t>(64)));
+    const auto append = [this, &results, &filter](const EntityRecord& record) {
+        auto path = ReconstructPath(record);
+        if (path.empty()) {
+            return;
+        }
+        SearchResult result{
+            record.StableId(),
+            static_cast<SearchResultKind>(record.kind),
+            std::wstring(PoolString(record.nameOffset, record.nameLength)),
+            std::move(path)};
+        if (!filter || filter(result)) {
+            results.push_back(std::move(result));
+        }
+    };
+
+    // Equal names form the first quality tier and are contiguous at the prefix lower bound.
+    for (auto iterator = first; iterator != entities_.end() && results.size() < maximumResults; ++iterator) {
+        const auto name = PoolString(iterator->nameOffset, iterator->nameLength);
+        if (CompareOrdinalIgnoreCase(name, query) != 0) {
+            break;
+        }
+        append(*iterator);
+    }
+
+    // Exact stems always begin with "query.". Locating that narrower range independently
+    // prevents earlier generic prefix matches from hiding a better stem.
+    if (results.size() < maximumResults) {
+        std::wstring stemPrefix(query);
+        stemPrefix.push_back(L'.');
+        const auto firstStem = std::lower_bound(
+            entities_.begin(),
+            entities_.end(),
+            std::wstring_view(stemPrefix),
+            [this](const EntityRecord& record, const std::wstring_view key) {
+                return CompareOrdinalIgnoreCase(PoolString(record.nameOffset, record.nameLength), key) < 0;
+            });
+        for (auto iterator = firstStem;
+             iterator != entities_.end() && results.size() < maximumResults;
+             ++iterator) {
+            const auto name = PoolString(iterator->nameOffset, iterator->nameLength);
+            if (!StartsWithOrdinalIgnoreCase(name, stemPrefix)) {
+                break;
+            }
+            const auto kind = static_cast<SearchResultKind>(iterator->kind);
+            if (ClassifySearchMatch(name, kind, query) == SearchMatchQuality::ExactStem) {
+                append(*iterator);
+            }
+        }
+    }
+
+    // Base records already use deterministic ordinal name ordering. After excluding the
+    // higher quality tiers, the first remaining prefix records are the generic Top-K.
+    for (auto iterator = first; iterator != entities_.end() && results.size() < maximumResults; ++iterator) {
         const auto name = PoolString(iterator->nameOffset, iterator->nameLength);
         if (!StartsWithOrdinalIgnoreCase(name, query)) {
             break;
         }
-
-        auto path = ReconstructPath(*iterator);
-        if (!path.empty()) {
-            results.push_back(SearchResult{iterator->StableId(), std::wstring(name), std::move(path)});
+        const auto kind = static_cast<SearchResultKind>(iterator->kind);
+        if (ClassifySearchMatch(name, kind, query) == SearchMatchQuality::Prefix) {
+            append(*iterator);
         }
     }
+    std::sort(results.begin(), results.end(), [&](const SearchResult& left, const SearchResult& right) {
+        return IsBetterSearchResult(left, right, query);
+    });
     return results;
+}
+
+bool IndexSnapshot::MatchesRoots(const std::span<const std::filesystem::path> roots) const {
+    const auto normalized = NormalizeRoots(roots);
+    return rootsFingerprint_ == ComputeRootsFingerprint(normalized);
+}
+
+std::size_t IndexSnapshot::FileCount() const noexcept {
+    return static_cast<std::size_t>(std::count_if(entities_.begin(), entities_.end(), [](const auto& entity) {
+        return entity.kind == static_cast<std::uint32_t>(SearchResultKind::File);
+    }));
 }
 
 bool IndexSnapshot::Save(const std::filesystem::path& filePath) const {
     if (directories_.size() > (std::numeric_limits<std::uint32_t>::max)() ||
-        files_.size() > (std::numeric_limits<std::uint32_t>::max)() ||
+        entities_.size() > (std::numeric_limits<std::uint32_t>::max)() ||
         stringPool_.size() > (std::numeric_limits<std::uint32_t>::max)()) {
         return false;
     }
 
     std::error_code error;
-    std::filesystem::create_directories(filePath.parent_path(), error);
+    if (!filePath.parent_path().empty()) {
+        std::filesystem::create_directories(filePath.parent_path(), error);
+    }
     if (error) {
         return false;
     }
 
     std::uint64_t directoryBytes = 0;
-    std::uint64_t fileBytes = 0;
+    std::uint64_t entityBytes = 0;
     std::uint64_t poolBytes = 0;
     std::uint64_t fileLength = kSnapshotHeaderSize;
     if (!CheckedMultiply(directories_.size(), kPersistedDirectorySize, directoryBytes) ||
-        !CheckedMultiply(files_.size(), kPersistedFileSize, fileBytes) ||
+        !CheckedMultiply(entities_.size(), kPersistedEntitySize, entityBytes) ||
         !CheckedMultiply(stringPool_.size(), sizeof(wchar_t), poolBytes) ||
         !CheckedAdd(fileLength, directoryBytes, fileLength) ||
-        !CheckedAdd(fileLength, fileBytes, fileLength) ||
+        !CheckedAdd(fileLength, entityBytes, fileLength) ||
         !CheckedAdd(fileLength, poolBytes, fileLength)) {
         return false;
     }
 
-    const SnapshotMetadata metadata{
-        directories_.size(), files_.size(), stringPool_.size(), directoryBytes, fileBytes, poolBytes, fileLength};
-    const auto header = EncodeMetadata(metadata);
-
     std::vector<std::byte> records;
-    records.reserve(static_cast<std::size_t>(directoryBytes + fileBytes));
+    records.reserve(static_cast<std::size_t>(directoryBytes + entityBytes));
     for (const auto& directory : directories_) {
         AppendU32(records, directory.parentIndex);
         AppendU32(records, directory.nameOffset);
         AppendU32(records, directory.nameLength);
     }
-    for (const auto& file : files_) {
-        AppendU32(records, file.directoryIndex);
-        AppendU32(records, file.nameOffset);
-        AppendU32(records, file.nameLength);
-        AppendU32(records, file.stableIdLow);
-        AppendU32(records, file.stableIdHigh);
+    for (const auto& entity : entities_) {
+        AppendU32(records, entity.directoryIndex);
+        AppendU32(records, entity.nameOffset);
+        AppendU32(records, entity.nameLength);
+        AppendU32(records, entity.stableIdLow);
+        AppendU32(records, entity.stableIdHigh);
+        AppendU32(records, entity.kind);
     }
 
     auto temporaryPath = filePath;
@@ -400,6 +655,18 @@ bool IndexSnapshot::Save(const std::filesystem::path& filePath) const {
     const auto poolBytesView = std::span{
         reinterpret_cast<const std::byte*>(stringPool_.data()),
         stringPool_.size() * sizeof(wchar_t)};
+    const auto checksum = HashBytes(poolBytesView, HashBytes(records));
+    const SnapshotMetadata metadata{
+        directories_.size(),
+        entities_.size(),
+        stringPool_.size(),
+        directoryBytes,
+        entityBytes,
+        poolBytes,
+        fileLength,
+        rootsFingerprint_,
+        checksum};
+    const auto header = EncodeMetadata(metadata);
     const bool succeeded = WriteAll(handle, header) &&
         WriteAll(handle, records) &&
         WriteAll(handle, poolBytesView) &&
@@ -436,46 +703,50 @@ std::shared_ptr<const IndexSnapshot> IndexSnapshot::Load(const std::filesystem::
         ReadAll(handle, headerBytes) && DecodeMetadata(headerBytes, metadata);
 
     std::uint64_t expectedDirectoryBytes = 0;
-    std::uint64_t expectedFileBytes = 0;
+    std::uint64_t expectedEntityBytes = 0;
     std::uint64_t expectedPoolBytes = 0;
     std::uint64_t expectedLength = kSnapshotHeaderSize;
     valid = valid &&
         CheckedMultiply(metadata.directoryCount, kPersistedDirectorySize, expectedDirectoryBytes) &&
-        CheckedMultiply(metadata.fileCount, kPersistedFileSize, expectedFileBytes) &&
+        CheckedMultiply(metadata.entityCount, kPersistedEntitySize, expectedEntityBytes) &&
         CheckedMultiply(metadata.poolCharacterCount, sizeof(wchar_t), expectedPoolBytes) &&
         CheckedAdd(expectedLength, expectedDirectoryBytes, expectedLength) &&
-        CheckedAdd(expectedLength, expectedFileBytes, expectedLength) &&
+        CheckedAdd(expectedLength, expectedEntityBytes, expectedLength) &&
         CheckedAdd(expectedLength, expectedPoolBytes, expectedLength) &&
         metadata.directoryBytes == expectedDirectoryBytes &&
-        metadata.fileBytes == expectedFileBytes &&
+        metadata.entityBytes == expectedEntityBytes &&
         metadata.poolBytes == expectedPoolBytes &&
         metadata.fileLength == expectedLength &&
         size.QuadPart >= 0 && static_cast<std::uint64_t>(size.QuadPart) == expectedLength &&
         metadata.directoryCount <= (std::numeric_limits<std::uint32_t>::max)() &&
-        metadata.fileCount <= (std::numeric_limits<std::uint32_t>::max)() &&
+        metadata.entityCount <= (std::numeric_limits<std::uint32_t>::max)() &&
         metadata.poolCharacterCount <= (std::numeric_limits<std::uint32_t>::max)() &&
-        expectedDirectoryBytes + expectedFileBytes <= (std::numeric_limits<std::size_t>::max)() &&
+        expectedDirectoryBytes <= (std::numeric_limits<std::size_t>::max)() &&
+        expectedEntityBytes <= (std::numeric_limits<std::size_t>::max)() - expectedDirectoryBytes &&
         expectedPoolBytes <= (std::numeric_limits<std::size_t>::max)();
     if (!valid) {
         CloseHandle(handle);
         return {};
     }
 
-    std::vector<std::byte> recordBytes(static_cast<std::size_t>(expectedDirectoryBytes + expectedFileBytes));
+    std::vector<std::byte> recordBytes(static_cast<std::size_t>(expectedDirectoryBytes + expectedEntityBytes));
     std::vector<wchar_t> stringPool(static_cast<std::size_t>(metadata.poolCharacterCount));
     valid = ReadAll(handle, recordBytes) &&
         ReadAll(handle, std::span{
             reinterpret_cast<std::byte*>(stringPool.data()),
             stringPool.size() * sizeof(wchar_t)});
     CloseHandle(handle);
-    if (!valid) {
+    const auto poolBytesView = std::span{
+        reinterpret_cast<const std::byte*>(stringPool.data()),
+        stringPool.size() * sizeof(wchar_t)};
+    if (!valid || HashBytes(poolBytesView, HashBytes(recordBytes)) != metadata.payloadChecksum) {
         return {};
     }
 
     std::vector<DirectoryRecord> directories;
-    std::vector<FileRecord> files;
+    std::vector<EntityRecord> entities;
     directories.reserve(static_cast<std::size_t>(metadata.directoryCount));
-    files.reserve(static_cast<std::size_t>(metadata.fileCount));
+    entities.reserve(static_cast<std::size_t>(metadata.entityCount));
     std::size_t cursor = 0;
     for (std::uint64_t index = 0; index < metadata.directoryCount; ++index) {
         DirectoryRecord directory{};
@@ -490,157 +761,166 @@ std::shared_ptr<const IndexSnapshot> IndexSnapshot::Load(const std::filesystem::
         }
         directories.push_back(directory);
     }
-    for (std::uint64_t index = 0; index < metadata.fileCount; ++index) {
-        FileRecord file{};
-        valid = ReadU32(recordBytes, cursor, file.directoryIndex) &&
-            ReadU32(recordBytes, cursor, file.nameOffset) &&
-            ReadU32(recordBytes, cursor, file.nameLength) &&
-            ReadU32(recordBytes, cursor, file.stableIdLow) &&
-            ReadU32(recordBytes, cursor, file.stableIdHigh) &&
-            file.directoryIndex < directories.size() &&
-            file.nameOffset <= stringPool.size() &&
-            file.nameLength <= stringPool.size() - file.nameOffset;
+    for (std::uint64_t index = 0; index < metadata.entityCount; ++index) {
+        EntityRecord entity{};
+        valid = ReadU32(recordBytes, cursor, entity.directoryIndex) &&
+            ReadU32(recordBytes, cursor, entity.nameOffset) &&
+            ReadU32(recordBytes, cursor, entity.nameLength) &&
+            ReadU32(recordBytes, cursor, entity.stableIdLow) &&
+            ReadU32(recordBytes, cursor, entity.stableIdHigh) &&
+            ReadU32(recordBytes, cursor, entity.kind) &&
+            entity.directoryIndex < directories.size() &&
+            entity.nameOffset <= stringPool.size() &&
+            entity.nameLength <= stringPool.size() - entity.nameOffset &&
+            IsValidKind(entity.kind);
         if (!valid) {
             return {};
         }
-        files.push_back(file);
+        entities.push_back(entity);
     }
     if (cursor != recordBytes.size()) {
         return {};
     }
 
-    for (std::size_t index = 1; index < files.size(); ++index) {
-        const auto previous = std::wstring_view{
-            stringPool.data() + files[index - 1].nameOffset, files[index - 1].nameLength};
-        const auto current = std::wstring_view{
-            stringPool.data() + files[index].nameOffset, files[index].nameLength};
-        if (CompareOrdinalIgnoreCase(previous, current) > 0) {
+    for (std::size_t index = 1; index < entities.size(); ++index) {
+        const auto& previous = entities[index - 1];
+        const auto& current = entities[index];
+        const auto previousName = std::wstring_view{
+            stringPool.data() + previous.nameOffset, previous.nameLength};
+        const auto currentName = std::wstring_view{
+            stringPool.data() + current.nameOffset, current.nameLength};
+        if (BaseEntityLess(
+                currentName,
+                static_cast<SearchResultKind>(current.kind),
+                current.StableId(),
+                previousName,
+                static_cast<SearchResultKind>(previous.kind),
+                previous.StableId())) {
             return {};
         }
     }
 
     return std::make_shared<const IndexSnapshot>(
-        std::move(directories), std::move(files), std::move(stringPool));
+        std::move(directories),
+        std::move(entities),
+        std::move(stringPool),
+        metadata.rootsFingerprint);
 }
 
 std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
     const std::span<const std::filesystem::path> roots,
     const std::atomic_bool* cancellation) {
-    std::vector<std::filesystem::path> normalizedRoots;
-    normalizedRoots.reserve(roots.size());
-    for (const auto& root : roots) {
-        const auto normalized = NormalizePath(root);
-        std::error_code error;
-        if (std::filesystem::is_directory(normalized, error) && !error) {
-            normalizedRoots.push_back(normalized);
-        }
-    }
-    std::sort(normalizedRoots.begin(), normalizedRoots.end(), [](const auto& left, const auto& right) {
-        return CompareOrdinalIgnoreCase(left.native(), right.native()) < 0;
-    });
-    normalizedRoots.erase(
-        std::unique(normalizedRoots.begin(), normalizedRoots.end(), [](const auto& left, const auto& right) {
-            return CompareOrdinalIgnoreCase(left.native(), right.native()) == 0;
-        }),
-        normalizedRoots.end());
-
-    std::vector<std::filesystem::path> disjointRoots;
-    disjointRoots.reserve(normalizedRoots.size());
-    for (const auto& candidate : normalizedRoots) {
-        const bool covered = std::any_of(disjointRoots.begin(), disjointRoots.end(), [&](const auto& retained) {
-            return IsDirectoryCoveredBy(candidate, retained);
-        });
-        if (!covered) {
-            disjointRoots.push_back(candidate);
-        }
-    }
-    normalizedRoots = std::move(disjointRoots);
+    const auto normalizedRoots = NormalizeRoots(roots);
+    const auto rootsFingerprint = ComputeRootsFingerprint(normalizedRoots);
 
     std::vector<TemporaryDirectory> directories;
-    std::vector<TemporaryFile> files;
-    std::unordered_map<std::wstring, std::uint32_t> directoryByFoldedPath;
-
-    auto addDirectory = [&](const std::filesystem::path& path, const std::uint32_t parent, const bool root) {
-        const std::wstring key = FoldCase(path.native());
-        const auto existing = directoryByFoldedPath.find(key);
-        if (existing != directoryByFoldedPath.end()) {
-            return existing->second;
-        }
-        const auto index = static_cast<std::uint32_t>(directories.size());
-        std::wstring name = root ? path.native() : path.filename().native();
-        directories.push_back(TemporaryDirectory{parent, std::move(name)});
-        directoryByFoldedPath.emplace(std::move(key), index);
-        return index;
-    };
+    std::vector<TemporaryEntity> entities;
+    std::vector<PendingDirectory> pending;
 
     for (const auto& root : normalizedRoots) {
         if (cancellation != nullptr && cancellation->load(std::memory_order_relaxed)) {
             return {};
         }
+        const DWORD rootAttributes = AttributesOf(root);
+        if (rootAttributes == INVALID_FILE_ATTRIBUTES ||
+            (rootAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+            continue;
+        }
         if (directories.size() >= (std::numeric_limits<std::uint32_t>::max)()) {
             return {};
         }
-
-        const std::uint32_t rootIndex = addDirectory(root, kNoParent, true);
-        std::error_code error;
-        std::filesystem::recursive_directory_iterator iterator(
-            root,
-            std::filesystem::directory_options::skip_permission_denied,
-            error);
-        const std::filesystem::recursive_directory_iterator end;
-        while (iterator != end) {
-            if (cancellation != nullptr && cancellation->load(std::memory_order_relaxed)) {
-                return {};
-            }
-            error.clear();
-
-            const auto entryPath = iterator->path().lexically_normal();
-            const bool isDirectory = iterator->is_directory(error);
-            if (!error && isDirectory) {
-                const auto parentKey = FoldCase(entryPath.parent_path().native());
-                const auto parentIterator = directoryByFoldedPath.find(parentKey);
-                const auto parent = parentIterator == directoryByFoldedPath.end() ? rootIndex : parentIterator->second;
-                if (directories.size() < (std::numeric_limits<std::uint32_t>::max)()) {
-                    addDirectory(entryPath, parent, false);
-                }
-            } else {
-                error.clear();
-                const bool isFile = iterator->is_regular_file(error);
-                if (!error && isFile) {
-                    const auto parentKey = FoldCase(entryPath.parent_path().native());
-                    const auto parentIterator = directoryByFoldedPath.find(parentKey);
-                    const auto parent = parentIterator == directoryByFoldedPath.end() ? rootIndex : parentIterator->second;
-                    auto name = entryPath.filename().native();
-                    if (!name.empty() && name.size() <= (std::numeric_limits<std::uint32_t>::max)()) {
-                        files.push_back(TemporaryFile{
-                            parent,
-                            std::move(name),
-                            StablePathId(entryPath.native())});
-                    }
-                }
-            }
-
-            error.clear();
-            iterator.increment(error);
-        }
+        const auto rootIndex = static_cast<std::uint32_t>(directories.size());
+        directories.push_back(TemporaryDirectory{kNoParent, root.native()});
+        pending.push_back(PendingDirectory{root, rootIndex});
     }
 
-    std::sort(files.begin(), files.end(), [](const TemporaryFile& left, const TemporaryFile& right) {
-        const int nameOrder = CompareOrdinalIgnoreCase(left.name, right.name);
-        if (nameOrder != 0) {
-            return nameOrder < 0;
+    while (!pending.empty()) {
+        if (cancellation != nullptr && cancellation->load(std::memory_order_relaxed)) {
+            return {};
         }
-        if (left.directoryIndex != right.directoryIndex) {
-            return left.directoryIndex < right.directoryIndex;
+        PendingDirectory current = std::move(pending.back());
+        pending.pop_back();
+
+        auto searchPath = ExtendedPath(current.path);
+        searchPath /= L"*";
+        WIN32_FIND_DATAW data{};
+        HANDLE find = FindFirstFileExW(
+            searchPath.c_str(),
+            FindExInfoBasic,
+            &data,
+            FindExSearchNameMatch,
+            nullptr,
+            FIND_FIRST_EX_LARGE_FETCH);
+        if (find == INVALID_HANDLE_VALUE && GetLastError() == ERROR_INVALID_PARAMETER) {
+            find = FindFirstFileExW(
+                searchPath.c_str(),
+                FindExInfoBasic,
+                &data,
+                FindExSearchNameMatch,
+                nullptr,
+                0);
         }
-        return left.stableId < right.stableId;
+        if (find == INVALID_HANDLE_VALUE) {
+            continue;
+        }
+
+        do {
+            if (cancellation != nullptr && cancellation->load(std::memory_order_relaxed)) {
+                FindClose(find);
+                return {};
+            }
+            const std::wstring_view name(data.cFileName);
+            if (name == L"." || name == L".." || name.empty()) {
+                continue;
+            }
+            if (entities.size() >= (std::numeric_limits<std::uint32_t>::max)()) {
+                FindClose(find);
+                return {};
+            }
+
+            const bool directory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            const auto entryPath = (current.path / name).lexically_normal();
+            if (directory) {
+                if (directories.size() >= (std::numeric_limits<std::uint32_t>::max)()) {
+                    FindClose(find);
+                    return {};
+                }
+                const auto directoryIndex = static_cast<std::uint32_t>(directories.size());
+                directories.push_back(TemporaryDirectory{current.directoryIndex, std::wstring(name)});
+                entities.push_back(TemporaryEntity{
+                    current.directoryIndex,
+                    std::wstring(name),
+                    StablePathId(entryPath.native()),
+                    SearchResultKind::Directory});
+                if ((data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0) {
+                    pending.push_back(PendingDirectory{entryPath, directoryIndex});
+                }
+            } else {
+                entities.push_back(TemporaryEntity{
+                    current.directoryIndex,
+                    std::wstring(name),
+                    StablePathId(entryPath.native()),
+                    SearchResultKind::File});
+            }
+        } while (FindNextFileW(find, &data));
+        FindClose(find);
+    }
+
+    std::sort(entities.begin(), entities.end(), [](const TemporaryEntity& left, const TemporaryEntity& right) {
+        return BaseEntityLess(
+            left.name,
+            left.kind,
+            left.stableId,
+            right.name,
+            right.kind,
+            right.stableId);
     });
 
     std::vector<wchar_t> stringPool;
     std::vector<IndexSnapshot::DirectoryRecord> packedDirectories;
-    std::vector<IndexSnapshot::FileRecord> packedFiles;
+    std::vector<IndexSnapshot::EntityRecord> packedEntities;
     packedDirectories.reserve(directories.size());
-    packedFiles.reserve(files.size());
+    packedEntities.reserve(entities.size());
 
     auto addString = [&stringPool](const std::wstring_view value) -> std::optional<std::uint32_t> {
         if (stringPool.size() > (std::numeric_limits<std::uint32_t>::max)() - value.size()) {
@@ -657,27 +937,33 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
             return {};
         }
         packedDirectories.push_back(IndexSnapshot::DirectoryRecord{
-            directory.parentIndex, *offset, static_cast<std::uint32_t>(directory.name.size())});
+            directory.parentIndex,
+            *offset,
+            static_cast<std::uint32_t>(directory.name.size())});
     }
-    for (const auto& file : files) {
-        const auto offset = addString(file.name);
+    for (const auto& entity : entities) {
+        const auto offset = addString(entity.name);
         if (!offset.has_value()) {
             return {};
         }
-        packedFiles.push_back(IndexSnapshot::FileRecord{
-            file.directoryIndex,
+        packedEntities.push_back(IndexSnapshot::EntityRecord{
+            entity.directoryIndex,
             *offset,
-            static_cast<std::uint32_t>(file.name.size()),
-            static_cast<std::uint32_t>(file.stableId),
-            static_cast<std::uint32_t>(file.stableId >> 32U)});
+            static_cast<std::uint32_t>(entity.name.size()),
+            static_cast<std::uint32_t>(entity.stableId),
+            static_cast<std::uint32_t>(entity.stableId >> 32U),
+            static_cast<std::uint32_t>(entity.kind)});
     }
 
     return std::make_shared<const IndexSnapshot>(
-        std::move(packedDirectories), std::move(packedFiles), std::move(stringPool));
+        std::move(packedDirectories),
+        std::move(packedEntities),
+        std::move(stringPool),
+        rootsFingerprint);
 }
 
 std::wstring Utf8ToWide(const std::string_view text) {
-    if (text.empty()) {
+    if (text.empty() || text.size() > INT_MAX) {
         return {};
     }
     const int length = MultiByteToWideChar(
@@ -699,7 +985,7 @@ std::wstring Utf8ToWide(const std::string_view text) {
 }
 
 std::string WideToUtf8(const std::wstring_view text) {
-    if (text.empty()) {
+    if (text.empty() || text.size() > INT_MAX) {
         return {};
     }
     const int length = WideCharToMultiByte(

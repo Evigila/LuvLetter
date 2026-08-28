@@ -40,6 +40,16 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 - Added index-generation status refresh. The current input is queried again automatically
   when the first background build completes or the companion reconnects, without requiring
   another keystroke.
+- Added folder-name indexing and activation. Folder candidates open with Enter and are
+  selected in their parent location with Shift+Enter.
+- Added lightweight candidate glyphs for folders, images, documents, archives, audio,
+  video, executables, commands, searches, and generic files. Rendering performs no Shell
+  icon extraction or thumbnail I/O.
+- Added coalesced `ReadDirectoryChangesW` maintenance with a bounded in-memory Delta,
+  exact tombstones, directory-prefix tombstones, and safe rebuild fallback after watcher
+  uncertainty or Delta thresholds.
+- Added snapshot v3 provenance and integrity checks. Cached entities carry their type,
+  roots are fingerprinted, and a payload checksum rejects silent corruption.
 
 ### Changed
 
@@ -52,17 +62,30 @@ reserved product capabilities. Architectural ownership and dependency rules rema
   for the next text or caret update.
 - `Cmd` mode preserves strict command behavior and reports unknown commands through the
   message queue; `Ask` bypasses command matching entirely.
-- Native ABI version 5 adds revisioned input-change events, candidate snapshots, and
-  candidate-activation events while retaining the selected mode on final submission.
+- Native ABI version 6 adds lightweight candidate icon categories while retaining the
+  revisioned input-change, candidate-snapshot, candidate-activation, and selected-mode
+  contracts introduced in version 5.
 - Enter now closes the input only after a selected file or command is successfully
   activated. With no candidate selected, Enter remains ordinary input submission.
+- Replaced one recursive filesystem iterator with an explicit Win32 per-directory work
+  queue. An unreadable, disappearing, or long-path directory no longer truncates all
+  later sibling directories in the user profile.
+- The default indexing scope covers the complete current user profile, including its
+  Downloads and development subtrees, and retains redirected Windows Known Folders that
+  resolve outside that profile.
+- Changed filesystem ranking to exact display name, then exact stem, then prefix, with
+  deterministic folder-first ties. Same-revision refreshes reuse stable tokens and retain
+  the selected candidate when it still exists.
+- Upgraded the companion wire protocol to LLIX v2 so each result carries an explicit file
+  or directory type.
 
 ### Reserved
 
 - The final candidate row reserves Global Search. Activating it currently reports that
   the feature is not implemented and keeps the input open.
-- File search currently covers case-insensitive filename/stem prefixes. Fuzzy matching,
-  pinyin matching, NTFS MFT/USN incremental maintenance, and configurable UI settings
-  are reserved for later iterations.
+- Filesystem search currently covers case-insensitive exact-name, exact-stem, and prefix
+  matching. Fuzzy matching, pinyin matching, durable offline incremental recovery,
+  NTFS MFT/USN acceleration, and configurable UI settings are reserved for later
+  iterations.
 - Echo is the current natural-language fallback for `Gen` and `Ask`; this response path
   is reserved for a future AI search integration.

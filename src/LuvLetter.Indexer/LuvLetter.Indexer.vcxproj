@@ -89,7 +89,11 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="IndexMaintenance.cpp" />
     <ClCompile Include="Main.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="IndexMaintenance.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\LuvLetter.IndexKernel\LuvLetter.IndexKernel.vcxproj">

@@ -1,5 +1,6 @@
 #include "luvletter/indexing/FileIndex.h"
 #include "luvletter/indexing/IndexProtocol.h"
+#include "IndexMaintenance.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -199,16 +200,13 @@ class IndexStore final {
 public:
     explicit IndexStore(std::filesystem::path snapshotPath)
         : snapshotPath_(std::move(snapshotPath)) {
-        snapshot_ = IndexSnapshot::Load(snapshotPath_);
-        const bool loadedSnapshot = snapshot_ != nullptr;
-        if (!snapshot_) {
-            snapshot_ = std::make_shared<const IndexSnapshot>();
-        }
-        status_.store(loadedSnapshot ? 2ULL : 0ULL, std::memory_order_relaxed);
+        cachedSnapshot_ = IndexSnapshot::Load(snapshotPath_);
+        snapshot_ = std::make_shared<const IndexSnapshot>();
         worker_ = std::thread([this] { WorkerMain(); });
     }
 
     ~IndexStore() {
+        changeMonitor_.Stop();
         {
             std::lock_guard lock(configurationMutex_);
             stopping_ = true;
@@ -224,13 +222,49 @@ public:
     IndexStore& operator=(const IndexStore&) = delete;
 
     void Configure(std::vector<std::filesystem::path> roots) {
+        changeMonitor_.Stop();
+        const auto watcherRoots = roots;
         {
             std::lock_guard lock(configurationMutex_);
-            status_.fetch_or(1ULL, std::memory_order_release);
+            std::unique_lock viewLock(viewMutex_);
+            delta_.Clear();
+            std::shared_ptr<const IndexSnapshot> compatibleSnapshot;
+            {
+                std::shared_lock snapshotLock(snapshotMutex_);
+                if (snapshot_->MatchesRoots(roots)) {
+                    compatibleSnapshot = snapshot_;
+                }
+            }
+            if (!compatibleSnapshot && cachedSnapshot_ && cachedSnapshot_->MatchesRoots(roots)) {
+                compatibleSnapshot = cachedSnapshot_;
+            }
+            const bool hasCompatibleSnapshot = compatibleSnapshot != nullptr;
+            if (!compatibleSnapshot) {
+                compatibleSnapshot = std::make_shared<const IndexSnapshot>();
+            }
+            {
+                std::unique_lock snapshotLock(snapshotMutex_);
+                snapshot_ = std::move(compatibleSnapshot);
+            }
+
+            const std::uint64_t currentStatus = status_.load(std::memory_order_relaxed);
+            const std::uint64_t generation = hasCompatibleSnapshot
+                ? (std::max)(1ULL, currentStatus >> 1U)
+                : currentStatus >> 1U;
+            status_.store((generation << 1U) | 1ULL, std::memory_order_release);
             roots_ = std::move(roots);
             hasConfiguration_ = true;
             ++configurationGeneration_;
             cancelBuild_.store(true, std::memory_order_relaxed);
+        }
+        try {
+            changeMonitor_.Start(watcherRoots, [this](
+                std::vector<luvletter::indexer::FileSystemChange> changes,
+                const bool uncertain) {
+                ApplyFileSystemChanges(std::move(changes), uncertain);
+            });
+        } catch (...) {
+            // Full reconciliation remains available when change monitoring cannot start.
         }
         configurationChanged_.notify_all();
     }
@@ -238,12 +272,13 @@ public:
     [[nodiscard]] std::vector<luvletter::indexing::SearchResult> Query(
         const std::wstring_view query,
         const std::size_t maximumResults) const {
+        std::shared_lock viewLock(viewMutex_);
         std::shared_ptr<const IndexSnapshot> snapshot;
         {
             std::shared_lock lock(snapshotMutex_);
             snapshot = snapshot_;
         }
-        return snapshot->Query(query, maximumResults);
+        return delta_.Query(query, *snapshot, maximumResults);
     }
 
     [[nodiscard]] protocol::IndexStatus Status() const noexcept {
@@ -252,6 +287,29 @@ public:
     }
 
 private:
+    void ApplyFileSystemChanges(
+        std::vector<luvletter::indexer::FileSystemChange> changes,
+        const bool uncertain) {
+        const bool deltaLimitReached = delta_.Apply(changes);
+        if (!changes.empty()) {
+            status_.fetch_add(2ULL, std::memory_order_acq_rel);
+        }
+        if (!uncertain && !deltaLimitReached) {
+            return;
+        }
+
+        {
+            std::lock_guard lock(configurationMutex_);
+            if (stopping_ || !hasConfiguration_) {
+                return;
+            }
+            status_.fetch_or(1ULL, std::memory_order_release);
+            ++configurationGeneration_;
+            cancelBuild_.store(true, std::memory_order_relaxed);
+        }
+        configurationChanged_.notify_all();
+    }
+
     void WorkerMain() {
         const bool backgroundMode = SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) != FALSE;
         if (!backgroundMode) {
@@ -269,6 +327,7 @@ private:
 
             const auto roots = roots_;
             const auto generation = configurationGeneration_;
+            const auto deltaRevision = delta_.CaptureRevision();
             cancelBuild_.store(false, std::memory_order_relaxed);
             lock.unlock();
 
@@ -280,12 +339,20 @@ private:
             }
             if (rebuilt && generation == configurationGeneration_) {
                 {
-                    std::unique_lock snapshotLock(snapshotMutex_);
-                    snapshot_ = rebuilt;
+                    std::unique_lock viewLock(viewMutex_);
+                    {
+                        std::unique_lock snapshotLock(snapshotMutex_);
+                        snapshot_ = rebuilt;
+                    }
+                    delta_.PruneThrough(deltaRevision);
                 }
-                const std::uint64_t currentStatus = status_.load(std::memory_order_relaxed);
-                const std::uint64_t nextGeneration = (currentStatus >> 1U) + 1U;
-                status_.store(nextGeneration << 1U, std::memory_order_release);
+                std::uint64_t currentStatus = status_.load(std::memory_order_acquire);
+                while (!status_.compare_exchange_weak(
+                    currentStatus,
+                    ((currentStatus >> 1U) + 1U) << 1U,
+                    std::memory_order_release,
+                    std::memory_order_acquire)) {
+                }
                 completedGeneration = generation;
 
                 lock.unlock();
@@ -314,8 +381,12 @@ private:
     }
 
     const std::filesystem::path snapshotPath_;
+    mutable std::shared_mutex viewMutex_;
     mutable std::shared_mutex snapshotMutex_;
     std::shared_ptr<const IndexSnapshot> snapshot_;
+    std::shared_ptr<const IndexSnapshot> cachedSnapshot_;
+    luvletter::indexer::LiveIndexDelta delta_;
+    luvletter::indexer::DirectoryChangeMonitor changeMonitor_;
 
     std::mutex configurationMutex_;
     std::condition_variable configurationChanged_;
@@ -419,6 +490,7 @@ bool HandleQuery(
     for (const auto& result : results) {
         std::vector<std::byte> item;
         protocol::AppendU64(item, result.stableId);
+        protocol::AppendU32(item, static_cast<std::uint32_t>(result.kind));
         protocol::AppendUtf8(item, WideToUtf8(result.displayName));
         protocol::AppendUtf8(item, WideToUtf8(result.fullPath));
         if (sizeof(editorRevision) + sizeof(encodedCount) + encodedItems.size() + item.size() >
@@ -448,7 +520,7 @@ int Run(const Options& options) {
         return 3;
     }
 
-    IndexStore store(options.dataDirectory / L"file-index-v2.bin");
+    IndexStore store(options.dataDirectory / L"file-index-v3.bin");
     bool handshakeComplete = false;
     while (ParentIsAlive(parentProcess.Get())) {
         std::vector<std::byte> headerBytes(protocol::kHeaderSize);

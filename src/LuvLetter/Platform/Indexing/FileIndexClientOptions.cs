@@ -36,7 +36,8 @@ internal sealed class FileIndexClientOptions
         var retained = new List<string>(normalized.Length);
         foreach (var candidate in normalized)
         {
-            if (!retained.Any(parent => IsSameOrChild(parent, candidate)))
+            if (IsReparseDirectory(candidate)
+                || !retained.Any(parent => IsSameOrChild(parent, candidate)))
             {
                 retained.Add(candidate);
             }
@@ -69,7 +70,40 @@ internal sealed class FileIndexClientOptions
     private static IReadOnlyList<string> CreateDefaultRoots()
     {
         var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        return string.IsNullOrWhiteSpace(userProfile) ? [] : [userProfile];
+        var candidates = new[]
+        {
+            userProfile,
+            Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+            Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+            Environment.GetFolderPath(Environment.SpecialFolder.MyPictures),
+            Environment.GetFolderPath(Environment.SpecialFolder.MyMusic),
+            Environment.GetFolderPath(Environment.SpecialFolder.MyVideos),
+            string.IsNullOrWhiteSpace(userProfile)
+                ? string.Empty
+                : Path.Combine(userProfile, "Downloads"),
+        };
+        return candidates
+            .Where(static path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static bool IsReparseDirectory(string path)
+    {
+        try
+        {
+            var attributes = File.GetAttributes(path);
+            return (attributes & FileAttributes.Directory) != 0
+                && (attributes & FileAttributes.ReparsePoint) != 0;
+        }
+        catch (IOException)
+        {
+            return false;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     private static bool IsSameOrChild(string parent, string candidate)

@@ -358,7 +358,9 @@ HRESULT NativeShellHost::SetInputCandidates(
 			if (source.token == 0
 				|| source.primaryText == nullptr
 				|| source.kind < LuvLetterCandidateKindFile
-				|| source.kind > LuvLetterCandidateKindGlobalSearch)
+				|| source.kind > LuvLetterCandidateKindGlobalSearch
+				|| source.iconKind < LuvLetterCandidateIconKindNone
+				|| source.iconKind > LuvLetterCandidateIconKindSearch)
 			{
 				request->Release();
 				return E_INVALIDARG;
@@ -376,6 +378,7 @@ HRESULT NativeShellHost::SetInputCandidates(
 			InputCandidateItem item{};
 			item.token = source.token;
 			item.kind = static_cast<LuvLetterCandidateKind>(source.kind);
+			item.iconKind = static_cast<LuvLetterCandidateIconKind>(source.iconKind);
 			item.primaryText.assign(source.primaryText, primaryLength);
 			if (source.secondaryText != nullptr)
 			{

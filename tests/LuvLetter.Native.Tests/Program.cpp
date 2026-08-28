@@ -8,6 +8,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace
@@ -80,7 +81,7 @@ namespace
 
 	void TestAbiContract()
 	{
-		Assert(LUVLETTER_NATIVE_ABI_VERSION == 5, "Native ABI must expose input candidates.");
+		Assert(LUVLETTER_NATIVE_ABI_VERSION == 6, "Native ABI must expose candidate icons.");
 		Assert(sizeof(LuvLetterInputBoxConfig) == 104, "Input config ABI size changed unexpectedly.");
 		Assert(sizeof(LuvLetterFeatureWindowConfig) == 88, "Quick Actions config ABI size changed unexpectedly.");
 		Assert(sizeof(LuvLetterFeatureItem) == 16, "Quick Action item ABI size changed unexpectedly.");
@@ -90,13 +91,21 @@ namespace
 		Assert(LuvLetterCandidateKindGlobalSearch == 3, "Global Search candidate kind changed unexpectedly.");
 		Assert(LuvLetterCandidateActionOpen == 0, "Open candidate action changed unexpectedly.");
 		Assert(LuvLetterCandidateActionReveal == 1, "Reveal candidate action changed unexpectedly.");
+		Assert(LuvLetterCandidateIconKindGenericFile == 1, "Generic file icon kind changed unexpectedly.");
+		Assert(LuvLetterCandidateIconKindFolder == 2, "Folder icon kind changed unexpectedly.");
+		Assert(LuvLetterCandidateIconKindImage == 3, "Image icon kind changed unexpectedly.");
+		Assert(LuvLetterCandidateIconKindSearch == 10, "Search icon kind changed unexpectedly.");
 	}
 
 	std::vector<InputCandidateItem> CreateCandidateItems()
 	{
 		return {
-			InputCandidateItem{ 11, LuvLetterCandidateKindFile, L"bbb.md", L"C:\\aaa" },
-			InputCandidateItem{ 22, LuvLetterCandidateKindCommand, L"build", L"Command" },
+			InputCandidateItem{
+				11, LuvLetterCandidateKindFile, LuvLetterCandidateIconKindDocument,
+				L"bbb.md", L"C:\\aaa" },
+			InputCandidateItem{
+				22, LuvLetterCandidateKindCommand, LuvLetterCandidateIconKindCommand,
+				L"build", L"Command" },
 		};
 	}
 
@@ -144,6 +153,32 @@ namespace
 		Assert(state.Apply({}, 10, 10), "An empty current result must clear candidates.");
 		Assert(state.IsEmpty(), "An empty result must leave no candidates.");
 		Assert(!state.MoveSelection(1), "Direction keys must not be consumed by an empty candidate list.");
+	}
+
+	void TestCandidateSelectionSurvivesSameRevisionRefresh()
+	{
+		InputCandidateState state;
+		Assert(state.Apply(CreateCandidateItems(), 12, 12), "Initial candidate list must be accepted.");
+		Assert(state.MoveSelection(1), "Down must select the first candidate.");
+		Assert(state.MoveSelection(1), "A second Down must select the command candidate.");
+
+		auto reordered = CreateCandidateItems();
+		std::swap(reordered[0], reordered[1]);
+		Assert(state.Apply(std::move(reordered), 12, 12),
+			"A same-revision refresh must be accepted.");
+		Assert(state.SelectedIndex() == 0,
+			"A same-revision refresh must follow the selected token after reordering.");
+		InputCandidateActivation activation{};
+		Assert(state.TryActivate(LuvLetterCandidateActionOpen, activation)
+			&& activation.token == 22,
+			"The preserved selection must still activate the same token.");
+
+		auto removed = CreateCandidateItems();
+		removed.erase(removed.begin() + 1);
+		Assert(state.Apply(std::move(removed), 12, 12),
+			"A same-revision refresh without the selected item must be accepted.");
+		Assert(!state.SelectedIndex().has_value(),
+			"Selection must clear when the selected token no longer exists.");
 	}
 
 	void TestShowHideEndpointsAndRepeatedDirection()
@@ -355,6 +390,7 @@ int main()
 		{ "Native ABI contract", TestAbiContract },
 		{ "Candidate revision and default selection", TestCandidateRevisionAndDefaultSelection },
 		{ "Candidate keyboard selection and actions", TestCandidateKeyboardSelectionAndActions },
+		{ "Candidate selection survives same-revision refresh", TestCandidateSelectionSurvivesSameRevisionRefresh },
 		{ "Initial hidden state", TestInitialState },
 		{ "Show/hide endpoints and repeated direction", TestShowHideEndpointsAndRepeatedDirection },
 		{ "Bidirectional reversal continuity", TestBidirectionalReversalContinuity },

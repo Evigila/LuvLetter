@@ -12,8 +12,8 @@ namespace LuvLetter.Platform.Indexing;
 /// </summary>
 internal sealed class FileIndexCompanionClient : IFileIndexClient, IHostedService, IDisposable
 {
-    private static readonly TimeSpan RebuildingPollInterval = TimeSpan.FromSeconds(1);
-    private static readonly TimeSpan StablePollInterval = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan RebuildingPollInterval = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan StablePollInterval = TimeSpan.FromMilliseconds(250);
 
     private readonly FileIndexClientOptions options;
     private CancellationTokenSource? lifetimeCancellation;

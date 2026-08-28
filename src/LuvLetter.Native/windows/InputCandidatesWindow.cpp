@@ -15,18 +15,143 @@ namespace
 	constexpr float RowHeightDip = 38.0f;
 	constexpr float OuterPaddingDip = 4.0f;
 	constexpr float HorizontalPaddingDip = 10.0f;
-	constexpr float KindWidthDip = 54.0f;
+	constexpr float IconSizeDip = 16.0f;
+	constexpr float IconGapDip = 8.0f;
+	constexpr float IconStrokeDip = 1.25f;
 	constexpr float WindowGapDip = 7.0f;
 	constexpr float CornerRadiusDip = 7.0f;
 	constexpr float BorderWidthDip = 1.0f;
 	constexpr float PrimaryFontSizeDip = 13.0f;
 	constexpr float SecondaryFontSizeDip = 10.0f;
-	constexpr float KindFontSizeDip = 9.0f;
 
 	D2D1_COLOR_F WithOpacity(D2D1_COLOR_F color, float opacity) noexcept
 	{
 		color.a *= (std::clamp)(opacity, 0.0f, 1.0f);
 		return color;
+	}
+
+	void DrawFileOutline(
+		ID2D1RenderTarget* target,
+		const D2D1_RECT_F& bounds,
+		ID2D1Brush* brush)
+	{
+		const auto fold = 4.0f;
+		target->DrawLine(D2D1::Point2F(bounds.left, bounds.top),
+			D2D1::Point2F(bounds.right - fold, bounds.top), brush, IconStrokeDip);
+		target->DrawLine(D2D1::Point2F(bounds.right - fold, bounds.top),
+			D2D1::Point2F(bounds.right, bounds.top + fold), brush, IconStrokeDip);
+		target->DrawLine(D2D1::Point2F(bounds.right, bounds.top + fold),
+			D2D1::Point2F(bounds.right, bounds.bottom), brush, IconStrokeDip);
+		target->DrawLine(D2D1::Point2F(bounds.right, bounds.bottom),
+			D2D1::Point2F(bounds.left, bounds.bottom), brush, IconStrokeDip);
+		target->DrawLine(D2D1::Point2F(bounds.left, bounds.bottom),
+			D2D1::Point2F(bounds.left, bounds.top), brush, IconStrokeDip);
+		target->DrawLine(D2D1::Point2F(bounds.right - fold, bounds.top),
+			D2D1::Point2F(bounds.right - fold, bounds.top + fold), brush, IconStrokeDip);
+		target->DrawLine(D2D1::Point2F(bounds.right - fold, bounds.top + fold),
+			D2D1::Point2F(bounds.right, bounds.top + fold), brush, IconStrokeDip);
+	}
+
+	void DrawCandidateIcon(
+		ID2D1RenderTarget* target,
+		LuvLetterCandidateIconKind kind,
+		const D2D1_RECT_F& bounds,
+		ID2D1Brush* brush)
+	{
+		const auto left = bounds.left;
+		const auto top = bounds.top;
+		const auto right = bounds.right;
+		const auto bottom = bounds.bottom;
+		switch (kind)
+		{
+		case LuvLetterCandidateIconKindFolder:
+			target->DrawLine(D2D1::Point2F(left, top + 4.0f),
+				D2D1::Point2F(left + 5.0f, top + 4.0f), brush, IconStrokeDip);
+			target->DrawLine(D2D1::Point2F(left + 5.0f, top + 4.0f),
+				D2D1::Point2F(left + 7.0f, top + 6.0f), brush, IconStrokeDip);
+			target->DrawLine(D2D1::Point2F(left + 7.0f, top + 6.0f),
+				D2D1::Point2F(right, top + 6.0f), brush, IconStrokeDip);
+			target->DrawRoundedRectangle(
+				D2D1::RoundedRect(D2D1::RectF(left, top + 4.0f, right, bottom - 1.0f), 2.0f, 2.0f),
+				brush, IconStrokeDip);
+			break;
+		case LuvLetterCandidateIconKindImage:
+			target->DrawRoundedRectangle(
+				D2D1::RoundedRect(bounds, 2.0f, 2.0f), brush, IconStrokeDip);
+			target->DrawEllipse(
+				D2D1::Ellipse(D2D1::Point2F(right - 4.0f, top + 4.0f), 1.4f, 1.4f),
+				brush, IconStrokeDip);
+			target->DrawLine(D2D1::Point2F(left + 2.0f, bottom - 3.0f),
+				D2D1::Point2F(left + 6.0f, top + 7.0f), brush, IconStrokeDip);
+			target->DrawLine(D2D1::Point2F(left + 6.0f, top + 7.0f),
+				D2D1::Point2F(left + 9.0f, bottom - 5.0f), brush, IconStrokeDip);
+			target->DrawLine(D2D1::Point2F(left + 9.0f, bottom - 5.0f),
+				D2D1::Point2F(right - 2.0f, bottom - 2.0f), brush, IconStrokeDip);
+			break;
+		case LuvLetterCandidateIconKindAudio:
+			target->DrawLine(D2D1::Point2F(left + 7.0f, top + 3.0f),
+				D2D1::Point2F(right - 2.0f, top + 1.0f), brush, IconStrokeDip);
+			target->DrawLine(D2D1::Point2F(left + 7.0f, top + 3.0f),
+				D2D1::Point2F(left + 7.0f, bottom - 3.0f), brush, IconStrokeDip);
+			target->DrawLine(D2D1::Point2F(right - 2.0f, top + 1.0f),
+				D2D1::Point2F(right - 2.0f, bottom - 5.0f), brush, IconStrokeDip);
+			target->DrawEllipse(
+				D2D1::Ellipse(D2D1::Point2F(left + 4.0f, bottom - 2.5f), 3.0f, 2.0f),
+				brush, IconStrokeDip);
+			target->DrawEllipse(
+				D2D1::Ellipse(D2D1::Point2F(right - 5.0f, bottom - 4.5f), 3.0f, 2.0f),
+				brush, IconStrokeDip);
+			break;
+		case LuvLetterCandidateIconKindVideo:
+			target->DrawRoundedRectangle(
+				D2D1::RoundedRect(bounds, 2.0f, 2.0f), brush, IconStrokeDip);
+			target->DrawLine(D2D1::Point2F(left + 6.0f, top + 4.0f),
+				D2D1::Point2F(right - 4.0f, top + 8.0f), brush, IconStrokeDip);
+			target->DrawLine(D2D1::Point2F(right - 4.0f, top + 8.0f),
+				D2D1::Point2F(left + 6.0f, bottom - 4.0f), brush, IconStrokeDip);
+			target->DrawLine(D2D1::Point2F(left + 6.0f, bottom - 4.0f),
+				D2D1::Point2F(left + 6.0f, top + 4.0f), brush, IconStrokeDip);
+			break;
+		case LuvLetterCandidateIconKindExecutable:
+		case LuvLetterCandidateIconKindCommand:
+			target->DrawRoundedRectangle(
+				D2D1::RoundedRect(bounds, 2.0f, 2.0f), brush, IconStrokeDip);
+			target->DrawLine(D2D1::Point2F(left + 3.0f, top + 5.0f),
+				D2D1::Point2F(left + 6.0f, top + 8.0f), brush, IconStrokeDip);
+			target->DrawLine(D2D1::Point2F(left + 6.0f, top + 8.0f),
+				D2D1::Point2F(left + 3.0f, bottom - 5.0f), brush, IconStrokeDip);
+			target->DrawLine(D2D1::Point2F(left + 8.0f, bottom - 4.0f),
+				D2D1::Point2F(right - 3.0f, bottom - 4.0f), brush, IconStrokeDip);
+			break;
+		case LuvLetterCandidateIconKindSearch:
+			target->DrawEllipse(
+				D2D1::Ellipse(D2D1::Point2F(left + 7.0f, top + 7.0f), 5.0f, 5.0f),
+				brush, IconStrokeDip);
+			target->DrawLine(D2D1::Point2F(left + 10.5f, top + 10.5f),
+				D2D1::Point2F(right - 1.0f, bottom - 1.0f), brush, IconStrokeDip);
+			break;
+		case LuvLetterCandidateIconKindDocument:
+		case LuvLetterCandidateIconKindArchive:
+		case LuvLetterCandidateIconKindGenericFile:
+			DrawFileOutline(target, bounds, brush);
+			if (kind == LuvLetterCandidateIconKindDocument)
+			{
+				target->DrawLine(D2D1::Point2F(left + 3.0f, top + 8.0f),
+					D2D1::Point2F(right - 3.0f, top + 8.0f), brush, 1.0f);
+				target->DrawLine(D2D1::Point2F(left + 3.0f, top + 11.0f),
+					D2D1::Point2F(right - 5.0f, top + 11.0f), brush, 1.0f);
+			}
+			else if (kind == LuvLetterCandidateIconKindArchive)
+			{
+				target->DrawLine(D2D1::Point2F(left + 8.0f, top + 5.0f),
+					D2D1::Point2F(left + 8.0f, bottom - 2.0f), brush, 1.0f);
+				target->DrawLine(D2D1::Point2F(left + 6.5f, top + 8.0f),
+					D2D1::Point2F(left + 9.5f, top + 8.0f), brush, 1.0f);
+			}
+			break;
+		default:
+			break;
+		}
 	}
 }
 
@@ -120,16 +245,6 @@ HRESULT InputCandidatesWindow::EnsureResources()
 			secondaryTextFormat_.GetAddressOf());
 		if (FAILED(result)) return result;
 	}
-	if (!kindTextFormat_)
-	{
-		result = createFormat(
-			KindFontSizeDip,
-			DWRITE_FONT_WEIGHT_SEMI_BOLD,
-			DWRITE_TEXT_ALIGNMENT_TRAILING,
-			kindTextFormat_.GetAddressOf());
-		if (FAILED(result)) return result;
-	}
-
 	if (!backgroundBrush_)
 	{
 		result = renderTarget_->CreateSolidColorBrush(
@@ -183,7 +298,6 @@ void InputCandidatesWindow::DiscardResources(bool discardSurface)
 	textBrush_.Reset();
 	borderBrush_.Reset();
 	backgroundBrush_.Reset();
-	kindTextFormat_.Reset();
 	secondaryTextFormat_.Reset();
 	primaryTextFormat_.Reset();
 	renderTarget_.Reset();
@@ -364,16 +478,6 @@ int InputCandidatesWindow::PixelHeight() const
 	return (std::min)(requested, static_cast<int>(available));
 }
 
-const wchar_t* InputCandidatesWindow::KindLabel(LuvLetterCandidateKind kind) const noexcept
-{
-	switch (kind)
-	{
-	case LuvLetterCandidateKindCommand: return L"Cmd";
-	case LuvLetterCandidateKindGlobalSearch: return L"Search";
-	default: return L"File";
-	}
-}
-
 void InputCandidatesWindow::Render()
 {
 	if (hwnd_ == nullptr || state_.IsEmpty() || FAILED(EnsureResources())) return;
@@ -418,13 +522,22 @@ void InputCandidatesWindow::Render()
 		}
 
 		const auto& item = state_.Items()[index];
+		const auto iconTop = top + (RowHeightDip - IconSizeDip) * 0.5f;
+		const auto iconBounds = D2D1::RectF(
+			HorizontalPaddingDip,
+			iconTop,
+			HorizontalPaddingDip + IconSizeDip,
+			iconTop + IconSizeDip);
+		DrawCandidateIcon(
+			renderTarget_.Get(), item.iconKind, iconBounds, secondaryTextBrush_.Get());
+		const auto textLeft = HorizontalPaddingDip + IconSizeDip + IconGapDip;
 		const auto textRight = (std::max)(
-			HorizontalPaddingDip + 1.0f,
-			widthDip - HorizontalPaddingDip - KindWidthDip);
+			textLeft + 1.0f,
+			widthDip - HorizontalPaddingDip);
 		const auto hasSecondary = !item.secondaryText.empty();
 		const auto primaryRect = hasSecondary
-			? D2D1::RectF(HorizontalPaddingDip, top + 2.0f, textRight, top + 21.0f)
-			: D2D1::RectF(HorizontalPaddingDip, top, textRight, bottom);
+			? D2D1::RectF(textLeft, top + 2.0f, textRight, top + 21.0f)
+			: D2D1::RectF(textLeft, top, textRight, bottom);
 		renderTarget_->DrawTextW(
 			item.primaryText.c_str(),
 			static_cast<UINT32>(item.primaryText.size()),
@@ -434,7 +547,7 @@ void InputCandidatesWindow::Render()
 		if (hasSecondary)
 		{
 			const auto secondaryRect = D2D1::RectF(
-				HorizontalPaddingDip, top + 19.0f,
+				textLeft, top + 19.0f,
 				textRight, bottom - 1.0f);
 			renderTarget_->DrawTextW(
 				item.secondaryText.c_str(),
@@ -443,17 +556,6 @@ void InputCandidatesWindow::Render()
 				secondaryTextBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP,
 				DWRITE_MEASURING_MODE_NATURAL);
 		}
-		const auto* kind = KindLabel(item.kind);
-		const auto kindLength = static_cast<UINT32>(wcslen(kind));
-		const auto kindRect = D2D1::RectF(
-			widthDip - HorizontalPaddingDip - KindWidthDip,
-			top,
-			widthDip - HorizontalPaddingDip,
-			bottom);
-		renderTarget_->DrawTextW(
-			kind, kindLength, kindTextFormat_.Get(), kindRect,
-			secondaryTextBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP,
-			DWRITE_MEASURING_MODE_NATURAL);
 	}
 
 	const auto endResult = renderTarget_->EndDraw();

@@ -72,6 +72,7 @@ internal struct NativeInputCandidate
 {
     public ulong Token;
     public int Kind;
+    public int IconKind;
     public IntPtr PrimaryText;
     public IntPtr SecondaryText;
 }
@@ -102,7 +103,7 @@ internal delegate void NativeCandidateActivatedCallback(
 
 internal sealed class NativeShellApi : INativeShellApi
 {
-    private const uint CurrentAbiVersion = 5;
+    private const uint CurrentAbiVersion = 6;
 
     internal static INativeShellApi Instance { get; } = new NativeShellApi();
 

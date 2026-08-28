@@ -43,7 +43,7 @@ internal static partial class Program
             assembly,
             "LuvLetter.Core.NativeShell.NativeInputCandidate",
             32,
-            ["Token", "Kind", "PrimaryText", "SecondaryText"]);
+            ["Token", "Kind", "IconKind", "PrimaryText", "SecondaryText"]);
 
         return Task.CompletedTask;
     }
@@ -145,7 +145,7 @@ internal static partial class Program
         var service = new NativeShellService(nativeApi);
         try
         {
-            Assert.Equal(5U, nativeApi.AbiVersion);
+            Assert.Equal(6U, nativeApi.AbiVersion);
             Assert.Equal(1, nativeApi.CompatibilityChecks);
             Assert.NotNull(nativeApi.InputSubmittedCallback);
             Assert.NotNull(nativeApi.InputChangedCallback);
@@ -251,12 +251,18 @@ internal static partial class Program
 
             service.SetInputCandidates(
             [
-                new InputCandidate(7, CandidateKind.File, "bbb.md", @"C:\aaa\bbb.md"),
+                new InputCandidate(
+                    7,
+                    CandidateKind.File,
+                    CandidateIconKind.Document,
+                    "bbb.md",
+                    @"C:\aaa"),
             ], revision: 42);
             Assert.Equal(42UL, nativeApi.InputCandidateRevision);
             Assert.Equal(1, nativeApi.InputCandidates.Count);
             Assert.Equal(7UL, nativeApi.InputCandidates[0].Token);
             Assert.Equal(CandidateKind.File, nativeApi.InputCandidates[0].Kind);
+            Assert.Equal(CandidateIconKind.Document, nativeApi.InputCandidates[0].IconKind);
             Assert.Equal("bbb.md", nativeApi.InputCandidates[0].Primary);
 
             var candidateActivated = new TaskCompletionSource<CandidateActivated>(

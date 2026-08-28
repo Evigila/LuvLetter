@@ -52,7 +52,6 @@ private:
 	float WindowHeightDip() const noexcept;
 	float RenderScaleY() const noexcept;
 	void Render();
-	const wchar_t* KindLabel(LuvLetterCandidateKind kind) const noexcept;
 
 	HWND hwnd_ = nullptr;
 	HWND inputHwnd_ = nullptr;
@@ -68,7 +67,6 @@ private:
 	Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> renderTarget_;
 	Microsoft::WRL::ComPtr<IDWriteTextFormat> primaryTextFormat_;
 	Microsoft::WRL::ComPtr<IDWriteTextFormat> secondaryTextFormat_;
-	Microsoft::WRL::ComPtr<IDWriteTextFormat> kindTextFormat_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> backgroundBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> borderBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush_;

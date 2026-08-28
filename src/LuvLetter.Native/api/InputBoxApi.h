@@ -12,7 +12,7 @@
 
 extern "C"
 {
-	inline constexpr uint32_t LUVLETTER_NATIVE_ABI_VERSION = 5;
+	inline constexpr uint32_t LUVLETTER_NATIVE_ABI_VERSION = 6;
 
 	enum LuvLetterInputMode : int32_t
 	{
@@ -32,6 +32,21 @@ extern "C"
 	{
 		LuvLetterCandidateActionOpen = 0,
 		LuvLetterCandidateActionReveal = 1,
+	};
+
+	enum LuvLetterCandidateIconKind : int32_t
+	{
+		LuvLetterCandidateIconKindNone = 0,
+		LuvLetterCandidateIconKindGenericFile = 1,
+		LuvLetterCandidateIconKindFolder = 2,
+		LuvLetterCandidateIconKindImage = 3,
+		LuvLetterCandidateIconKindDocument = 4,
+		LuvLetterCandidateIconKindArchive = 5,
+		LuvLetterCandidateIconKindAudio = 6,
+		LuvLetterCandidateIconKindVideo = 7,
+		LuvLetterCandidateIconKindExecutable = 8,
+		LuvLetterCandidateIconKindCommand = 9,
+		LuvLetterCandidateIconKindSearch = 10,
 	};
 
 	struct LuvLetterInputBoxConfig
@@ -100,6 +115,7 @@ extern "C"
 	{
 		uint64_t token;
 		int32_t kind;
+		int32_t iconKind;
 		const wchar_t* primaryText;
 		const wchar_t* secondaryText;
 	};

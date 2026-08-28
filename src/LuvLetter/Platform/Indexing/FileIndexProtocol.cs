@@ -28,7 +28,7 @@ internal readonly record struct FileIndexStatus(
 internal static class FileIndexProtocol
 {
     internal const uint Magic = 0x58494C4C;
-    internal const ushort MajorVersion = 1;
+    internal const ushort MajorVersion = 2;
     internal const int HeaderSize = 20;
     internal const int MaximumPayloadLength = 1024 * 1024;
 
@@ -131,7 +131,7 @@ internal static class FileIndexProtocol
         }
 
         var count = reader.ReadUInt32();
-        if (count > payload.Length / 16U)
+        if (count > payload.Length / 20U)
         {
             throw new InvalidDataException("The indexer result count is invalid.");
         }
@@ -141,12 +141,19 @@ internal static class FileIndexProtocol
         for (var index = 0U; index < count; index++)
         {
             var stableId = reader.ReadUInt64();
+            var rawEntryKind = reader.ReadUInt32();
+            if (!Enum.IsDefined((Core.Application.FileSystemEntryKind)rawEntryKind))
+            {
+                throw new InvalidDataException("The indexer returned an invalid file-system entry kind.");
+            }
+
             var displayName = reader.ReadString();
             var fullPath = reader.ReadString();
             if (results.Count < maximumResults)
             {
                 results.Add(new Core.Application.FileIndexMatch(
                     stableId,
+                    (Core.Application.FileSystemEntryKind)rawEntryKind,
                     displayName,
                     fullPath));
             }

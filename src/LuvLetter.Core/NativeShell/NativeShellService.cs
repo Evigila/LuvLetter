@@ -209,10 +209,12 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
                 for (var index = 0; index < candidates.Count; index++)
                 {
                     var candidate = candidates[index];
-                    if (candidate.Token == 0 || !Enum.IsDefined(candidate.Kind))
+                    if (candidate.Token == 0
+                        || !Enum.IsDefined(candidate.Kind)
+                        || !Enum.IsDefined(candidate.IconKind))
                     {
                         throw new ArgumentException(
-                            "Candidates must have a non-zero token and a defined kind.",
+                            "Candidates must have a non-zero token, defined kind, and defined icon kind.",
                             nameof(candidates));
                     }
 
@@ -228,6 +230,7 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
                         {
                             Token = candidate.Token,
                             Kind = (int)candidate.Kind,
+                            IconKind = (int)candidate.IconKind,
                             PrimaryText = primaryText,
                             SecondaryText = secondaryText,
                         };

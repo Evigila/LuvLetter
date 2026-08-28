@@ -11,7 +11,7 @@ namespace LuvLetter.Core.Tests;
 
 internal sealed class FakeNativeShellApi : INativeShellApi
 {
-    public uint AbiVersion => 5;
+    public uint AbiVersion => 6;
 
     public int CompatibilityChecks { get; private set; }
 
@@ -29,7 +29,12 @@ internal sealed class FakeNativeShellApi : INativeShellApi
 
     public IReadOnlyList<(ulong Token, string Label)> QuickActionItems { get; private set; } = [];
 
-    public IReadOnlyList<(ulong Token, CandidateKind Kind, string Primary, string Secondary)>
+    public IReadOnlyList<(
+        ulong Token,
+        CandidateKind Kind,
+        CandidateIconKind IconKind,
+        string Primary,
+        string Secondary)>
         InputCandidates { get; private set; } = [];
 
     public ulong InputCandidateRevision { get; private set; }
@@ -156,12 +161,13 @@ internal sealed class FakeNativeShellApi : INativeShellApi
 
     public int SetInputCandidates(NativeInputCandidate[] items, int count, ulong revision)
     {
-        var copied = new (ulong, CandidateKind, string, string)[count];
+        var copied = new (ulong, CandidateKind, CandidateIconKind, string, string)[count];
         for (var index = 0; index < count; index++)
         {
             copied[index] = (
                 items[index].Token,
                 (CandidateKind)items[index].Kind,
+                (CandidateIconKind)items[index].IconKind,
                 Marshal.PtrToStringUni(items[index].PrimaryText) ?? string.Empty,
                 Marshal.PtrToStringUni(items[index].SecondaryText) ?? string.Empty);
         }
@@ -463,15 +469,21 @@ internal sealed class FakeFileCandidateLauncher : IFileCandidateLauncher
 
     public List<string> Revealed { get; } = [];
 
-    public bool Open(string fullPath)
+    public List<FileSystemEntryKind> OpenedKinds { get; } = [];
+
+    public List<FileSystemEntryKind> RevealedKinds { get; } = [];
+
+    public bool Open(string fullPath, FileSystemEntryKind entryKind)
     {
         Opened.Add(fullPath);
+        OpenedKinds.Add(entryKind);
         return OpenResult;
     }
 
-    public bool Reveal(string fullPath)
+    public bool Reveal(string fullPath, FileSystemEntryKind entryKind)
     {
         Revealed.Add(fullPath);
+        RevealedKinds.Add(entryKind);
         return RevealResult;
     }
 }

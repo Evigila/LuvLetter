@@ -13,6 +13,7 @@ struct InputCandidateItem final
 {
 	uint64_t token = 0;
 	LuvLetterCandidateKind kind = LuvLetterCandidateKindFile;
+	LuvLetterCandidateIconKind iconKind = LuvLetterCandidateIconKindNone;
 	std::wstring primaryText;
 	std::wstring secondaryText;
 };
@@ -38,9 +39,28 @@ public:
 			return false;
 		}
 
+		std::optional<uint64_t> selectedToken;
+		if (resultRevision == revision_
+			&& selectedIndex_.has_value()
+			&& *selectedIndex_ < items_.size())
+		{
+			selectedToken = items_[*selectedIndex_].token;
+		}
+
 		items_ = std::move(items);
 		revision_ = resultRevision;
 		selectedIndex_.reset();
+		if (selectedToken.has_value())
+		{
+			for (size_t index = 0; index < items_.size(); ++index)
+			{
+				if (items_[index].token == *selectedToken)
+				{
+					selectedIndex_ = index;
+					break;
+				}
+			}
+		}
 		return true;
 	}
 
