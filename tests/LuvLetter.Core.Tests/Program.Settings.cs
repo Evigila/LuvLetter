@@ -19,6 +19,21 @@ internal static partial class Program
         Assert.True(service.TryMap(defaults, input, out var mapped, out var error), error);
         Assert.Equal(defaults.InputBox.Size.Width, mapped.InputBox.Size.Width);
         Assert.Equal(defaults.QuickActions.Layout.ItemsPerPage, mapped.QuickActions.Layout.ItemsPerPage);
+        Assert.Equal(SurfaceStyleDefaults.FontSize, mapped.InputBox.Size.FontSize);
+        Assert.Equal(SurfaceStyleDefaults.FontSize, mapped.QuickActions.Layout.FontSize);
+
+        var legacyTypographyInput = input with
+        {
+            InputBox = input.InputBox with { FontSize = "22" },
+            QuickActions = input.QuickActions with { FontSize = "20" },
+        };
+        Assert.True(
+            service.TryMap(defaults, legacyTypographyInput, out var mappedTypography, out error),
+            error);
+        Assert.Equal(SurfaceStyleDefaults.FontSize, mappedTypography.InputBox.Size.FontSize);
+        Assert.Equal(
+            SurfaceStyleDefaults.FontSize,
+            mappedTypography.QuickActions.Layout.FontSize);
 
         var noControlKeyInput = input with
         {
@@ -34,7 +49,7 @@ internal static partial class Program
 
         var nonFiniteInput = input with
         {
-            InputBox = input.InputBox with { FontSize = "NaN" },
+            InputBox = input.InputBox with { CornerRadius = "NaN" },
         };
         Assert.False(
             service.TryMap(defaults, nonFiniteInput, out _, out _),

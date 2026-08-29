@@ -20,7 +20,6 @@ namespace
 	constexpr float HorizontalPaddingDip = 10.0f;
 	constexpr float MessageGapDip = 4.0f;
 	constexpr float WorkAreaMarginDip = 16.0f;
-	constexpr float FontSizeDip = 14.0f;
 	constexpr float SpinnerSlotWidthDip = 24.0f;
 	constexpr float SpinnerRadiusDip = 6.0f;
 	constexpr float SpinnerDotRadiusDip = 1.35f;
@@ -298,12 +297,12 @@ HRESULT MessageQueueWindow::EnsureResources()
 	if (!textFormat_)
 	{
 		result = dwriteFactory_->CreateTextFormat(
-			L"Segoe UI",
+			SurfaceFontFamily,
 			nullptr,
 			DWRITE_FONT_WEIGHT_NORMAL,
 			DWRITE_FONT_STYLE_NORMAL,
 			DWRITE_FONT_STRETCH_NORMAL,
-			FontSizeDip,
+			SurfaceFontSizeDip,
 			L"",
 			textFormat_.GetAddressOf());
 		if (FAILED(result)) return result;

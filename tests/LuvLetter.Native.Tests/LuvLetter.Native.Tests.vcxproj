@@ -85,6 +85,9 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="Program.cpp" />
+    <ClCompile Include="..\..\src\LuvLetter.Native\configuration\NativeConfigurationSanitizer.cpp">
+      <Link>configuration\NativeConfigurationSanitizer.cpp</Link>
+    </ClCompile>
     <ClCompile Include="..\..\src\LuvLetter.Native\rendering\InputBoxAnimator.cpp">
       <Link>rendering\InputBoxAnimator.cpp</Link>
     </ClCompile>

@@ -65,7 +65,7 @@ public sealed record InputBoxSizeOptions
 
     public float BorderThickness { get; init; } = SurfaceStyleDefaults.BorderThickness;
 
-    public float FontSize { get; init; } = 14.0f;
+    public float FontSize { get; init; } = SurfaceStyleDefaults.FontSize;
 
     public float HorizontalPadding { get; init; } = DefaultHorizontalPadding;
 

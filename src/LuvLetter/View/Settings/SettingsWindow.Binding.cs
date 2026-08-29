@@ -47,7 +47,6 @@ public partial class SettingsWindow
             var inputSize = configuration.InputBox.Size;
             WidthTextBox.Text = inputSize.Width.ToString(CultureInfo.InvariantCulture);
             HeightTextBox.Text = inputSize.Height.ToString(CultureInfo.InvariantCulture);
-            FontSizeTextBox.Text = inputSize.FontSize.ToString(CultureInfo.InvariantCulture);
             CornerRadiusTextBox.Text = inputSize.CornerRadius.ToString(
                 CultureInfo.InvariantCulture
             );
@@ -76,9 +75,6 @@ public partial class SettingsWindow
                 CultureInfo.InvariantCulture
             );
             QuickActionsBorderThicknessTextBox.Text = quickActionsLayout.BorderThickness.ToString(
-                CultureInfo.InvariantCulture
-            );
-            QuickActionsFontSizeTextBox.Text = quickActionsLayout.FontSize.ToString(
                 CultureInfo.InvariantCulture
             );
             QuickActionsBottomMarginTextBox.Text = quickActionsLayout.BottomMargin.ToString(
@@ -181,7 +177,7 @@ public partial class SettingsWindow
                 CaretColorTextBox.Text,
                 WidthTextBox.Text,
                 HeightTextBox.Text,
-                FontSizeTextBox.Text,
+                SurfaceStyleDefaults.FontSize.ToString(CultureInfo.InvariantCulture),
                 CornerRadiusTextBox.Text,
                 BorderThicknessTextBox.Text,
                 HorizontalPaddingTextBox.Text,
@@ -201,7 +197,7 @@ public partial class SettingsWindow
                 QuickActionsGapTextBox.Text,
                 QuickActionsCornerRadiusTextBox.Text,
                 QuickActionsBorderThicknessTextBox.Text,
-                QuickActionsFontSizeTextBox.Text,
+                SurfaceStyleDefaults.FontSize.ToString(CultureInfo.InvariantCulture),
                 QuickActionsBottomMarginTextBox.Text,
                 QuickActionsOffsetXTextBox.Text,
                 QuickActionsOffsetYTextBox.Text,

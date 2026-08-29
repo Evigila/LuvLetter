@@ -70,6 +70,61 @@ internal static partial class Program
         var inputSize = normalized.InputBox.Size;
         var layout = normalized.QuickActions.Layout;
 
+        Assert.Equal(SurfaceStyleDefaults.FontSize, inputSize.FontSize);
+        Assert.Equal(SurfaceStyleDefaults.FontSize, layout.FontSize);
+        Assert.Equal("Microsoft YaHei UI", SurfaceStyleDefaults.FontFamily);
+
+        var migratedTypography = ConfigurationSchemaMigrator.Migrate(
+            LuvLetterConfiguration.Default with
+            {
+                SchemaVersion = 10,
+                InputBox = LuvLetterConfiguration.Default.InputBox with
+                {
+                    Size = LuvLetterConfiguration.Default.InputBox.Size with
+                    {
+                        Width = 601,
+                        FontSize = 20.0f,
+                    },
+                },
+                QuickActions = LuvLetterConfiguration.Default.QuickActions with
+                {
+                    Layout = LuvLetterConfiguration.Default.QuickActions.Layout with
+                    {
+                        CellSize = 91.0f,
+                        FontSize = 22.0f,
+                    },
+                },
+            },
+            LuvLetterConfiguration.Default);
+        Assert.Equal(SurfaceStyleDefaults.FontSize, migratedTypography.InputBox.Size.FontSize);
+        Assert.Equal(
+            SurfaceStyleDefaults.FontSize,
+            migratedTypography.QuickActions.Layout.FontSize);
+        Assert.Equal(601, migratedTypography.InputBox.Size.Width);
+        Assert.Equal(91.0f, migratedTypography.QuickActions.Layout.CellSize);
+
+        var normalizedFiniteTypography = LuvLetterConfigurationStore.Normalize(
+            LuvLetterConfiguration.Default with
+            {
+                InputBox = LuvLetterConfiguration.Default.InputBox with
+                {
+                    Size = LuvLetterConfiguration.Default.InputBox.Size with { FontSize = 20.0f },
+                },
+                QuickActions = LuvLetterConfiguration.Default.QuickActions with
+                {
+                    Layout = LuvLetterConfiguration.Default.QuickActions.Layout with
+                    {
+                        FontSize = 22.0f,
+                    },
+                },
+            });
+        Assert.Equal(
+            SurfaceStyleDefaults.FontSize,
+            normalizedFiniteTypography.InputBox.Size.FontSize);
+        Assert.Equal(
+            SurfaceStyleDefaults.FontSize,
+            normalizedFiniteTypography.QuickActions.Layout.FontSize);
+
         Assert.Equal(
             QuickActionsLayoutOptions.MaximumItemsPerPage,
             layout.ItemsPerPage,
@@ -196,8 +251,17 @@ internal static partial class Program
             Assert.True(ReferenceEquals(firstSaved, store.Current));
             using (var savedDocument = JsonDocument.Parse(File.ReadAllText(settingsPath)))
             {
-                Assert.True(savedDocument.RootElement.TryGetProperty("QuickActions", out _));
+                Assert.True(savedDocument.RootElement.TryGetProperty("InputBox", out var savedInputBox));
+                Assert.True(savedDocument.RootElement.TryGetProperty(
+                    "QuickActions",
+                    out var savedQuickActions));
                 Assert.False(savedDocument.RootElement.TryGetProperty("FeatureWindow", out _));
+                Assert.Equal(
+                    SurfaceStyleDefaults.FontSize,
+                    savedInputBox.GetProperty("Size").GetProperty("FontSize").GetSingle());
+                Assert.Equal(
+                    SurfaceStyleDefaults.FontSize,
+                    savedQuickActions.GetProperty("Layout").GetProperty("FontSize").GetSingle());
             }
 
             var secondSaved = store.Update(
@@ -566,7 +630,9 @@ internal static partial class Program
                 customizedPreviousInputPath).Current;
             Assert.Equal(639, customizedPreviousInput.InputBox.Size.Width);
             Assert.Equal(44, customizedPreviousInput.InputBox.Size.Height);
-            Assert.Equal(20.0f, customizedPreviousInput.InputBox.Size.FontSize);
+            Assert.Equal(
+                SurfaceStyleDefaults.FontSize,
+                customizedPreviousInput.InputBox.Size.FontSize);
             Assert.Equal("#38F5F5F5", customizedPreviousInput.InputBox.Colors.Background);
             Assert.Equal(0.22f, customizedPreviousInput.InputBox.Colors.BackgroundOpacity);
 
@@ -579,7 +645,10 @@ internal static partial class Program
                 {
                   "SchemaVersion": 6,
                   "QuickActions": {
-                    "Layout": { "CornerRadius": 16 },
+                    "Layout": {
+                      "CornerRadius": 16,
+                      "FontSize": 16
+                    },
                     "Colors": {
                       "Background": "#38F5F5F5",
                       "BackgroundOpacity": 0.22
@@ -590,6 +659,9 @@ internal static partial class Program
             var migratedQuickActionsDefaults = new LuvLetterConfigurationStore(
                 previousQuickActionsDefaultsPath).Current;
             Assert.Equal(8.0f, migratedQuickActionsDefaults.QuickActions.Layout.CornerRadius);
+            Assert.Equal(
+                SurfaceStyleDefaults.FontSize,
+                migratedQuickActionsDefaults.QuickActions.Layout.FontSize);
             Assert.Equal(
                 SurfaceStyleDefaults.Background,
                 migratedQuickActionsDefaults.QuickActions.Colors.Background);
@@ -606,7 +678,10 @@ internal static partial class Program
                 {
                   "SchemaVersion": 6,
                   "QuickActions": {
-                    "Layout": { "CornerRadius": 11 },
+                    "Layout": {
+                      "CornerRadius": 11,
+                      "FontSize": 22
+                    },
                     "Colors": {
                       "Background": "#66445566",
                       "BackgroundOpacity": 0.4
@@ -617,6 +692,9 @@ internal static partial class Program
             var customizedQuickActions = new LuvLetterConfigurationStore(
                 customizedQuickActionsPath).Current;
             Assert.Equal(11.0f, customizedQuickActions.QuickActions.Layout.CornerRadius);
+            Assert.Equal(
+                SurfaceStyleDefaults.FontSize,
+                customizedQuickActions.QuickActions.Layout.FontSize);
             Assert.Equal("#66445566", customizedQuickActions.QuickActions.Colors.Background);
             Assert.Equal(0.4f, customizedQuickActions.QuickActions.Colors.BackgroundOpacity);
 

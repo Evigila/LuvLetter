@@ -163,12 +163,6 @@ public sealed partial class SettingsService
                 out error
             )
             || !TryParseFloat(
-                input.FontSize,
-                "Command input font size",
-                out var fontSize,
-                out error
-            )
-            || !TryParseFloat(
                 input.CornerRadius,
                 "Command input corner radius",
                 out var cornerRadius,
@@ -263,7 +257,7 @@ public sealed partial class SettingsService
             {
                 Width = width,
                 Height = height,
-                FontSize = fontSize,
+                FontSize = SurfaceStyleDefaults.FontSize,
                 CornerRadius = cornerRadius,
                 BorderThickness = borderThickness,
                 HorizontalPadding = horizontalPadding,
@@ -373,12 +367,6 @@ public sealed partial class SettingsService
                 out var borderThickness,
                 out error
             )
-            || !TryParseFloat(
-                input.FontSize,
-                "QuickActions font size",
-                out var fontSize,
-                out error
-            )
             || !TryParseInt(
                 input.BottomMargin,
                 "QuickActions top margin",
@@ -476,7 +464,7 @@ public sealed partial class SettingsService
                 Gap = gap,
                 CornerRadius = cornerRadius,
                 BorderThickness = borderThickness,
-                FontSize = fontSize,
+                FontSize = SurfaceStyleDefaults.FontSize,
                 BottomMargin = bottomMargin,
                 OffsetX = offsetX,
                 OffsetY = offsetY,

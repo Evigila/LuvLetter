@@ -25,7 +25,7 @@ internal static partial class Program
         Assert.Equal(0xFFF0F3F9u, SurfaceStyleDefaults.BackgroundArgb);
         Assert.Equal(560, configuration.InputBox.Size.Width);
         Assert.Equal(32, configuration.InputBox.Size.Height);
-        Assert.Equal(14.0f, configuration.InputBox.Size.FontSize);
+        Assert.Equal(SurfaceStyleDefaults.FontSize, configuration.InputBox.Size.FontSize);
         Assert.Equal(1.0f, configuration.InputBox.Size.BorderThickness);
         Assert.Equal(8.0f, configuration.InputBox.Size.CornerRadius);
         Assert.Equal(10.0f, configuration.InputBox.Size.HorizontalPadding);
@@ -42,6 +42,7 @@ internal static partial class Program
         Assert.Equal(1.0f, configuration.QuickActions.Layout.BorderThickness);
         Assert.Equal(8.0f, configuration.QuickActions.Layout.CornerRadius);
         Assert.Equal(9, configuration.QuickActions.Layout.ItemsPerPage);
+        Assert.Equal(SurfaceStyleDefaults.FontSize, configuration.QuickActions.Layout.FontSize);
         Assert.Equal(SurfaceStyleDefaults.Border, configuration.QuickActions.Colors.Border);
         Assert.Equal(
             SurfaceStyleDefaults.Background,

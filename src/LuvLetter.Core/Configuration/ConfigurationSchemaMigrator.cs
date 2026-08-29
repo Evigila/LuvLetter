@@ -372,6 +372,27 @@ internal static class ConfigurationSchemaMigrator
             }
         }
 
+        if (configuration.SchemaVersion < 11)
+        {
+            migrated = migrated with
+            {
+                InputBox = migrated.InputBox with
+                {
+                    Size = migrated.InputBox.Size with
+                    {
+                        FontSize = defaults.InputBox.Size.FontSize,
+                    },
+                },
+                QuickActions = migrated.QuickActions with
+                {
+                    Layout = migrated.QuickActions.Layout with
+                    {
+                        FontSize = defaults.QuickActions.Layout.FontSize,
+                    },
+                },
+            };
+        }
+
         return migrated;
     }
 

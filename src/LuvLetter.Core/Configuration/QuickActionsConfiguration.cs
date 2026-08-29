@@ -25,7 +25,7 @@ public sealed record QuickActionsLayoutOptions
 
     public float BorderThickness { get; init; } = SurfaceStyleDefaults.BorderThickness;
 
-    public float FontSize { get; init; } = 16.0f;
+    public float FontSize { get; init; } = SurfaceStyleDefaults.FontSize;
 
     public int BottomMargin { get; init; } = 60;
 

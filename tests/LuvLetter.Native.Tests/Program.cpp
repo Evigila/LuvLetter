@@ -1,4 +1,5 @@
 #include "api/InputBoxApi.h"
+#include "configuration/NativeConfigurationSanitizer.h"
 #include "rendering/InputBoxAnimator.h"
 #include "rendering/SurfaceStyleDefaults.h"
 #include "windows/InputCandidateState.h"
@@ -85,6 +86,12 @@ namespace
 	{
 		Assert(LuvLetterNative::SurfaceBackgroundColor == 0xFFF0F3F9,
 			"All native popup surfaces must use the shared cool-white background.");
+		AssertNear(14.0f, LuvLetterNative::SurfaceFontSizeDip,
+			"All native popup surfaces must use the shared message font size.");
+		Assert(std::wstring{ LuvLetterNative::SurfaceFontFamily } == L"Microsoft YaHei UI",
+			"All native popup surfaces must use the shared Microsoft YaHei UI family.");
+		AssertNear(20.0f, LuvLetterNative::SurfaceLineHeightDip,
+			"Shared line height must leave Microsoft YaHei UI glyphs unclipped.");
 		Assert(LUVLETTER_NATIVE_ABI_VERSION == 7, "Native ABI must expose message activities.");
 		Assert(sizeof(LuvLetterInputBoxConfig) == 104, "Input config ABI size changed unexpectedly.");
 		Assert(sizeof(LuvLetterFeatureWindowConfig) == 88, "Quick Actions config ABI size changed unexpectedly.");
@@ -99,6 +106,25 @@ namespace
 		Assert(LuvLetterCandidateIconKindFolder == 2, "Folder icon kind changed unexpectedly.");
 		Assert(LuvLetterCandidateIconKindImage == 3, "Image icon kind changed unexpectedly.");
 		Assert(LuvLetterCandidateIconKindSearch == 10, "Search icon kind changed unexpectedly.");
+	}
+
+	void TestConfigurationTypographySanitization()
+	{
+		auto input = NativeConfigurationSanitizer::DefaultInputBox();
+		auto quickActions = NativeConfigurationSanitizer::DefaultQuickActionsWindow();
+		AssertNear(LuvLetterNative::SurfaceFontSizeDip, input.fontSize,
+			"Default input typography must use the shared surface size.");
+		AssertNear(LuvLetterNative::SurfaceFontSizeDip, quickActions.fontSize,
+			"Default Quick Actions typography must use the shared surface size.");
+
+		input.fontSize = 22.0f;
+		quickActions.fontSize = std::numeric_limits<float>::infinity();
+		input = NativeConfigurationSanitizer::SanitizeInputBox(input);
+		quickActions = NativeConfigurationSanitizer::SanitizeQuickActionsWindow(quickActions);
+		AssertNear(LuvLetterNative::SurfaceFontSizeDip, input.fontSize,
+			"Input sanitization must reject a second finite font size.");
+		AssertNear(LuvLetterNative::SurfaceFontSizeDip, quickActions.fontSize,
+			"Quick Actions sanitization must reject a non-finite font size.");
 	}
 
 	void TestMessageActivityTimeline()
@@ -456,6 +482,7 @@ int main()
 	const std::vector<std::pair<std::string, std::function<void()>>> tests
 	{
 		{ "Native ABI contract", TestAbiContract },
+		{ "Configuration typography sanitization", TestConfigurationTypographySanitization },
 		{ "Message activity timeline", TestMessageActivityTimeline },
 		{ "Candidate revision and default selection", TestCandidateRevisionAndDefaultSelection },
 		{ "Candidate keyboard selection and actions", TestCandidateKeyboardSelectionAndActions },

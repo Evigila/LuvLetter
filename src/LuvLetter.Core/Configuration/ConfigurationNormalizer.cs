@@ -133,7 +133,7 @@ internal static class ConfigurationNormalizer
                 fallback.BorderThickness,
                 0.0f,
                 Math.Min(16.0f, height / 2.0f)),
-            FontSize = NormalizeFinite(value.FontSize, fallback.FontSize, 8.0f, 256.0f),
+            FontSize = SurfaceStyleDefaults.FontSize,
             HorizontalPadding = NormalizeFinite(
                 value.HorizontalPadding,
                 fallback.HorizontalPadding,
@@ -204,7 +204,7 @@ internal static class ConfigurationNormalizer
                 fallback.BorderThickness,
                 0.0f,
                 Math.Min(16.0f, cellSize / 2.0f)),
-            FontSize = NormalizeFinite(value.FontSize, fallback.FontSize, 8.0f, 128.0f),
+            FontSize = SurfaceStyleDefaults.FontSize,
             BottomMargin = Math.Clamp(value.BottomMargin, 0, 4096),
             OffsetX = Math.Clamp(value.OffsetX, -32768, 32768),
             OffsetY = Math.Clamp(value.OffsetY, -32768, 32768),

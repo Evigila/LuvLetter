@@ -1,6 +1,7 @@
 #include "windows/QuickActionsWindow.h"
 
 #include "configuration/NativeConfigurationSanitizer.h"
+#include "rendering/SurfaceStyleDefaults.h"
 
 #include <windowsx.h>
 
@@ -74,7 +75,7 @@ HRESULT QuickActionsWindow::EnsureResources()
 	if (!textFormat_)
 	{
 		result = dwriteFactory_->CreateTextFormat(
-			L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+			SurfaceFontFamily, nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
 			DWRITE_FONT_STRETCH_NORMAL, config_.fontSize, L"", textFormat_.GetAddressOf());
 		if (FAILED(result)) return result;
 		textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -84,8 +85,8 @@ HRESULT QuickActionsWindow::EnsureResources()
 	if (!numberFormat_)
 	{
 		result = dwriteFactory_->CreateTextFormat(
-			L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
-			DWRITE_FONT_STRETCH_NORMAL, config_.fontSize * 1.55f, L"", numberFormat_.GetAddressOf());
+			SurfaceFontFamily, nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+			DWRITE_FONT_STRETCH_NORMAL, config_.fontSize, L"", numberFormat_.GetAddressOf());
 		if (FAILED(result)) return result;
 		numberFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
 		numberFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);

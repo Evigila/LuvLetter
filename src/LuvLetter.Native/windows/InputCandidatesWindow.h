@@ -50,7 +50,6 @@ private:
 	void UpdateGeometry();
 	void UpdatePosition() const;
 	float WindowHeightDip() const noexcept;
-	float RenderScaleY() const noexcept;
 	void Render();
 
 	HWND hwnd_ = nullptr;
@@ -66,6 +65,7 @@ private:
 	Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;
 	Microsoft::WRL::ComPtr<ID2D1DCRenderTarget> renderTarget_;
 	Microsoft::WRL::ComPtr<IDWriteTextFormat> primaryTextFormat_;
+	Microsoft::WRL::ComPtr<IDWriteTextFormat> fileNameTextFormat_;
 	Microsoft::WRL::ComPtr<IDWriteTextFormat> secondaryTextFormat_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> backgroundBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> borderBrush_;

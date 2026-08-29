@@ -153,11 +153,26 @@ internal static partial class Program
             Assert.NotNull(nativeApi.QuickActionActivatedCallback);
 
             service.ApplyConfiguration(
-                LuvLetterConfiguration.Default.InputBox,
-                LuvLetterConfiguration.Default.QuickActions);
+                LuvLetterConfiguration.Default.InputBox with
+                {
+                    Size = LuvLetterConfiguration.Default.InputBox.Size with { FontSize = 20.0f },
+                },
+                LuvLetterConfiguration.Default.QuickActions with
+                {
+                    Layout = LuvLetterConfiguration.Default.QuickActions.Layout with
+                    {
+                        FontSize = 22.0f,
+                    },
+                });
             Assert.Equal(nativeApi.AbiVersion, nativeApi.LastInputBoxConfig?.AbiVersion);
             Assert.Equal(nativeApi.AbiVersion, nativeApi.LastQuickActionsConfig?.AbiVersion);
             Assert.Equal(560, nativeApi.LastInputBoxConfig?.Width);
+            Assert.Equal(
+                SurfaceStyleDefaults.FontSize,
+                nativeApi.LastInputBoxConfig?.FontSize);
+            Assert.Equal(
+                SurfaceStyleDefaults.FontSize,
+                nativeApi.LastQuickActionsConfig?.FontSize);
             Assert.Equal(
                 SurfaceStyleDefaults.BorderArgb,
                 nativeApi.LastInputBoxConfig?.BorderColor);

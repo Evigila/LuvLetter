@@ -76,7 +76,8 @@ composition and cannot be removed; optional assemblies are discovered from `plug
 - `host/NativeShellHost`: the Native UI-thread owner and request serializer.
 - `windows/InputWindow`: input editing, history, IME, animation driving, and rendering.
 - `windows/InputCandidatesWindow`: the non-activating, keyboard-driven candidate list
-  positioned above InputWindow. It stores copied display data, applies only the
+  positioned beside InputWindow, preferring the space above it and flipping below when
+  necessary. It stores copied display data, applies only the
   candidate snapshot matching the current editor revision, and draws lightweight
   Direct2D type glyphs without Shell icon or thumbnail I/O. Ordinary result updates
   retain its layered DIB and Direct2D resources when geometry and device state permit.
@@ -181,6 +182,14 @@ default theme and preserves customized values. Schema 10 replaces the previous o
 silver background while preserving custom themes. Schema 9 also recognizes the historical
 640-by-44 dark InputBox preset as one atomic theme, replacing its black surface and
 foreground together so it cannot become a low-contrast hybrid after migration.
+Schema 11 standardizes typography on Microsoft YaHei UI at 14 DIPs. The legacy per-window font-size fields
+remain in serialized/native layouts for compatibility, but normalization and Native
+sanitization enforce the shared value. Input adornments derive their geometry from that
+shared type scale, and Direct2D applies the active monitor DPI to the complete surface.
+Candidate rows use the same size for both lines, distinguish file names with bold weight,
+and reserve a wider, taller layout for full-size paths. Text overflow uses ellipses; when
+neither side of InputBox can fit every row, the viewport keeps the selected row visible
+without scaling the text.
 
 The command input shortcut is fixed to double Ctrl, Quick Actions is fixed to Alt+F1,
 the message queue is fixed to Alt+Backspace, and Escape dismisses the two interactive

@@ -1,6 +1,7 @@
 #include "windows/InputCandidatesWindow.h"
 
 #include "configuration/NativeConfigurationSanitizer.h"
+#include "rendering/SurfaceStyleDefaults.h"
 
 #include <algorithm>
 #include <cmath>
@@ -12,17 +13,17 @@ using namespace LuvLetterNative;
 namespace
 {
 	constexpr int64_t MaxSurfacePixels = 16LL * 1024LL * 1024LL;
-	constexpr float RowHeightDip = 38.0f;
-	constexpr float OuterPaddingDip = 4.0f;
-	constexpr float HorizontalPaddingDip = 10.0f;
-	constexpr float IconSizeDip = 16.0f;
-	constexpr float IconGapDip = 8.0f;
+	constexpr float RowHeightDip = 48.0f;
+	constexpr float OuterPaddingDip = 6.0f;
+	constexpr float HorizontalPaddingDip = 12.0f;
+	constexpr float IconSizeDip = 20.0f;
+	constexpr float IconGapDip = 10.0f;
 	constexpr float IconStrokeDip = 1.25f;
 	constexpr float WindowGapDip = 7.0f;
 	constexpr float CornerRadiusDip = 7.0f;
 	constexpr float BorderWidthDip = 1.0f;
-	constexpr float PrimaryFontSizeDip = 13.0f;
-	constexpr float SecondaryFontSizeDip = 10.0f;
+	constexpr float PreferredWidthDip = 720.0f;
+	constexpr float WorkAreaMarginDip = 16.0f;
 
 	D2D1_COLOR_F WithOpacity(D2D1_COLOR_F color, float opacity) noexcept
 	{
@@ -217,29 +218,52 @@ HRESULT InputCandidatesWindow::EnsureResources()
 		DWRITE_TEXT_ALIGNMENT alignment,
 		IDWriteTextFormat** format) -> HRESULT
 	{
+		Microsoft::WRL::ComPtr<IDWriteTextFormat> nextFormat;
 		auto createResult = dwriteFactory_->CreateTextFormat(
-			L"Segoe UI", nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
-			DWRITE_FONT_STRETCH_NORMAL, fontSize, L"", format);
+			SurfaceFontFamily, nullptr, weight, DWRITE_FONT_STYLE_NORMAL,
+			DWRITE_FONT_STRETCH_NORMAL, fontSize, L"", nextFormat.GetAddressOf());
 		if (FAILED(createResult)) return createResult;
-		(*format)->SetTextAlignment(alignment);
-		(*format)->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-		(*format)->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+		createResult = nextFormat->SetTextAlignment(alignment);
+		if (FAILED(createResult)) return createResult;
+		createResult = nextFormat->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
+		if (FAILED(createResult)) return createResult;
+		createResult = nextFormat->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+		if (FAILED(createResult)) return createResult;
+		DWRITE_TRIMMING trimming{};
+		trimming.granularity = DWRITE_TRIMMING_GRANULARITY_CHARACTER;
+		Microsoft::WRL::ComPtr<IDWriteInlineObject> trimmingSign;
+		createResult = dwriteFactory_->CreateEllipsisTrimmingSign(
+			nextFormat.Get(),
+			trimmingSign.GetAddressOf());
+		if (FAILED(createResult)) return createResult;
+		createResult = nextFormat->SetTrimming(&trimming, trimmingSign.Get());
+		if (FAILED(createResult)) return createResult;
+		*format = nextFormat.Detach();
 		return S_OK;
 	};
 
 	if (!primaryTextFormat_)
 	{
 		result = createFormat(
-			PrimaryFontSizeDip,
+			SurfaceFontSizeDip,
 			DWRITE_FONT_WEIGHT_SEMI_BOLD,
 			DWRITE_TEXT_ALIGNMENT_LEADING,
 			primaryTextFormat_.GetAddressOf());
 		if (FAILED(result)) return result;
 	}
+	if (!fileNameTextFormat_)
+	{
+		result = createFormat(
+			SurfaceFontSizeDip,
+			DWRITE_FONT_WEIGHT_BOLD,
+			DWRITE_TEXT_ALIGNMENT_LEADING,
+			fileNameTextFormat_.GetAddressOf());
+		if (FAILED(result)) return result;
+	}
 	if (!secondaryTextFormat_)
 	{
 		result = createFormat(
-			SecondaryFontSizeDip,
+			SurfaceFontSizeDip,
 			DWRITE_FONT_WEIGHT_NORMAL,
 			DWRITE_TEXT_ALIGNMENT_LEADING,
 			secondaryTextFormat_.GetAddressOf());
@@ -299,6 +323,7 @@ void InputCandidatesWindow::DiscardResources(bool discardSurface)
 	borderBrush_.Reset();
 	backgroundBrush_.Reset();
 	secondaryTextFormat_.Reset();
+	fileNameTextFormat_.Reset();
 	primaryTextFormat_.Reset();
 	renderTarget_.Reset();
 	if (discardSurface && surface_ != nullptr)
@@ -417,16 +442,36 @@ void InputCandidatesWindow::UpdatePosition() const
 	const auto height = PixelHeight();
 	const auto gap = DipToPixels(WindowGapDip, dpi_);
 	auto y = inputBounds.top - gap - height;
+	auto x = inputBounds.left
+		+ ((inputBounds.right - inputBounds.left) - width) / 2;
 	const auto monitor = MonitorFromWindow(inputHwnd_, MONITOR_DEFAULTTONEAREST);
 	MONITORINFO monitorInfo{};
 	monitorInfo.cbSize = sizeof(monitorInfo);
 	if (monitor != nullptr && GetMonitorInfoW(monitor, &monitorInfo))
 	{
-		y = (std::max)(y, monitorInfo.rcWork.top);
+		const auto availableAbove = (std::max)(
+			0L,
+			inputBounds.top - monitorInfo.rcWork.top - static_cast<LONG>(gap));
+		const auto availableBelow = (std::max)(
+			0L,
+			monitorInfo.rcWork.bottom - inputBounds.bottom - static_cast<LONG>(gap));
+		const auto placeAbove = availableAbove >= height
+			|| (availableBelow < height && availableAbove >= availableBelow);
+		y = placeAbove
+			? inputBounds.top - gap - height
+			: inputBounds.bottom + gap;
+		y = (std::clamp)(
+			y,
+			monitorInfo.rcWork.top,
+			(std::max)(monitorInfo.rcWork.top, monitorInfo.rcWork.bottom - height));
+		x = (std::clamp)(
+			x,
+			monitorInfo.rcWork.left,
+			(std::max)(monitorInfo.rcWork.left, monitorInfo.rcWork.right - width));
 	}
 	SetWindowPos(
 		hwnd_, HWND_TOPMOST,
-		inputBounds.left, y, width, height,
+		x, y, width, height,
 		SWP_NOACTIVATE);
 }
 
@@ -438,26 +483,40 @@ float InputCandidatesWindow::WindowHeightDip() const noexcept
 			+ static_cast<float>(state_.Items().size()) * RowHeightDip;
 }
 
-float InputCandidatesWindow::RenderScaleY() const noexcept
-{
-	const auto requested = (std::max)(1, DipToPixels(WindowHeightDip(), dpi_));
-	return (std::clamp)(
-		static_cast<float>(PixelHeight()) / static_cast<float>(requested),
-		0.0f,
-		1.0f);
-}
-
 int InputCandidatesWindow::PixelWidth() const
 {
+	auto requestedWidth = (std::max)(1, DipToPixels(PreferredWidthDip, dpi_));
 	if (inputHwnd_ != nullptr)
 	{
 		RECT bounds{};
 		if (GetWindowRect(inputHwnd_, &bounds) && bounds.right > bounds.left)
 		{
-			return bounds.right - bounds.left;
+			requestedWidth = (std::max)(
+				requestedWidth,
+				static_cast<int>(bounds.right - bounds.left));
 		}
 	}
-	return (std::max)(1, DipToPixels(static_cast<float>(config_.width), dpi_));
+	else
+	{
+		requestedWidth = (std::max)(
+			requestedWidth,
+			DipToPixels(static_cast<float>(config_.width), dpi_));
+	}
+
+	const auto monitor = inputHwnd_ != nullptr
+		? MonitorFromWindow(inputHwnd_, MONITOR_DEFAULTTONEAREST)
+		: MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
+	MONITORINFO monitorInfo{};
+	monitorInfo.cbSize = sizeof(monitorInfo);
+	if (monitor == nullptr || !GetMonitorInfoW(monitor, &monitorInfo))
+	{
+		return requestedWidth;
+	}
+	const auto workWidth = (std::max)(1L, monitorInfo.rcWork.right - monitorInfo.rcWork.left);
+	const auto margin = (std::min)(
+		workWidth / 2,
+		static_cast<LONG>(DipToPixels(WorkAreaMarginDip, dpi_)));
+	return (std::min)(requestedWidth, static_cast<int>(workWidth - 2 * margin));
 }
 
 int InputCandidatesWindow::PixelHeight() const
@@ -471,10 +530,37 @@ int InputCandidatesWindow::PixelHeight() const
 	monitorInfo.cbSize = sizeof(monitorInfo);
 	if (monitor == nullptr || !GetMonitorInfoW(monitor, &monitorInfo)) return requested;
 	const auto gap = DipToPixels(WindowGapDip, dpi_);
-	const auto available = (std::max)(
-		1L,
+	const auto availableAbove = (std::max)(
+		0L,
 		inputBounds.top - monitorInfo.rcWork.top - static_cast<LONG>(gap));
-	return (std::min)(requested, static_cast<int>(available));
+	const auto availableBelow = (std::max)(
+		0L,
+		monitorInfo.rcWork.bottom - inputBounds.bottom - static_cast<LONG>(gap));
+	const auto available = (std::max)(1L, (std::max)(availableAbove, availableBelow));
+	if (requested <= available) return requested;
+	const auto workHeight = (std::max)(
+		1L,
+		monitorInfo.rcWork.bottom - monitorInfo.rcWork.top);
+	const auto minimumReadable = (std::min)(
+		requested,
+		(std::max)(
+			1,
+			DipToPixels(2.0f * OuterPaddingDip + RowHeightDip, dpi_)));
+	if (available < minimumReadable)
+	{
+		return (std::min)(minimumReadable, static_cast<int>(workHeight));
+	}
+
+	const auto availableDip = PixelsToDip(static_cast<int>(available), dpi_);
+	const auto rowCapacity = static_cast<int>((std::max)(
+		0.0f,
+		availableDip - 2.0f * OuterPaddingDip) / RowHeightDip);
+	if (rowCapacity <= 0) return static_cast<int>(available);
+	const auto fittedHeightDip = 2.0f * OuterPaddingDip
+		+ static_cast<float>(rowCapacity) * RowHeightDip;
+	return (std::min)(
+		static_cast<int>(available),
+		(std::max)(1, DipToPixels(fittedHeightDip, dpi_)));
 }
 
 void InputCandidatesWindow::Render()
@@ -486,21 +572,40 @@ void InputCandidatesWindow::Render()
 	if (FAILED(renderTarget_->BindDC(surface_->DeviceContext(), &bindRect))) return;
 
 	renderTarget_->BeginDraw();
-	renderTarget_->SetTransform(D2D1::Matrix3x2F::Scale(1.0f, RenderScaleY()));
+	renderTarget_->SetTransform(D2D1::Matrix3x2F::Identity());
 	renderTarget_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
 	renderTarget_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
 	renderTarget_->Clear(D2D1::ColorF(0, 0.0f));
 	const auto widthDip = static_cast<float>(width) * 96.0f / static_cast<float>(dpi_);
+	const auto heightDip = static_cast<float>(height) * 96.0f / static_cast<float>(dpi_);
 	const auto rounded = CreateInsetRoundedRect(
-		0.0f, 0.0f, widthDip, WindowHeightDip(),
+		0.0f, 0.0f, widthDip, heightDip,
 		CornerRadiusDip, BorderWidthDip);
 	renderTarget_->FillRoundedRectangle(rounded, backgroundBrush_.Get());
 	renderTarget_->DrawRoundedRectangle(rounded, borderBrush_.Get(), BorderWidthDip);
 
 	const auto selected = state_.SelectedIndex();
-	for (size_t index = 0; index < state_.Items().size(); ++index)
+	const auto availableRows = (std::max)(
+		size_t{ 1 },
+		static_cast<size_t>((std::max)(
+			0.0f,
+			heightDip - 2.0f * OuterPaddingDip) / RowHeightDip));
+	const auto visibleRows = (std::min)(availableRows, state_.Items().size());
+	auto firstVisibleIndex = size_t{ 0 };
+	if (selected.has_value() && *selected >= visibleRows)
 	{
-		const auto top = OuterPaddingDip + static_cast<float>(index) * RowHeightDip;
+		firstVisibleIndex = *selected - visibleRows + 1;
+	}
+	if (state_.Items().size() > visibleRows)
+	{
+		firstVisibleIndex = (std::min)(
+			firstVisibleIndex,
+			state_.Items().size() - visibleRows);
+	}
+	for (size_t visibleIndex = 0; visibleIndex < visibleRows; ++visibleIndex)
+	{
+		const auto index = firstVisibleIndex + visibleIndex;
+		const auto top = OuterPaddingDip + static_cast<float>(visibleIndex) * RowHeightDip;
 		const auto bottom = top + RowHeightDip;
 		if (selected.has_value() && *selected == index)
 		{
@@ -511,7 +616,7 @@ void InputCandidatesWindow::Render()
 				4.0f, 4.0f);
 			renderTarget_->FillRoundedRectangle(selection, selectionBrush_.Get());
 		}
-		if (index != 0)
+		if (visibleIndex != 0)
 		{
 			renderTarget_->DrawLine(
 				D2D1::Point2F(HorizontalPaddingDip, top),
@@ -535,19 +640,26 @@ void InputCandidatesWindow::Render()
 			widthDip - HorizontalPaddingDip);
 		const auto hasSecondary = !item.secondaryText.empty();
 		const auto primaryRect = hasSecondary
-			? D2D1::RectF(textLeft, top + 2.0f, textRight, top + 21.0f)
+			? D2D1::RectF(
+				textLeft,
+				top + 4.0f,
+				textRight,
+				top + 4.0f + SurfaceLineHeightDip)
 			: D2D1::RectF(textLeft, top, textRight, bottom);
+		const auto primaryFormat = item.kind == LuvLetterCandidateKindFile
+			? fileNameTextFormat_.Get()
+			: primaryTextFormat_.Get();
 		renderTarget_->DrawTextW(
 			item.primaryText.c_str(),
 			static_cast<UINT32>(item.primaryText.size()),
-			primaryTextFormat_.Get(), primaryRect, textBrush_.Get(),
+			primaryFormat, primaryRect, textBrush_.Get(),
 			D2D1_DRAW_TEXT_OPTIONS_CLIP,
 			DWRITE_MEASURING_MODE_NATURAL);
 		if (hasSecondary)
 		{
 			const auto secondaryRect = D2D1::RectF(
-				textLeft, top + 19.0f,
-				textRight, bottom - 1.0f);
+				textLeft, top + 4.0f + SurfaceLineHeightDip,
+				textRight, bottom - 4.0f);
 			renderTarget_->DrawTextW(
 				item.secondaryText.c_str(),
 				static_cast<UINT32>(item.secondaryText.size()),

@@ -25,7 +25,7 @@ LuvLetterInputBoxConfig NativeConfigurationSanitizer::DefaultInputBox() noexcept
 	config.height = 32;
 	config.cornerRadius = SurfaceCornerRadius;
 	config.borderThickness = SurfaceBorderThickness;
-	config.fontSize = 14.0f;
+	config.fontSize = SurfaceFontSizeDip;
 	config.horizontalPadding = 10.0f;
 	config.verticalPadding = 4.0f;
 	config.caretWidth = 2.25f;
@@ -51,7 +51,7 @@ LuvLetterFeatureWindowConfig NativeConfigurationSanitizer::DefaultQuickActionsWi
 	config.gap = 12.0f;
 	config.cornerRadius = SurfaceCornerRadius;
 	config.borderThickness = SurfaceBorderThickness;
-	config.fontSize = 16.0f;
+	config.fontSize = SurfaceFontSizeDip;
 	config.bottomMargin = 60;
 	config.borderColor = SurfaceBorderColor;
 	config.backgroundColor = SurfaceBackgroundColor;
@@ -78,10 +78,7 @@ LuvLetterInputBoxConfig NativeConfigurationSanitizer::SanitizeInputBox(
 		FiniteOr(config.borderThickness, sanitized.borderThickness),
 		0.0f,
 		(std::min)(16.0f, static_cast<float>(sanitized.height) / 2.0f));
-	sanitized.fontSize = (std::clamp)(
-		FiniteOr(config.fontSize, sanitized.fontSize),
-		6.0f,
-		256.0f);
+	sanitized.fontSize = SurfaceFontSizeDip;
 	sanitized.horizontalPadding = (std::clamp)(
 		FiniteOr(config.horizontalPadding, sanitized.horizontalPadding),
 		0.0f,
@@ -139,10 +136,7 @@ LuvLetterFeatureWindowConfig NativeConfigurationSanitizer::SanitizeQuickActionsW
 		FiniteOr(config.borderThickness, sanitized.borderThickness),
 		0.0f,
 		(std::min)(16.0f, sanitized.cellSize / 2.0f));
-	sanitized.fontSize = (std::clamp)(
-		FiniteOr(config.fontSize, sanitized.fontSize),
-		6.0f,
-		128.0f);
+	sanitized.fontSize = SurfaceFontSizeDip;
 	sanitized.bottomMargin = (std::clamp)(config.bottomMargin, 0, 4096);
 	sanitized.offsetX = (std::clamp)(config.offsetX, -32768, 32768);
 	sanitized.offsetY = (std::clamp)(config.offsetY, -32768, 32768);

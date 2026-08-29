@@ -15,6 +15,8 @@ public static class SurfaceStyleDefaults
 
     public const float BackgroundOpacity = 1.0f;
     public const float ContentOpacity = 1.0f;
+    public const string FontFamily = "Microsoft YaHei UI";
+    public const float FontSize = 14.0f;
     public const float CornerRadius = 8.0f;
     public const float BorderThickness = 1.0f;
 }

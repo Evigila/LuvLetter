@@ -1,6 +1,7 @@
 #include "windows/InputWindow.h"
 
 #include "configuration/NativeConfigurationSanitizer.h"
+#include "rendering/SurfaceStyleDefaults.h"
 
 #include <imm.h>
 #include <windowsx.h>
@@ -20,14 +21,6 @@ namespace
 	constexpr UINT_PTR AnimationTimerId = 2;
 	constexpr UINT CaretBlinkMs = 530;
 	constexpr UINT AnimationFrameMs = 16;
-	constexpr float FocusIndicatorDiameterDip = 10.0f;
-	constexpr float FocusIndicatorGapDip = 8.0f;
-	constexpr float StatusTagWidthDip = 34.0f;
-	constexpr float StatusTagHeightDip = 20.0f;
-	constexpr float StatusTagGapDip = 8.0f;
-	constexpr float StatusTagCornerRadiusDip = 5.0f;
-	constexpr float StatusTagBorderWidthDip = 1.0f;
-	constexpr float StatusTagFontSizeDip = 10.0f;
 	constexpr size_t MaxInputCharacters = 32768;
 	constexpr size_t HistoryCapacity = 100;
 	constexpr float MaxTextLayoutHeight = 16777216.0f;
@@ -37,6 +30,31 @@ namespace
 	constexpr int ControlModifier = 2;
 	constexpr int ShiftModifier = 4;
 	constexpr int WindowsModifier = 8;
+
+	struct InputAdornmentMetrics final
+	{
+		float indicatorDiameter;
+		float indicatorGap;
+		float tagWidth;
+		float tagHeight;
+		float tagGap;
+		float tagCornerRadius;
+		float tagBorderWidth;
+	};
+
+	InputAdornmentMetrics CalculateInputAdornmentMetrics(float fontSize) noexcept
+	{
+		const auto size = (std::max)(1.0f, fontSize);
+		return InputAdornmentMetrics{
+			size,
+			size * (4.0f / 7.0f),
+			size * 3.25f,
+			size * 1.75f,
+			size * (4.0f / 7.0f),
+			size * (5.0f / 14.0f),
+			(std::max)(1.0f, size / 14.0f),
+		};
+	}
 
 	constexpr int SelectLineCapacity(UINT32 lineCount) noexcept
 	{
@@ -199,7 +217,7 @@ HRESULT InputWindow::EnsureResources()
 	if (!textFormat_)
 	{
 		result = dwriteFactory_->CreateTextFormat(
-			L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL,
+			SurfaceFontFamily, nullptr, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL,
 			DWRITE_FONT_STRETCH_NORMAL, config_.fontSize, L"", textFormat_.GetAddressOf());
 		if (FAILED(result)) return result;
 		textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
@@ -239,8 +257,8 @@ HRESULT InputWindow::EnsureResources()
 	if (!statusTagTextFormat_)
 	{
 		result = dwriteFactory_->CreateTextFormat(
-			L"Segoe UI", nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
-			DWRITE_FONT_STRETCH_NORMAL, StatusTagFontSizeDip, L"",
+			SurfaceFontFamily, nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+			DWRITE_FONT_STRETCH_NORMAL, config_.fontSize, L"",
 			statusTagTextFormat_.GetAddressOf());
 		if (FAILED(result)) return result;
 		result = statusTagTextFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
@@ -1254,6 +1272,7 @@ void InputWindow::Render(bool caretOnly)
 		LeadingReservationDip(),
 		(std::max)(0.0f, animatedWidth - 2.0f * horizontalPadding - 1.0f));
 	const auto windowHeight = WindowHeightDip();
+	const auto adornmentMetrics = CalculateInputAdornmentMetrics(config_.fontSize);
 	const auto verticalPadding = (std::min)(
 		(std::max)(0.0f, config_.verticalPadding),
 		windowHeight / 2.0f - 1.0f);
@@ -1332,7 +1351,7 @@ void InputWindow::Render(bool caretOnly)
 	}
 	if (focusIndicatorFrame.motionProgress > 0.0)
 	{
-		const auto radius = FocusIndicatorDiameterDip / 2.0f;
+		const auto radius = adornmentMetrics.indicatorDiameter / 2.0f;
 		const auto hiddenCenterX = animatedLeft - radius;
 		const auto focusedCenterX = animatedLeft + horizontalPadding + radius;
 		const auto centerX = hiddenCenterX
@@ -1350,18 +1369,18 @@ void InputWindow::Render(bool caretOnly)
 	}
 	const auto tagLeft = animatedLeft + horizontalPadding + indicatorReservation;
 	const auto tagRight = (std::min)(
-		tagLeft + StatusTagWidthDip,
+		tagLeft + adornmentMetrics.tagWidth,
 		animatedRight - horizontalPadding);
 	if (tagRight - tagLeft >= 8.0f)
 	{
 		const auto tagHeight = (std::min)(
-			StatusTagHeightDip,
+			adornmentMetrics.tagHeight,
 			(std::max)(1.0f, windowHeight - 2.0f));
 		const auto tagTop = (windowHeight - tagHeight) / 2.0f;
 		const auto tagRect = D2D1::RoundedRect(
 			D2D1::RectF(tagLeft, tagTop, tagRight, tagTop + tagHeight),
-			StatusTagCornerRadiusDip,
-			StatusTagCornerRadiusDip);
+			adornmentMetrics.tagCornerRadius,
+			adornmentMetrics.tagCornerRadius);
 		renderTarget_->PushAxisAlignedClip(
 			D2D1::RectF(animatedLeft, 0.0f, animatedRight, windowHeight),
 			D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
@@ -1379,7 +1398,7 @@ void InputWindow::Render(bool caretOnly)
 		renderTarget_->DrawRoundedRectangle(
 			tagRect,
 			statusTagBorderBrush_.Get(),
-			StatusTagBorderWidthDip);
+			adornmentMetrics.tagBorderWidth);
 		renderTarget_->PushAxisAlignedClip(
 			tagRect.rect,
 			D2D1_ANTIALIAS_MODE_ALIASED);
@@ -1527,7 +1546,7 @@ void InputWindow::Render(bool caretOnly)
 
 float InputWindow::LineHeightDip() const
 {
-	return (std::max)(1.0f, config_.fontSize * 1.25f);
+	return SurfaceLineHeightDip;
 }
 
 float InputWindow::WindowHeightDip() const
@@ -1604,13 +1623,15 @@ float InputWindow::FocusIndicatorProgress() const noexcept
 
 float InputWindow::FocusIndicatorReservationDip() const noexcept
 {
-	return (FocusIndicatorDiameterDip + FocusIndicatorGapDip)
+	const auto metrics = CalculateInputAdornmentMetrics(config_.fontSize);
+	return (metrics.indicatorDiameter + metrics.indicatorGap)
 		* FocusIndicatorProgress();
 }
 
 float InputWindow::StatusTagReservationDip() const noexcept
 {
-	return StatusTagWidthDip + StatusTagGapDip;
+	const auto metrics = CalculateInputAdornmentMetrics(config_.fontSize);
+	return metrics.tagWidth + metrics.tagGap;
 }
 
 float InputWindow::LeadingReservationDip() const noexcept
