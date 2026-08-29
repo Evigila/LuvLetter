@@ -171,12 +171,14 @@ using `FeatureWindow` at the root or inside `ActivationGestures` are migrated be
 deserialization. A document containing both legacy and canonical names is rejected as
 ambiguous instead of silently choosing one value.
 
-InputBox and QuickActions share the same default surface tokens: an opaque silver
-background (`#FFC0C0C0`), white border (`#FFFFFFFF`), dark-gray content
+InputBox, its candidate dataset, QuickActions, and the message queue share the same
+default surface tokens: an opaque cool-white background (`#FFF0F3F9`), white border
+(`#FFFFFFFF`), dark-gray content
 (`#FF3F3F3F`), 8-pixel corner radius, and 1-pixel border. Core owns the canonical
 configuration defaults, while Native mirrors the same values for ABI fallback and
 defensive sanitization. Schema migration upgrades fields that still match the previous
-default theme and preserves customized values. Schema 9 also recognizes the historical
+default theme and preserves customized values. Schema 10 replaces the previous opaque
+silver background while preserving custom themes. Schema 9 also recognizes the historical
 640-by-44 dark InputBox preset as one atomic theme, replacing its black surface and
 foreground together so it cannot become a low-contrast hybrid after migration.
 

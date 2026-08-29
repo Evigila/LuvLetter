@@ -722,6 +722,69 @@ internal static partial class Program
             Assert.Equal(0.7f, customizedUnifiedTheme.QuickActions.Colors.TextOpacity);
             Assert.Equal("#FF00AA88", customizedUnifiedTheme.QuickActions.Colors.Accent);
 
+            var previousSilverThemePath = Path.Combine(
+                temporaryDirectory,
+                "previous-silver-theme-v9.json");
+            File.WriteAllText(
+                previousSilverThemePath,
+                """
+                {
+                  "SchemaVersion": 9,
+                  "InputBox": {
+                    "Colors": {
+                      "Background": "#C0C0C0",
+                      "BackgroundOpacity": 1
+                    }
+                  },
+                  "QuickActions": {
+                    "Colors": {
+                      "Background": "#FFC0C0C0",
+                      "BackgroundOpacity": 1
+                    }
+                  }
+                }
+                """);
+            var migratedSilverTheme = new LuvLetterConfigurationStore(
+                previousSilverThemePath).Current;
+            Assert.Equal(
+                LuvLetterConfiguration.CurrentSchemaVersion,
+                migratedSilverTheme.SchemaVersion);
+            Assert.Equal(
+                SurfaceStyleDefaults.Background,
+                migratedSilverTheme.InputBox.Colors.Background);
+            Assert.Equal(
+                SurfaceStyleDefaults.Background,
+                migratedSilverTheme.QuickActions.Colors.Background);
+
+            var customizedSilverThemePath = Path.Combine(
+                temporaryDirectory,
+                "customized-silver-theme-v9.json");
+            File.WriteAllText(
+                customizedSilverThemePath,
+                """
+                {
+                  "SchemaVersion": 9,
+                  "InputBox": {
+                    "Colors": {
+                      "Background": "#FFC0C0C0",
+                      "BackgroundOpacity": 0.5
+                    }
+                  },
+                  "QuickActions": {
+                    "Colors": {
+                      "Background": "#FF223344",
+                      "BackgroundOpacity": 1
+                    }
+                  }
+                }
+                """);
+            var customizedSilverTheme = new LuvLetterConfigurationStore(
+                customizedSilverThemePath).Current;
+            Assert.Equal("#80C0C0C0", customizedSilverTheme.InputBox.Colors.Background);
+            Assert.Equal(0.5f, customizedSilverTheme.InputBox.Colors.BackgroundOpacity);
+            Assert.Equal("#FF223344", customizedSilverTheme.QuickActions.Colors.Background);
+            Assert.Equal(1.0f, customizedSilverTheme.QuickActions.Colors.BackgroundOpacity);
+
             TestFailedSaveDoesNotChangeCurrent(temporaryDirectory);
         }
         finally

@@ -332,8 +332,52 @@ internal static class ConfigurationSchemaMigrator
             };
         }
 
+        if (configuration.SchemaVersion < 10)
+        {
+            if (migrated.InputBox is { Colors: { } silverInputColors } silverInputBox
+                && IsPreviousSilverSurfaceBackground(
+                    silverInputColors.Background,
+                    silverInputColors.BackgroundOpacity))
+            {
+                migrated = migrated with
+                {
+                    InputBox = silverInputBox with
+                    {
+                        Colors = silverInputColors with
+                        {
+                            Background = defaults.InputBox.Colors.Background,
+                            BackgroundOpacity = defaults.InputBox.Colors.BackgroundOpacity,
+                        },
+                    },
+                };
+            }
+
+            if (migrated.QuickActions is
+                { Colors: { } silverQuickActionsColors } silverQuickActions
+                && IsPreviousSilverSurfaceBackground(
+                    silverQuickActionsColors.Background,
+                    silverQuickActionsColors.BackgroundOpacity))
+            {
+                migrated = migrated with
+                {
+                    QuickActions = silverQuickActions with
+                    {
+                        Colors = silverQuickActionsColors with
+                        {
+                            Background = defaults.QuickActions.Colors.Background,
+                            BackgroundOpacity = defaults.QuickActions.Colors.BackgroundOpacity,
+                        },
+                    },
+                };
+            }
+        }
+
         return migrated;
     }
+
+    private static bool IsPreviousSilverSurfaceBackground(string? color, float opacity) =>
+        (IsColor(color, "FFC0C0C0") || IsColor(color, "C0C0C0"))
+        && NearlyEquals(opacity, 1.0f);
 
     private static bool IsPreviousSurfaceBackground(InputBoxColorOptions colors) =>
         IsColor(colors.Background, "80F5F5F5")

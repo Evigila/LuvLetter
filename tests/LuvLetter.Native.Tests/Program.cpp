@@ -1,5 +1,6 @@
 #include "api/InputBoxApi.h"
 #include "rendering/InputBoxAnimator.h"
+#include "rendering/SurfaceStyleDefaults.h"
 #include "windows/InputCandidateState.h"
 #include "windows/MessageQueueEntry.h"
 
@@ -82,6 +83,8 @@ namespace
 
 	void TestAbiContract()
 	{
+		Assert(LuvLetterNative::SurfaceBackgroundColor == 0xFFF0F3F9,
+			"All native popup surfaces must use the shared cool-white background.");
 		Assert(LUVLETTER_NATIVE_ABI_VERSION == 7, "Native ABI must expose message activities.");
 		Assert(sizeof(LuvLetterInputBoxConfig) == 104, "Input config ABI size changed unexpectedly.");
 		Assert(sizeof(LuvLetterFeatureWindowConfig) == 88, "Quick Actions config ABI size changed unexpectedly.");

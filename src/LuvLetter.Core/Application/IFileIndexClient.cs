@@ -47,7 +47,12 @@ public interface IFileIndexClient
 
 public interface IFileCandidateLauncher
 {
+    /// <returns>
+    /// <see langword="false"/> only when the indexed target no longer exists;
+    /// shell activation failures are reported by throwing.
+    /// </returns>
     bool Open(string fullPath, FileSystemEntryKind entryKind);
 
+    /// <inheritdoc cref="Open"/>
     bool Reveal(string fullPath, FileSystemEntryKind entryKind);
 }

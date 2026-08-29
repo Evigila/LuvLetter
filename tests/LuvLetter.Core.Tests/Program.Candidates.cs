@@ -209,6 +209,10 @@ internal static partial class Program
             Assert.SequenceEqual([@"C:\aaa\bbb.md"], launcher.Revealed);
             Assert.SequenceEqual([FileSystemEntryKind.File], launcher.RevealedKinds);
             Assert.Equal(1, nativeShell.HideCommandInputCalls);
+            Assert.Equal(
+                0,
+                nativeShell.EnqueuedMessages.Count,
+                "Successful candidate activation must not report a stale indexed item.");
 
             nativeShell.RaiseCandidateActivated(directoryCandidate.Token, CandidateAction.Open);
             Assert.SequenceEqual([@"C:\logs\builds"], launcher.Opened);
@@ -223,6 +227,17 @@ internal static partial class Program
                 [FileSystemEntryKind.File, FileSystemEntryKind.Directory],
                 launcher.RevealedKinds);
             Assert.Equal(3, nativeShell.HideCommandInputCalls);
+
+            launcher.OpenResult = false;
+            nativeShell.RaiseCandidateActivated(directoryCandidate.Token, CandidateAction.Open);
+            Assert.Equal(
+                3,
+                nativeShell.HideCommandInputCalls,
+                "A missing indexed item must keep the input window open.");
+            Assert.Equal(
+                @"The indexed item is no longer available: C:\logs\builds",
+                nativeShell.EnqueuedMessages[^1]);
+            launcher.OpenResult = true;
 
             nativeShell.RaiseCandidateActivated(commandCandidate.Token, CandidateAction.Open);
             Assert.True(
