@@ -5,6 +5,10 @@ and file activation. It is a planning document: Phases 1 and 2 are complete. Use
 work is recorded in `changelog.md` only after it is implemented, while ownership and
 dependency rules remain in `architecture.md`.
 
+Application discovery and executable launch improvements are proposed separately in
+`roadmap.applications.md`; the existing filesystem index already includes `.exe` files
+inside its configured scope.
+
 ## Product invariants
 
 The following rules apply to every phase:
