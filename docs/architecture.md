@@ -297,8 +297,38 @@ The Visual Studio IDE is not required. The standalone Build Tools installation p
 the full-framework `MSBuild.exe` and C++ targets that can be invoked from a VS Code
 terminal.
 
+### One-click startup
+
+Double-click the root-level `start.bat` to restore and build the application in Debug mode,
+including its native renderer and indexer, then launch it. The launcher locates full
+Visual Studio MSBuild through `vswhere`; both Visual Studio 2026 and standalone Build
+Tools installations are supported. The prerequisites above must already be installed,
+and the first restore needs access to the configured NuGet feeds.
+
+From a PowerShell terminal at the repository root:
+
+```powershell
+.\scripts\start.ps1
+.\scripts\start.ps1 -Configuration Release
+```
+
+The BAT entry point also forwards arguments, for example
+`.\start.bat -Configuration Release`. It uses Windows PowerShell with a
+process-local execution-policy bypass and pauses on failure so diagnostics remain
+visible. Both entry points resolve paths from the script directory and can be called
+from another working directory, including when the repository path contains spaces.
+
+Exit any running LuvLetter instance from the system tray before launching again. The
+script refuses to rebuild while a process named `LuvLetter` is running, stops if the
+build fails or a required native output is missing, and starts the executable with its
+output directory as the working directory. A successful launch request closes the BAT
+window; application startup errors are displayed by LuvLetter itself. Press Ctrl twice
+to show the input box, or use the system tray.
+
+### Manual build
+
 Do not use `dotnet build LuvLetter.slnx` for a complete build. The solution contains
-two `.vcxproj` projects, while the .NET SDK version of MSBuild does not include
+C++ `.vcxproj` projects, while the .NET SDK version of MSBuild does not include
 `Microsoft.Cpp.Default.props` or the MSVC toolchain. It consequently reports `MSB4278`.
 
 From a PowerShell terminal at the repository root, locate full MSBuild without assuming

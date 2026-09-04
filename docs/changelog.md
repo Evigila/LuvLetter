@@ -8,6 +8,9 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 
 ### Added
 
+- Added root-level `start.bat` and `scripts/start.ps1` for one-click build and launch on
+  Windows, with automatic Visual Studio MSBuild discovery, Debug/Release selection,
+  required-output checks, and failure messages retained by the BAT launcher.
 - Added the `Gen`, `Ask`, and `Cmd` input modes with a persistent status tag inside the
   input surface.
 - Added a clipped vertical transition for mode changes: the outgoing tag label exits
