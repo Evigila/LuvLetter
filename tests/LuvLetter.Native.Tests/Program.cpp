@@ -93,6 +93,12 @@ namespace
 		AssertNear(20.0f, LuvLetterNative::SurfaceLineHeightDip,
 			"Shared line height must leave Microsoft YaHei UI glyphs unclipped.");
 		Assert(LUVLETTER_NATIVE_ABI_VERSION == 7, "Native ABI must expose message activities.");
+		Assert(LUVLETTER_NATIVE_MAX_INPUT_CANDIDATES == 32,
+			"Native ABI must retain the managed candidate-capacity contract.");
+		Assert(LUVLETTER_NATIVE_MAX_CANDIDATE_PRIMARY_LENGTH == 512,
+			"Native ABI must retain the primary candidate text limit.");
+		Assert(LUVLETTER_NATIVE_MAX_CANDIDATE_SECONDARY_LENGTH == 2048,
+			"Native ABI must retain the secondary candidate text limit.");
 		Assert(sizeof(LuvLetterInputBoxConfig) == 104, "Input config ABI size changed unexpectedly.");
 		Assert(sizeof(LuvLetterFeatureWindowConfig) == 88, "Quick Actions config ABI size changed unexpectedly.");
 		Assert(sizeof(LuvLetterFeatureItem) == 16, "Quick Action item ABI size changed unexpectedly.");

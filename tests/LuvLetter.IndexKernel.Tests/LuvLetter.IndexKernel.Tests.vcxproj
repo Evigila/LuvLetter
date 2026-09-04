@@ -87,8 +87,13 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\src\LuvLetter.Indexer\IndexDiagnostics.cpp" />
+    <ClCompile Include="..\..\src\LuvLetter.Indexer\IndexRecovery.cpp" />
     <ClCompile Include="..\..\src\LuvLetter.Indexer\IndexMaintenance.cpp" />
     <ClCompile Include="Program.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="Program.Recovery.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\..\src\LuvLetter.IndexKernel\LuvLetter.IndexKernel.vcxproj">

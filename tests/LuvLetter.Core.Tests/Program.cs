@@ -39,6 +39,7 @@ internal static partial class Program
         ("Index partition scheduling", TestIndexPartitionScheduling),
         ("Index partition read views", TestIndexPartitionReadViews),
         ("File index partition configuration", TestFileIndexPartitionConfiguration),
+        ("File index progress protocol", TestFileIndexProgressProtocol),
     ];
 
     public static async Task<int> Main()

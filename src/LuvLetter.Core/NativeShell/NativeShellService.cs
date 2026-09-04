@@ -14,8 +14,8 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
     private const int MaximumCandidateCount = InputCandidateOptions.MaximumCandidateCount;
     private const int MaximumCallbackTextLength = 1_048_576;
     private const int MaximumQuickActionLabelLength = 96;
-    private const int MaximumCandidatePrimaryTextLength = 512;
-    private const int MaximumCandidateSecondaryTextLength = 2048;
+    private const int MaximumCandidatePrimaryTextLength = InputCandidatePresentation.MaximumPrimaryTextLength;
+    private const int MaximumCandidateSecondaryTextLength = InputCandidatePresentation.MaximumSecondaryTextLength;
     private const int MaximumMessageLength = 4096;
     private const int MaximumPendingNotifications = 128;
 
@@ -191,7 +191,9 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
         }
     }
 
-    public void SetInputCandidates(IReadOnlyList<InputCandidate> candidates, ulong revision)
+    public InputCandidateSetResult SetInputCandidates(
+        IReadOnlyList<InputCandidate> candidates,
+        ulong revision)
     {
         ThrowIfDisposed();
         ArgumentNullException.ThrowIfNull(candidates);
@@ -207,10 +209,8 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
             ThrowIfDisposed();
             if (candidates.Count == 0)
             {
-                ThrowIfFailed(
-                    nativeApi.SetInputCandidates(Array.Empty<NativeInputCandidate>(), 0, revision),
-                    "SetInputCandidates");
-                return;
+                return ParseCandidateSetResult(
+                    nativeApi.SetInputCandidates(Array.Empty<NativeInputCandidate>(), 0, revision));
             }
 
             Span<int> primaryTextLengths = stackalloc int[candidates.Count];
@@ -283,9 +283,8 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
 
                 // The native host copies every pointed-to string before this synchronous
                 // call returns, so the pooled buffer can be unpinned immediately afterward.
-                ThrowIfFailed(
-                    nativeApi.SetInputCandidates(nativeItems, candidates.Count, revision),
-                    "SetInputCandidates");
+                return ParseCandidateSetResult(
+                    nativeApi.SetInputCandidates(nativeItems, candidates.Count, revision));
             }
             finally
             {
@@ -751,11 +750,29 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
     private static int GetPackedTextLength(string? text, int maximumLength)
     {
         text ??= string.Empty;
-        // Copy one character beyond the accepted maximum so the native bounded
-        // wcsnlen check still rejects overlong values without packing them in full.
-        var inspectedLength = Math.Min(text.Length, maximumLength + 1);
+        var inspectedLength = Math.Min(text.Length, maximumLength);
         var terminator = text.AsSpan(0, inspectedLength).IndexOf('\0');
-        return terminator >= 0 ? terminator : inspectedLength;
+        if (terminator >= 0)
+        {
+            return terminator;
+        }
+        if (inspectedLength > 0 && inspectedLength < text.Length
+            && char.IsHighSurrogate(text[inspectedLength - 1])
+            && char.IsLowSurrogate(text[inspectedLength]))
+        {
+            inspectedLength--;
+        }
+        return inspectedLength;
+    }
+
+    private static InputCandidateSetResult ParseCandidateSetResult(int result)
+    {
+        if (result == 0) return InputCandidateSetResult.Accepted;
+        if (result == 1) return InputCandidateSetResult.Stale;
+        ThrowIfFailed(result, "SetInputCandidates");
+        throw new ExternalException(
+            $"Native operation 'SetInputCandidates' returned unexpected HRESULT 0x{result:X8}.",
+            result);
     }
 
     private static IntPtr PackText(

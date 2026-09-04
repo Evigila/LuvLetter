@@ -184,6 +184,75 @@ std::optional<indexing::SearchResult> ReadCurrentEntry(const std::filesystem::pa
 
 } // namespace
 
+ResolvedFileSystemChanges ResolveFileSystemChanges(
+    const std::span<const FileSystemChange> changes) {
+    ResolvedFileSystemChanges resolved;
+    resolved.operations.reserve(changes.size() * 2U);
+    for (const auto& change : changes) {
+        const auto normalized = NormalizePath(change.path);
+        const auto key = FoldPath(normalized);
+        if (key.empty()) {
+            continue;
+        }
+
+        const auto appendRemoval = [&] {
+            const auto stableId = StablePathId(key);
+            resolved.operations.push_back(DeltaOperation{
+                DeltaOperationKind::Remove,
+                indexing::SearchResultKind::File,
+                stableId,
+                change.rootId,
+                normalized});
+            resolved.operations.push_back(DeltaOperation{
+                DeltaOperationKind::RemoveTree,
+                indexing::SearchResultKind::Directory,
+                stableId,
+                change.rootId,
+                normalized});
+        };
+
+        if (change.action == FileSystemChangeAction::Remove) {
+            appendRemoval();
+            continue;
+        }
+
+        auto current = ReadCurrentEntry(normalized);
+        if (!current.has_value()) {
+            appendRemoval();
+            continue;
+        }
+
+        if (change.action == FileSystemChangeAction::UpsertAndReconcile &&
+            current->kind == indexing::SearchResultKind::Directory) {
+            resolved.rebuildCauses.push_back(normalized);
+        }
+        resolved.requiresReconciliation |=
+            change.action == FileSystemChangeAction::UpsertAndReconcile &&
+            current->kind == indexing::SearchResultKind::Directory;
+        resolved.operations.push_back(DeltaOperation{
+            DeltaOperationKind::Upsert,
+            current->kind,
+            current->stableId,
+            change.rootId,
+            normalized});
+    }
+    return resolved;
+}
+
+bool IsSameOrChildFolded(
+    const std::wstring_view candidate,
+    const std::wstring_view parent) noexcept {
+    if (!candidate.starts_with(parent)) {
+        return false;
+    }
+    if (candidate.size() == parent.size() || parent.empty()) {
+        return true;
+    }
+    const auto last = parent.back();
+    const auto next = candidate[parent.size()];
+    return last == L'\\' || last == L'/' || next == L'\\' || next == L'/';
+}
+
 std::uint64_t LiveIndexDelta::CaptureRevision() const noexcept {
     std::shared_lock lock(mutex_);
     return revision_;
@@ -192,78 +261,69 @@ std::uint64_t LiveIndexDelta::CaptureRevision() const noexcept {
 bool LiveIndexDelta::Apply(
     const std::span<const FileSystemChange> changes,
     std::vector<std::filesystem::path>* rebuildCauses) {
-    if (changes.empty()) {
-        return false;
+    const auto resolved = ResolveFileSystemChanges(changes);
+    if (resolved.operations.empty()) return false;
+    if (rebuildCauses != nullptr) {
+        rebuildCauses->insert(rebuildCauses->end(),
+            resolved.rebuildCauses.begin(), resolved.rebuildCauses.end());
     }
+    return Apply(resolved.operations, CaptureRevision() + 1U, rebuildCauses) ||
+        resolved.requiresReconciliation;
+}
 
+bool LiveIndexDelta::Apply(
+    const std::span<const DeltaOperation> operations,
+    const std::uint64_t sequence,
+    std::vector<std::filesystem::path>* rebuildCauses) {
+    if (operations.empty()) return false;
     std::unique_lock lock(mutex_);
+    if (sequence <= revision_) return true;
+    revision_ = sequence;
     bool requiresRebuild = unsafe_;
-    std::vector<std::filesystem::path> capacityCauses;
-    for (const auto& change : changes) {
-        const auto normalized = NormalizePath(change.path);
+    for (const auto& operation : operations) {
+        const auto normalized = NormalizePath(operation.path);
         const auto key = FoldPath(normalized);
-        if (key.empty()) {
-            continue;
-        }
-
-        const auto revision = ++revision_;
+        if (key.empty()) continue;
         if (unsafe_) {
-            unsafeRevision_ = revision;
+            unsafeRevision_ = sequence;
             requiresRebuild = true;
-            if (rebuildCauses != nullptr) {
-                rebuildCauses->push_back(normalized);
-            }
+            if (rebuildCauses != nullptr) rebuildCauses->push_back(normalized);
             continue;
         }
-        bool causesRebuild = false;
-        if (change.action == FileSystemChangeAction::Remove) {
+        if (operation.kind == DeltaOperationKind::Remove) {
             upserts_.erase(key);
-            tombstones_[key] = revision;
-            removedPrefixes_[RemovedPrefix(key)] = revision;
+            tombstones_[key] = sequence;
+        } else if (operation.kind == DeltaOperationKind::RemoveTree) {
+            const auto prefix = RemovedPrefix(key);
+            removedPrefixes_[prefix] = sequence;
+            // Remove earlier upserts immediately, preserving operation order even
+            // when a later recreation shares this journal batch's sequence.
+            std::erase_if(upserts_, [&prefix](const auto& item) {
+                return item.first.starts_with(prefix);
+            });
         } else {
-            auto current = ReadCurrentEntry(normalized);
-            if (!current.has_value()) {
-                upserts_.erase(key);
-                tombstones_[key] = revision;
-                removedPrefixes_[RemovedPrefix(key)] = revision;
-            } else {
-                tombstones_.erase(key);
-                causesRebuild = change.action == FileSystemChangeAction::UpsertAndReconcile &&
-                    current->kind == indexing::SearchResultKind::Directory;
-                requiresRebuild |= causesRebuild;
-                upserts_[key] = VersionedResult{std::move(*current), revision};
-            }
+            auto name = normalized.filename().native();
+            if (name.empty()) name = normalized.native();
+            tombstones_.erase(key);
+            upserts_[key] = VersionedResult{
+                indexing::SearchResult{operation.stableId, operation.entryKind,
+                    std::move(name), normalized.native()}, sequence};
         }
-
-        if (upserts_.size() + tombstones_.size() + removedPrefixes_.size()
-            >= kMaximumRetainedDeltaChanges) {
+        const auto count = upserts_.size() + tombstones_.size() + removedPrefixes_.size();
+        if (count >= kMaximumDeltaChanges && rebuildCauses != nullptr) {
+            rebuildCauses->push_back(normalized);
+        }
+        if (count >= kMaximumRetainedDeltaChanges) {
             upserts_.clear();
             tombstones_.clear();
             removedPrefixes_.clear();
             unsafe_ = true;
-            unsafeRevision_ = revision;
+            unsafeRevision_ = sequence;
             requiresRebuild = true;
-            causesRebuild = true;
-        }
-        if (rebuildCauses != nullptr) {
-            if (causesRebuild) {
-                rebuildCauses->push_back(normalized);
-            } else if (upserts_.size() + tombstones_.size() + removedPrefixes_.size()
-                >= kMaximumDeltaChanges) {
-                capacityCauses.push_back(normalized);
-            }
         }
     }
-
-    const bool capacityExceeded =
+    return requiresRebuild ||
         upserts_.size() + tombstones_.size() + removedPrefixes_.size() >= kMaximumDeltaChanges;
-    if (rebuildCauses != nullptr && (capacityExceeded || unsafe_)) {
-        rebuildCauses->insert(
-            rebuildCauses->end(),
-            std::make_move_iterator(capacityCauses.begin()),
-            std::make_move_iterator(capacityCauses.end()));
-    }
-    return requiresRebuild || capacityExceeded;
 }
 
 std::vector<indexing::SearchResult> LiveIndexDelta::Query(
@@ -329,7 +389,7 @@ std::vector<indexing::SearchResult> LiveIndexDelta::MergeLocked(
     for (const auto& [key, versioned] : upserts_) {
         const auto prefixRemoval = NewestPrefixRemoval(removedPrefixes_, key);
         if (prefixRemoval.has_value() &&
-            !IsNewerRevision(versioned.revision, *prefixRemoval)) {
+            IsNewerRevision(*prefixRemoval, versioned.revision)) {
             continue;
         }
         if (indexing::ClassifySearchMatch(
@@ -364,13 +424,25 @@ void LiveIndexDelta::PruneThrough(const std::uint64_t revision) {
     }
 }
 
-void LiveIndexDelta::Clear() {
+void LiveIndexDelta::Clear(const std::uint64_t appliedSequence) {
     std::unique_lock lock(mutex_);
     upserts_.clear();
     tombstones_.clear();
     removedPrefixes_.clear();
     unsafe_ = false;
     unsafeRevision_ = 0;
+    revision_ = appliedSequence;
+}
+
+void LiveIndexDelta::Swap(LiveIndexDelta& other) {
+    if (this == &other) return;
+    std::scoped_lock lock(mutex_, other.mutex_);
+    upserts_.swap(other.upserts_);
+    tombstones_.swap(other.tombstones_);
+    removedPrefixes_.swap(other.removedPrefixes_);
+    std::swap(revision_, other.revision_);
+    std::swap(unsafeRevision_, other.unsafeRevision_);
+    std::swap(unsafe_, other.unsafe_);
 }
 
 std::size_t LiveIndexDelta::ChangeCount() const noexcept {
@@ -380,6 +452,7 @@ std::size_t LiveIndexDelta::ChangeCount() const noexcept {
 
 struct DirectoryChangeMonitor::Watch final {
     std::filesystem::path root;
+    std::uint64_t rootId = 0;
     std::mutex directoryMutex;
     HANDLE directory = INVALID_HANDLE_VALUE;
     std::thread thread;
@@ -425,7 +498,8 @@ DirectoryChangeMonitor::~DirectoryChangeMonitor() {
 void DirectoryChangeMonitor::Start(
     const std::span<const std::filesystem::path> roots,
     Callback callback,
-    std::function<bool(const std::filesystem::path&)> excludePath) {
+    std::function<bool(const std::filesystem::path&)> excludePath,
+    const std::span<const std::filesystem::path> excludedPaths) {
     if (publisher_.joinable() && publisher_.get_id() == std::this_thread::get_id()) {
         return;
     }
@@ -442,7 +516,13 @@ void DirectoryChangeMonitor::Start(
         std::lock_guard lock(pendingMutex_);
         callback_ = std::move(callback);
         pending_.clear();
-        pendingUncertain_ = false;
+        pendingUncertainRoots_.clear();
+        excludedPrefixes_.clear();
+        excludedPrefixes_.reserve(excludedPaths.size());
+        for (const auto& excluded : excludedPaths) {
+            const auto folded = FoldPath(excluded);
+            if (!folded.empty()) excludedPrefixes_.push_back(folded);
+        }
     }
     publisher_ = std::thread([this] {
         try {
@@ -459,6 +539,7 @@ void DirectoryChangeMonitor::Start(
             if (excludePath_ && excludePath_(root)) continue;
             auto watch = std::make_unique<Watch>();
             watch->root = NormalizePath(root);
+            watch->rootId = StablePathId(FoldPath(watch->root));
             watch->directory = OpenDirectoryWatch(watch->root);
 
             watches_.push_back(std::move(watch));
@@ -467,7 +548,7 @@ void DirectoryChangeMonitor::Start(
                 try {
                     WatchMain(*watchPointer);
                 } catch (...) {
-                    Queue({}, true);
+                    Queue({}, watchPointer->rootId);
                 }
             });
         }
@@ -509,7 +590,8 @@ void DirectoryChangeMonitor::StopCore() noexcept {
     {
         std::lock_guard lock(pendingMutex_);
         pending_.clear();
-        pendingUncertain_ = false;
+        pendingUncertainRoots_.clear();
+        excludedPrefixes_.clear();
         callback_ = {};
         excludePath_ = {};
     }
@@ -530,7 +612,7 @@ void DirectoryChangeMonitor::WatchMain(Watch& watch) {
             if (directory == INVALID_HANDLE_VALUE) {
                 recoveryRequired = true;
                 if (!failureReported) {
-                    Queue({}, true);
+                    Queue({}, watch.rootId);
                     failureReported = true;
                 }
                 if (!waitForRetry()) {
@@ -544,7 +626,7 @@ void DirectoryChangeMonitor::WatchMain(Watch& watch) {
             }
             watch.ReplaceDirectory(directory);
             if (recoveryRequired) {
-                Queue({}, true);
+                Queue({}, watch.rootId);
             }
             recoveryRequired = false;
             failureReported = false;
@@ -553,7 +635,7 @@ void DirectoryChangeMonitor::WatchMain(Watch& watch) {
         HANDLE completed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
         if (completed == nullptr) {
             if (!failureReported) {
-                Queue({}, true);
+                Queue({}, watch.rootId);
                 failureReported = true;
             }
             recoveryRequired = true;
@@ -584,7 +666,7 @@ void DirectoryChangeMonitor::WatchMain(Watch& watch) {
             watch.ReplaceDirectory(INVALID_HANDLE_VALUE);
             recoveryRequired = true;
             if (!failureReported) {
-                Queue({}, true);
+                Queue({}, watch.rootId);
                 failureReported = true;
             }
             if (!waitForRetry()) {
@@ -616,7 +698,7 @@ void DirectoryChangeMonitor::WatchMain(Watch& watch) {
             watch.ReplaceDirectory(INVALID_HANDLE_VALUE);
             recoveryRequired = true;
             if (!failureReported) {
-                Queue({}, true);
+                Queue({}, watch.rootId);
                 failureReported = true;
             }
             if (!waitForRetry()) {
@@ -625,7 +707,7 @@ void DirectoryChangeMonitor::WatchMain(Watch& watch) {
             continue;
         }
         if (transferred == 0) {
-            Queue({}, true);
+            Queue({}, watch.rootId);
             continue;
         }
 
@@ -675,8 +757,16 @@ void DirectoryChangeMonitor::WatchMain(Watch& watch) {
                 }
                 if (malformed) break;
                 auto changedPath = (watch.root / relative).lexically_normal();
-                if (!excludePath_ || !excludePath_(changedPath)) {
-                    changes.push_back(FileSystemChange{std::move(changedPath), action});
+                const auto foldedPath = FoldPath(changedPath);
+                const bool excluded = std::any_of(
+                    excludedPrefixes_.begin(),
+                    excludedPrefixes_.end(),
+                    [&foldedPath](const auto& prefix) {
+                        return IsSameOrChildFolded(foldedPath, prefix);
+                    });
+                if (!excluded && (!excludePath_ || !excludePath_(changedPath))) {
+                    changes.push_back(FileSystemChange{
+                        std::move(changedPath), action, watch.rootId});
                 }
             }
 
@@ -692,7 +782,7 @@ void DirectoryChangeMonitor::WatchMain(Watch& watch) {
             }
             cursor += next;
         }
-        Queue(std::move(changes), malformed);
+        Queue(std::move(changes), malformed ? watch.rootId : 0);
     }
 }
 
@@ -701,7 +791,7 @@ void DirectoryChangeMonitor::PublisherMain() {
     while (!stopping_.load(std::memory_order_acquire)) {
         pendingChanged_.wait(lock, [this] {
             return stopping_.load(std::memory_order_acquire) ||
-                pendingUncertain_ || !pending_.empty();
+                !pendingUncertainRoots_.empty() || !pending_.empty();
         });
         if (stopping_.load(std::memory_order_acquire)) {
             break;
@@ -717,12 +807,14 @@ void DirectoryChangeMonitor::PublisherMain() {
 
         auto changes = std::move(pending_);
         pending_.clear();
-        const bool uncertain = std::exchange(pendingUncertain_, false);
+        std::vector<std::uint64_t> uncertainRoots(
+            pendingUncertainRoots_.begin(), pendingUncertainRoots_.end());
+        pendingUncertainRoots_.clear();
         auto callback = callback_;
         lock.unlock();
         if (callback) {
             try {
-                callback(std::move(changes), uncertain);
+                callback(std::move(changes), std::move(uncertainRoots));
             } catch (...) {
                 // An observer cannot terminate the monitor thread.
             }
@@ -733,16 +825,23 @@ void DirectoryChangeMonitor::PublisherMain() {
 
 void DirectoryChangeMonitor::Queue(
     std::vector<FileSystemChange> changes,
-    const bool uncertain) {
+    const std::uint64_t uncertainRootId) {
     {
         std::lock_guard lock(pendingMutex_);
         if (stopping_.load(std::memory_order_acquire)) {
             return;
         }
-        pendingUncertain_ |= uncertain;
+        if (uncertainRootId != 0) {
+            pendingUncertainRoots_.insert(uncertainRootId);
+        }
         if (changes.size() > kMaximumPendingChanges - (std::min)(pending_.size(), kMaximumPendingChanges)) {
+            for (const auto& pending : pending_) {
+                if (pending.rootId != 0) pendingUncertainRoots_.insert(pending.rootId);
+            }
+            for (const auto& change : changes) {
+                if (change.rootId != 0) pendingUncertainRoots_.insert(change.rootId);
+            }
             pending_.clear();
-            pendingUncertain_ = true;
         } else {
             pending_.insert(
                 pending_.end(),

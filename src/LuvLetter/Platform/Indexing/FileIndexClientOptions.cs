@@ -26,6 +26,31 @@ internal sealed class FileIndexClientOptions
 
     internal TimeSpan QueryTimeout { get; init; } = TimeSpan.FromMilliseconds(500);
 
+    internal string? DiagnosticLogPath()
+    {
+        var value = Environment.GetEnvironmentVariable("LUVLETTER_INDEXER_LOG")?.Trim();
+        if (string.IsNullOrEmpty(value)
+            || string.Equals(value, "off", StringComparison.OrdinalIgnoreCase)
+            || value == "0")
+        {
+            return null;
+        }
+        if (value == "1" || string.Equals(value, "debug", StringComparison.OrdinalIgnoreCase))
+        {
+            return Path.Combine(DataDirectory, "logs", "indexer.log");
+        }
+        try
+        {
+            return Path.GetFullPath(value);
+        }
+        catch (Exception exception) when (exception is ArgumentException
+            or NotSupportedException
+            or PathTooLongException)
+        {
+            return null;
+        }
+    }
+
     internal IReadOnlyList<FileIndexPartitionDescriptor> NormalizedPartitions()
     {
         var roots = Roots.Where(static root => !string.IsNullOrWhiteSpace(root))

@@ -74,7 +74,7 @@ internal static partial class Program
         Assert.Equal(75U, reader.UInt32());
         Assert.Equal(1U, reader.UInt32());
         Assert.Equal(@"C:\Data\Desktop", reader.String());
-        Assert.Equal(61U, reader.UInt32(), "Global cooldown follows all partition descriptors in LLIX v6.");
+        Assert.Equal(61U, reader.UInt32(), "Global cooldown follows all partition descriptors in LLIX v7.");
         Assert.Equal(1U, reader.UInt32());
         Assert.Equal(@"C:\Ignored", reader.String());
         Assert.Equal(1U, reader.UInt32());
@@ -82,7 +82,51 @@ internal static partial class Program
         Assert.Equal(1U, reader.UInt32());
         Assert.Equal(@"C:\Secret", reader.String());
         Assert.True(reader.Complete);
-        Assert.Equal((ushort)6, FileIndexProtocol.MajorVersion);
+        Assert.Equal((ushort)7, FileIndexProtocol.MajorVersion);
+        return Task.CompletedTask;
+    }
+
+    private static Task TestFileIndexProgressProtocol()
+    {
+        var payload = new byte[20];
+        BinaryPrimitives.WriteUInt64LittleEndian(payload, 42);
+        BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(12), 1234);
+        payload[8] = (byte)FileIndexActivity.Updating;
+        payload[9] = (byte)FileIndexWorkStage.Scanning;
+        payload[10] = 37;
+        payload[11] = 1;
+        var progress = FileIndexProtocol.ParseStatus(payload);
+        Assert.Equal(42UL, progress.IndexGeneration);
+        Assert.Equal(1234UL, progress.DiscoveredEntries);
+        Assert.Equal((byte?)37, progress.ProgressPercent);
+        Assert.True(progress.Rebuilding && progress.ProgressIsEstimated);
+
+        payload[8] = (byte)FileIndexActivity.Ready;
+        payload[9] = (byte)FileIndexWorkStage.Idle;
+        payload[10] = 100;
+        payload[11] = 0;
+        Assert.False(FileIndexProtocol.ParseStatus(payload).Rebuilding);
+
+        payload[8] = (byte)FileIndexActivity.Failed;
+        payload[10] = byte.MaxValue;
+        var failed = FileIndexProtocol.ParseStatus(payload);
+        Assert.Equal(FileIndexActivity.Failed, failed.Activity);
+        Assert.Equal((byte?)null, failed.ProgressPercent);
+        Assert.False(failed.Rebuilding);
+        payload[10] = 100;
+        Assert.Throws<InvalidDataException>(() => FileIndexProtocol.ParseStatus(payload));
+
+        payload[8] = (byte)FileIndexActivity.InitialBuild;
+        payload[9] = (byte)FileIndexWorkStage.Recovering;
+        payload[10] = byte.MaxValue;
+        Assert.True(FileIndexProtocol.ParseStatus(payload).Rebuilding);
+        payload[11] = 1;
+        Assert.Throws<InvalidDataException>(() => FileIndexProtocol.ParseStatus(payload));
+        payload[9] = (byte)FileIndexWorkStage.Scanning;
+        payload[10] = 50;
+        payload[11] = 2;
+        Assert.Throws<InvalidDataException>(() => FileIndexProtocol.ParseStatus(payload));
+        Assert.Throws<InvalidDataException>(() => FileIndexProtocol.ParseStatus(new byte[9]));
         return Task.CompletedTask;
     }
 

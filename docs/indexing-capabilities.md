@@ -19,13 +19,13 @@ future work is tracked in `roadmap.indexing.md` and `roadmap.applications.md`.
 | Keyboard behavior | Up/Down selects, Enter opens, Shift+Enter reveals in Explorer; same-input refresh preserves selection where possible. | No preview, multi-select, copy-path action, or implemented Global Search page. |
 | Executables and shortcuts | Trusted Start Menu links, registered programs, packaged AUMIDs, non-package AppsFolder items, curated Settings/Control Panel/MMC/system tools, portable roots, and ordinary in-scope executables can launch. Original shortcut and Shell activation semantics are retained. | Packaged/Shell reveal may be unavailable. Generic document links remain files. Arbitrary URI/Shell targets are rejected. Private-PATH App Paths launches requiring elevation report an original-shortcut fallback. |
 | Type icons | Built-in glyphs distinguish folders, documents, images, archives, audio, video, executables, and generic files. | No real executable icons or thumbnails. |
-| Live maintenance | Name-change notifications maintain an in-memory Delta of creates, renames, and deletions in coalesced 250 ms batches. | This is a scheduling interval, not a measured latency guarantee. In-place content writes are not subscribed to. |
+| Live maintenance | Name-change notifications maintain a Delta of creates, renames, and deletions in coalesced 250 ms batches, flushed to each owning partition's recovery journal before live publication. | This is a scheduling interval, not a measured latency guarantee. In-place content writes are not subscribed to. |
 | Reconciliation | Per-partition startup scan, six-minute startup-critical and 30-minute normal file deadlines, event-targeted reconciliation, watcher recovery, and force-all `index.refresh`. | One file build runs at a time; automatic work respects each partition's one-minute gap. Accepted work may be queued or coalesced. |
-| File cache | One validated atomic v3 snapshot and backup per filesystem partition, loaded independently before its rescan; failed scans retain that partition's previous usable snapshot. | Cache loading takes time. Missing/incompatible partitions require construction; live Delta and offline changes are not durably replayed. A durable SnapshotSet manifest is not implemented yet. |
+| File cache | One validated v4 snapshot/recovery-journal pair and atomic active-generation manifest per filesystem partition. Complete journal batches replay over their matching base; compaction persists both files before publication. | Cache loading takes time. Missing/incompatible partitions require construction. Offline changes need reconciliation; a durable SnapshotSet manifest for live ownership migration remains planned. |
 | Application cache | One v2 manifest/snapshot/backup pair per source, with source/scope validation, checksum, independent startup publication, and source-local failure retention. | No first-launch results before discovery when a compatible source cache is absent. Removed-source cache garbage collection is pending. |
 | Ignore and cooldown | Ordinary directory/path ignores precede cooldown; full ignores exclude exact files/subtrees. Per-path cooldown defaults to 60 seconds. | Ordinary ignored paths remain scanned and searchable. No globs or `.gitignore` parsing. Unattributed overflow can still request recovery. |
 | Configuration | Shared `maintenance.json` controls maintenance and exclusions; `Applications/settings.json` provides `PortableRoots`. | Read once per launch. `index.refresh` does not reload settings. Invalid shared configuration pauses both indexes; invalid application configuration pauses only its catalog. |
-| Reliability and feedback | Background companion, supervised restart, stale-query rejection, per-partition event logs, fixed application STA workers, and source-local application retry/backoff. | A failed filesystem partition retains its own prior snapshot and retries; the aggregate four-state file status cannot yet expose every partition field to Settings. |
+| Reliability and feedback | Background companion, supervised restart, stale-query rejection, estimated scan progress, persistent activity updates, opt-in bounded JSONL diagnostics, fixed application STA workers, and source-local application retry/backoff. | A failed filesystem partition retains its own prior snapshot and retries; aggregate file activity/progress cannot yet expose every partition field to Settings. |
 
 ## Practical search examples
 
@@ -47,8 +47,8 @@ eligibility, not a guarantee that the item wins a slot among the top five result
 
 ## Maintenance distinctions
 
-A live query merges the last complete snapshot with changes observed during the current
-session. Most ordinary changes do not need a full scan and do not wait six minutes.
+A live query merges the last complete snapshot with recovered journal batches and changes
+observed during the current session. Most ordinary changes do not need a full scan and do not wait six minutes.
 Directory moves/imports can require reconciliation: old descendants disappear through
 prefix filtering, while new descendants may wait for the next permitted scan.
 
@@ -64,9 +64,10 @@ substantial scanning work. Full ignore reduces scanning by removing search cover
 Ordinary ignored events also retain Delta processing, so they can still contribute to
 unattributed watcher or pending-buffer overflow.
 
-Delta changes are memory-only. After restart, queries may temporarily show the last
-saved full snapshot until reconciliation catches up. With no compatible cache, complete
-results require an initial scan. Changed full exclusions invalidate old-scope caches.
+Complete journal batches survive restart and replay only over the matching snapshot,
+scope, policy, and applied sequence. Partial tails, corruption, and offline changes
+require reconciliation. With no compatible cache, complete results require an initial
+scan. Changed full exclusions invalidate old-scope caches.
 At the retained-Delta safety limit, queries fall back to that partition's complete
 baseline, which can also temporarily be stale. Failed root scans preserve only the
 affected partition's old snapshot.
@@ -97,8 +98,8 @@ All items below are proposals and can change with user priorities.
    and measure the effect on query cost and ranking.
 4. **A real Global Search view:** pagination, filters, preview, copy-path, recent items,
    and favorites. Date/size filters require metadata absent from the current records.
-5. **Durable incremental recovery:** persist Delta checkpoints and a SnapshotSet manifest,
-   recover changes across restarts, and support staged ownership-map changes at runtime.
+5. **Live ownership migration:** extend existing per-partition durable recovery with a
+   SnapshotSet manifest and staged ownership-map changes at runtime.
 6. **Measured performance work:** establish large-corpus benchmarks before considering
    mmap snapshots, lower-memory construction, and conditional NTFS USN/MFT acceleration.
    Retain ordinary watcher/scanning fallbacks.

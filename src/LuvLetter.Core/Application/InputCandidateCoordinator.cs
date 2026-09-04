@@ -32,6 +32,7 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
     private Task? consumeTask;
     private IMessageActivity? indexMessageActivity;
     private FileIndexRuntimeActivity displayedIndexActivity = FileIndexRuntimeActivity.Unavailable;
+    private string? displayedIndexMessage;
     private bool indexWorkObserved;
     private ulong latestRevision;
     private ulong activeCandidateRevision;
@@ -251,13 +252,13 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
                     indexWorkObserved = true;
                     ShowOrUpdateIndexActivity(
                         FileIndexRuntimeActivity.InitialBuild,
-                        "正在生成索引表");
+                        FormatIndexActivity("正在生成索引表", state));
                     break;
                 case FileIndexRuntimeActivity.Updating:
                     indexWorkObserved = true;
                     ShowOrUpdateIndexActivity(
                         FileIndexRuntimeActivity.Updating,
-                        "正在更新索引");
+                        FormatIndexActivity("正在更新索引", state));
                     break;
                 case FileIndexRuntimeActivity.Ready:
                     EndIndexActivityLocked(sendReadyMessage: indexWorkObserved);
@@ -289,7 +290,9 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         FileIndexRuntimeActivity activity,
         string message)
     {
-        if (displayedIndexActivity == activity && indexMessageActivity is not null)
+        if (displayedIndexActivity == activity
+            && displayedIndexMessage == message
+            && indexMessageActivity is not null)
         {
             return;
         }
@@ -305,12 +308,45 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
                 indexMessageActivity.Update(message);
             }
             displayedIndexActivity = activity;
+            displayedIndexMessage = message;
         }
         catch
         {
             indexMessageActivity = null;
             displayedIndexActivity = FileIndexRuntimeActivity.Unavailable;
+            displayedIndexMessage = null;
         }
+    }
+
+    private static string FormatIndexActivity(
+        string title,
+        FileIndexRuntimeState state)
+    {
+        var stage = state.Stage switch
+        {
+            FileIndexRuntimeStage.Recovering => "恢复中",
+            FileIndexRuntimeStage.Scanning => "扫描中",
+            FileIndexRuntimeStage.Packing => "整理中",
+            FileIndexRuntimeStage.Compacting => "压缩中",
+            FileIndexRuntimeStage.Persisting => "保存中",
+            _ => string.Empty,
+        };
+        var message = string.IsNullOrEmpty(stage) ? title : $"{title} · {stage}";
+        if (state.ProgressPercent is { } percent)
+        {
+            const int segmentCount = 10;
+            var filled = Math.Clamp(percent / 10, 0, segmentCount);
+            var bar = string.Concat(
+                new string('█', filled),
+                new string('░', segmentCount - filled));
+            var estimate = state.ProgressIsEstimated ? "约" : string.Empty;
+            message = $"{message} [{bar}] {estimate}{percent}%";
+        }
+        if (state.Stage == FileIndexRuntimeStage.Scanning && state.DiscoveredEntries > 0)
+        {
+            message = $"{message} · {state.DiscoveredEntries:N0} 项";
+        }
+        return message;
     }
 
     private void EndIndexActivity(bool sendReadyMessage)
@@ -330,6 +366,7 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         var activity = indexMessageActivity;
         indexMessageActivity = null;
         displayedIndexActivity = FileIndexRuntimeActivity.Unavailable;
+        displayedIndexMessage = null;
 
         if (activity is not null)
         {
@@ -725,8 +762,8 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
                 token,
                 spec.Kind,
                 spec.IconKind,
-                spec.PrimaryText,
-                spec.SecondaryText);
+                InputCandidatePresentation.NormalizePrimaryText(spec.PrimaryText),
+                InputCandidatePresentation.NormalizeSecondaryText(spec.SecondaryText));
             targets.Add(token, new CandidateTarget(spec.Kind, spec.Value, spec.EntryKind, spec.ApplicationId, revision));
             identityTokens.Add(spec.Identity, token);
         }
@@ -744,14 +781,21 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         }
 
         Volatile.Write(ref activeTargets, transitionTargets);
+        InputCandidateSetResult result;
         try
         {
-            nativeShell.SetInputCandidates(candidates, revision);
+            result = nativeShell.SetInputCandidates(candidates, revision);
         }
         catch
         {
             Volatile.Write(ref activeTargets, previousTargets);
             throw;
+        }
+
+        if (result == InputCandidateSetResult.Stale)
+        {
+            Volatile.Write(ref activeTargets, previousTargets);
+            return;
         }
 
         Volatile.Write(ref activeTargets, targets);

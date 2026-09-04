@@ -1,5 +1,6 @@
 #include "luvletter/indexing/FileIndex.h"
 #include "luvletter/indexing/IndexProtocol.h"
+#include "IndexDiagnostics.h"
 #include "IndexMaintenance.h"
 #include "IndexPartitioning.h"
 #include "IndexRebuildPolicy.h"
@@ -81,6 +82,7 @@ struct Options final {
     std::wstring pipeName;
     DWORD parentProcessId = 0;
     std::filesystem::path dataDirectory;
+    std::filesystem::path diagnosticLogPath;
 };
 
 bool TryParseUnsigned(const std::wstring& text, DWORD& value) {
@@ -108,12 +110,15 @@ std::optional<Options> ParseOptions(const int argumentCount, wchar_t** arguments
             }
         } else if (name == L"--data-dir") {
             options.dataDirectory = arguments[index + 1];
+        } else if (name == L"--diagnostic-log") {
+            options.diagnosticLogPath = arguments[index + 1];
         } else {
             return std::nullopt;
         }
     }
 
-    if (argumentCount != 7 || options.pipeName.empty() || options.parentProcessId == 0 || options.dataDirectory.empty()) {
+    if (argumentCount < 7 || (argumentCount % 2) == 0 || options.pipeName.empty() ||
+        options.parentProcessId == 0 || options.dataDirectory.empty()) {
         return std::nullopt;
     }
     return options;
@@ -375,18 +380,26 @@ bool HandleQuery(
 }
 
 int Run(const Options& options) {
+    auto diagnosticLog = luvletter::indexer::DiagnosticLog::Open(options.diagnosticLogPath);
+    if (diagnosticLog) {
+        diagnosticLog->Write(L"process_started", L"Indexer diagnostic logging is enabled.");
+    }
     UniqueHandle parentProcess(OpenProcess(SYNCHRONIZE, FALSE, options.parentProcessId));
     if (!parentProcess) {
+        if (diagnosticLog) diagnosticLog->Write(L"parent_open_failed");
         return 2;
     }
 
     auto pipe = ConnectToPipe(FullPipeName(options.pipeName), parentProcess.Get());
     if (!pipe) {
+        if (diagnosticLog) diagnosticLog->Write(L"pipe_connect_failed");
         return 3;
     }
 
+    if (diagnosticLog) diagnosticLog->Write(L"pipe_connected");
     luvletter::indexer::PartitionedIndexStore store(options.dataDirectory,
-        [](const std::string_view event, const std::string_view message) { LogIndex(event, message); });
+        [](const std::string_view event, const std::string_view message) { LogIndex(event, message); },
+        diagnosticLog.get(), options.diagnosticLogPath);
     bool handshakeComplete = false;
     while (ParentIsAlive(parentProcess.Get())) {
         std::vector<std::byte> headerBytes(protocol::kHeaderSize);
@@ -463,6 +476,7 @@ int Run(const Options& options) {
             break;
         }
     }
+    if (diagnosticLog) diagnosticLog->Write(L"process_stopped");
     return 0;
 }
 

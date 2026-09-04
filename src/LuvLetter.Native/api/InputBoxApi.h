@@ -13,6 +13,9 @@
 extern "C"
 {
 	inline constexpr uint32_t LUVLETTER_NATIVE_ABI_VERSION = 7;
+	inline constexpr int32_t LUVLETTER_NATIVE_MAX_INPUT_CANDIDATES = 32;
+	inline constexpr uint32_t LUVLETTER_NATIVE_MAX_CANDIDATE_PRIMARY_LENGTH = 512;
+	inline constexpr uint32_t LUVLETTER_NATIVE_MAX_CANDIDATE_SECONDARY_LENGTH = 2048;
 
 	enum LuvLetterInputMode : int32_t
 	{

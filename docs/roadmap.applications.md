@@ -72,9 +72,9 @@ query completes; same-revision refresh preserves surviving activation tokens.
 
 Core owns application contracts, name matching, ranking, and activation decisions.
 Windows owns discovery, persistence, and launch adapters. Native renders its existing
-file row with an executable glyph and opaque token; file snapshot v3 and Native ABI v7
-remain unchanged. LLIX v6 carries filesystem partition descriptors independently of
-application activation.
+file row with an executable glyph and opaque token through Native ABI v7. Filesystem
+recovery uses snapshot v4; LLIX v7 carries partition descriptors and progress independently
+of application activation.
 
 Entries have stable source IDs and explicit launch descriptors. Display text is never
 parsed as a command line. Identical shortcut bytes can merge, packaged entries use AUMID,

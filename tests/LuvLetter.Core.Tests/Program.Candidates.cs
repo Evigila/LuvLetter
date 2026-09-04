@@ -55,11 +55,31 @@ internal static partial class Program
                 ["正在生成索引表"],
                 nativeShell.BegunMessageActivities);
 
+            var progressState = new FileIndexRuntimeState(
+                FileIndexRuntimeActivity.InitialBuild,
+                0,
+                FileIndexRuntimeStage.Scanning,
+                37,
+                ProgressIsEstimated: true,
+                DiscoveredEntries: 12);
+            fileIndex.SetState(progressState);
+            Assert.SequenceEqual(
+                ["正在生成索引表 · 扫描中 [███░░░░░░░] 约37% · 12 项"],
+                nativeShell.UpdatedMessageActivities);
+            fileIndex.SetState(progressState);
+            Assert.Equal(
+                1,
+                nativeShell.UpdatedMessageActivities.Count,
+                "An unchanged index progress state must not repaint the activity.");
+
             fileIndex.SetState(new FileIndexRuntimeState(
                 FileIndexRuntimeActivity.Updating,
                 1));
             Assert.SequenceEqual(
-                ["正在更新索引"],
+                [
+                    "正在生成索引表 · 扫描中 [███░░░░░░░] 约37% · 12 项",
+                    "正在更新索引",
+                ],
                 nativeShell.UpdatedMessageActivities);
 
             fileIndex.SetState(new FileIndexRuntimeState(
@@ -162,6 +182,8 @@ internal static partial class Program
                         new(10, FileSystemEntryKind.File, "bbb.md", @"C:\aaa\bbb.md"),
                         new(11, FileSystemEntryKind.Directory, "builds", @"C:\logs\builds"),
                     ]));
+            // A changed source must invalidate the same-query cache before the new edit.
+            fileIndex.RaiseIndexChanged();
             nativeShell.RaiseInputChanged("b", InputMode.General, revision: 6);
             Assert.True(
                 SpinWait.SpinUntil(
@@ -258,6 +280,65 @@ internal static partial class Program
                 hideCountBeforeEnter,
                 nativeShell.HideCommandInputCalls,
                 "An ordinary submission must not activate an unselected candidate.");
+
+            var longParentPath = @"C:\" + new string(
+                'p',
+                InputCandidatePresentation.MaximumSecondaryTextLength - 4)
+                + "\U0001F642";
+            var longFullPath = longParentPath + @"\deep.txt";
+            fileIndex.SetQuery((_, _, _, _) =>
+                ValueTask.FromResult<IReadOnlyList<FileIndexMatch>>(
+                [
+                    new(50, FileSystemEntryKind.File, "deep.txt", longFullPath),
+                ]));
+            nativeShell.SetInputCandidatesResult = InputCandidateSetResult.Stale;
+            var revisionSevenSnapshotCount = nativeShell.CandidateSnapshots.Count(
+                static item => item.Revision == 7);
+            nativeShell.RaiseInputChanged("deep", InputMode.General, revision: 7);
+            Assert.True(
+                SpinWait.SpinUntil(
+                    () => nativeShell.CandidateSnapshots.Count(item => item.Revision == 7)
+                        > revisionSevenSnapshotCount,
+                    TimeSpan.FromSeconds(2)),
+                "The stale Native candidate update was not attempted.");
+            var rejectedCandidate = nativeShell.CandidateSnapshots
+                .Last(item => item.Revision == 7)
+                .Candidates[0];
+            var openedBeforeRejectedActivation = launcher.Opened.Count;
+            nativeShell.RaiseCandidateActivated(rejectedCandidate.Token);
+            Assert.Equal(
+                openedBeforeRejectedActivation,
+                launcher.Opened.Count,
+                "A Native-rejected candidate snapshot published its activation target.");
+
+            nativeShell.SetInputCandidatesResult = InputCandidateSetResult.Accepted;
+            fileIndex.RaiseIndexChanged();
+            Assert.True(
+                SpinWait.SpinUntil(
+                    () => nativeShell.CandidateSnapshots.Count(item => item.Revision == 7)
+                        >= revisionSevenSnapshotCount + 2,
+                    TimeSpan.FromSeconds(2)),
+                "The current revision was not republished after a stale Native rejection.");
+            var acceptedCandidate = nativeShell.CandidateSnapshots
+                .Last(item => item.Revision == 7)
+                .Candidates[0];
+            Assert.NotEqual(
+                rejectedCandidate.Token,
+                acceptedCandidate.Token,
+                "A token from a Native-rejected snapshot was committed for reuse.");
+            Assert.Equal(
+                InputCandidatePresentation.MaximumSecondaryTextLength - 1,
+                acceptedCandidate.SecondaryText.Length,
+                "The long parent path was not safely truncated for Native presentation.");
+            Assert.False(
+                char.IsSurrogate(acceptedCandidate.SecondaryText[^1]),
+                "The long parent path presentation ends with a split surrogate pair.");
+
+            nativeShell.RaiseCandidateActivated(acceptedCandidate.Token);
+            Assert.Equal(
+                longFullPath,
+                launcher.Opened[^1],
+                "Presentation truncation changed the complete Core activation path.");
         }
         finally
         {

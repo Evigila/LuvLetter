@@ -28,6 +28,12 @@ public enum CandidateAction
     Reveal = 1,
 }
 
+public enum InputCandidateSetResult
+{
+    Accepted,
+    Stale,
+}
+
 public sealed record InputChanged(
     string Text,
     InputMode Mode,
@@ -43,3 +49,33 @@ public sealed record InputCandidate(
     CandidateIconKind IconKind,
     string PrimaryText,
     string SecondaryText);
+
+internal static class InputCandidatePresentation
+{
+    internal const int MaximumPrimaryTextLength = 512;
+    internal const int MaximumSecondaryTextLength = 2048;
+
+    internal static string NormalizePrimaryText(string? value) =>
+        TruncateUtf16(value ?? string.Empty, MaximumPrimaryTextLength);
+
+    internal static string NormalizeSecondaryText(string? value) =>
+        TruncateUtf16(value ?? string.Empty, MaximumSecondaryTextLength);
+
+    private static string TruncateUtf16(string value, int maximumLength)
+    {
+        if (value.Length <= maximumLength)
+        {
+            return value;
+        }
+
+        var length = maximumLength;
+        if (length > 0
+            && char.IsHighSurrogate(value[length - 1])
+            && char.IsLowSurrogate(value[length]))
+        {
+            length--;
+        }
+
+        return value[..length];
+    }
+}

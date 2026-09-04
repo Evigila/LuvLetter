@@ -24,9 +24,23 @@ internal readonly record struct FileIndexFrame(
 
 internal readonly record struct FileIndexStatus(
     ulong IndexGeneration,
-    FileIndexActivity Activity)
+    FileIndexActivity Activity,
+    FileIndexWorkStage Stage,
+    byte? ProgressPercent,
+    bool ProgressIsEstimated,
+    ulong DiscoveredEntries)
 {
     internal bool Rebuilding => Activity is FileIndexActivity.InitialBuild or FileIndexActivity.Updating;
+}
+
+internal enum FileIndexWorkStage : byte
+{
+    Idle = 0,
+    Recovering = 1,
+    Scanning = 2,
+    Packing = 3,
+    Compacting = 4,
+    Persisting = 5,
 }
 
 internal enum FileIndexActivity : byte
@@ -40,7 +54,7 @@ internal enum FileIndexActivity : byte
 internal static class FileIndexProtocol
 {
     internal const uint Magic = 0x58494C4C;
-    internal const ushort MajorVersion = 6;
+    internal const ushort MajorVersion = 7;
     internal const int HeaderSize = 20;
     internal const int MaximumPayloadLength = 1024 * 1024;
 
@@ -207,7 +221,8 @@ internal static class FileIndexProtocol
 
     internal static FileIndexStatus ParseStatus(byte[] payload)
     {
-        if (payload.Length != sizeof(ulong) + sizeof(byte))
+        const int expectedLength = sizeof(ulong) + (4 * sizeof(byte)) + sizeof(ulong);
+        if (payload.Length != expectedLength)
         {
             throw new InvalidDataException("The file-index status payload has an invalid size.");
         }
@@ -219,7 +234,55 @@ internal static class FileIndexProtocol
             throw new InvalidDataException("The file-index activity value is invalid.");
         }
 
-        return new FileIndexStatus(generation, (FileIndexActivity)activity);
+        var stage = payload[9];
+        if (stage > (byte)FileIndexWorkStage.Persisting)
+        {
+            throw new InvalidDataException("The file-index work stage is invalid.");
+        }
+        var rawProgress = payload[10];
+        if (rawProgress > 100 && rawProgress != byte.MaxValue)
+        {
+            throw new InvalidDataException("The file-index progress value is invalid.");
+        }
+        var flags = payload[11];
+        if ((flags & ~1) != 0)
+        {
+            throw new InvalidDataException("The file-index status flags are invalid.");
+        }
+        var parsedActivity = (FileIndexActivity)activity;
+        var parsedStage = (FileIndexWorkStage)stage;
+        if ((flags & 1) != 0
+            && (parsedStage != FileIndexWorkStage.Scanning || rawProgress == byte.MaxValue))
+        {
+            throw new InvalidDataException("The estimated file-index progress is inconsistent.");
+        }
+        if (parsedActivity == FileIndexActivity.Ready)
+        {
+            if (parsedStage != FileIndexWorkStage.Idle || rawProgress != 100 || flags != 0)
+            {
+                throw new InvalidDataException("The ready file-index status is inconsistent.");
+            }
+        }
+        else if (parsedActivity == FileIndexActivity.Failed)
+        {
+            if (parsedStage != FileIndexWorkStage.Idle || rawProgress != byte.MaxValue || flags != 0)
+            {
+                throw new InvalidDataException("The failed file-index status is inconsistent.");
+            }
+        }
+        else if (parsedStage == FileIndexWorkStage.Idle || rawProgress == 100)
+        {
+            throw new InvalidDataException("The active file-index status is inconsistent.");
+        }
+
+        var entries = BinaryPrimitives.ReadUInt64LittleEndian(payload.AsSpan(12, 8));
+        return new FileIndexStatus(
+            generation,
+            parsedActivity,
+            parsedStage,
+            rawProgress == byte.MaxValue ? null : rawProgress,
+            (flags & 1) != 0,
+            entries);
     }
 
     private static byte[] FinishPayload(MemoryStream stream)

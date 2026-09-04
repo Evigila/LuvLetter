@@ -4,8 +4,8 @@ This document is the implementation specification for expanding searchable cover
 keeping startup and maintenance bounded. It replaces the earlier evaluation. The first
 runtime baseline now implements independent application-source partitions and
 non-overlapping filesystem partitions with per-partition cache, Delta, scheduling, and
-publication. Later sections distinguish that baseline from staged live ownership changes,
-durable Delta recovery, optional broad-volume coverage, and Settings controls that remain
+publication, including durable Delta recovery. Later sections distinguish that baseline
+from staged live ownership changes, optional broad-volume coverage, and Settings controls that remain
 planned.
 
 ## Goals and boundaries
@@ -162,13 +162,14 @@ without resurrecting deleted baseline records.
 
 ## Cache and atomic publication
 
-The application baseline uses independent manifests and snapshots. The file baseline uses
-one validated atomic snapshot and backup per partition:
+The application baseline uses independent manifests and snapshots. Each file partition
+uses an independently committed snapshot/recovery-journal pair:
 
 ```text
 %LocalAppData%\LuvLetter\Index\v1\partitions\
-  partition-<id-hash>.bin
-  partition-<id-hash>.bin.bak
+  partition-<id-hash>\file-index-v4.active
+  partition-<id-hash>\file-index-v4-<identity>.bin
+  partition-<id-hash>\file-index-v4-<identity>.delta
 
 %LocalAppData%\LuvLetter\Applications\v2\partitions\
   <source-hash>.manifest.json
@@ -179,9 +180,11 @@ one validated atomic snapshot and backup per partition:
 
 Application caches validate schema, source/scope and full-exclusion fingerprint,
 generation, bounds, payload length, and checksum. File caches validate snapshot schema,
-root plus delegated/full-exclusion fingerprint, bounds, ordering, and checksum. File
-ownership epoch is currently an in-memory stale-work fence; a durable SnapshotSet manifest
-and immutable numbered file generations remain part of the live-migration work.
+root plus delegated/full-exclusion fingerprint, immutable base identity, applied sequence,
+bounds, ordering, and checksum. Journals bind the exact snapshot base, scope, and policy.
+Legacy `partition-<id-hash>.bin`/`.bak` snapshots are considered during cache migration.
+File ownership epoch is currently an in-memory stale-work fence; a durable SnapshotSet
+manifest remains part of the live-migration work.
 
 The durable live-migration format will commit in this order:
 
@@ -192,9 +195,10 @@ The durable live-migration format will commit in this order:
 5. Atomically publish a new in-memory SnapshotSet referencing that generation.
 6. Keep at least the preceding valid generation and remove older unreferenced files later.
 
-The current baseline instead publishes a validated in-memory generation immediately and
-then atomically replaces that partition's backup/primary cache. A cache-write failure does
-not withdraw the queryable generation.
+The current baseline writes and flushes the new immutable snapshot and retained journal
+tail before replacing the per-partition active-generation manifest and publishing the
+query view. A cache-write failure retains the previous snapshot and Delta. A crash before
+the manifest switch uses the previous complete pair; a crash afterward uses the new pair.
 
 An ownership change additionally writes all staged generations before atomically replacing
 `snapshot-set.json`. A failed write or refresh leaves the previous generation referenced.
@@ -202,10 +206,11 @@ An invalid primary manifest may use a fully compatible backup. A partition canno
 cache excluded by current global rules. Deleting or changing one partition configuration
 does not invalidate unrelated partition caches.
 
-Durable Delta logs are not required for the first partition release. Cache data may be
-stale after a crash and must reconcile in the background. Add a journal/checkpoint only
-when measurements justify faster recovery; its commit boundary must reference a committed
-snapshot generation.
+Resolved watcher batches are journaled and flushed before entering their owner's live
+Delta. Complete batches replay on restart; partial tails, corrupt or mismatched journals,
+and watcher uncertainty request reconciliation without discarding a usable baseline.
+Count and memory thresholds compact a partition's Delta without a full scan. Changes
+that occurred while the companion was stopped still require background reconciliation.
 
 The file MVP keeps the existing immutable baseline plus bounded in-memory Delta. A build
 captures `(PartitionId, OwnershipEpoch, ScopeFingerprint, DeltaRevision)` outside the
@@ -392,7 +397,8 @@ SnapshotSet manifest is deferred with live ownership migration.
 
 Route watcher events to owners, maintain per-partition Delta/cooldown/ignore state, mark
 overflow per partition, and implement targeted reconciliation/retry. Cross-partition
-rename sides already route to their respective owners. A staged runtime OwnershipEpoch
+rename sides already route to their respective owners. Persist complete batches per owner
+and compact them through an atomic snapshot/journal manifest switch. A staged runtime OwnershipEpoch
 cutover remains planned; configuration changes currently take effect after restart. Keep
 global force refresh as fan-out.
 

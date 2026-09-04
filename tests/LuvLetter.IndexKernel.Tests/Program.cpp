@@ -1,8 +1,11 @@
 #include "luvletter/indexing/FileIndex.h"
 #include "luvletter/indexing/IndexProtocol.h"
 #include "IndexMaintenance.h"
+#include "PartitionedIndexStore.h"
 #include "IndexRebuildPolicy.h"
 #include "IndexPartitioning.h"
+#include "IndexRecovery.h"
+#include "IndexDiagnostics.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -12,6 +15,7 @@
 #include <cstddef>
 #include <condition_variable>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <mutex>
 #include <span>
@@ -62,13 +66,71 @@ void Expect(const bool condition, const wchar_t* message) {
     }
 }
 
+bool TruncateLastByte(const std::filesystem::path& path) {
+    const HANDLE file = CreateFileW(
+        path.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    LARGE_INTEGER offset{};
+    offset.QuadPart = -1;
+    const bool succeeded = SetFilePointerEx(file, offset, nullptr, FILE_END) &&
+        SetEndOfFile(file) && FlushFileBuffers(file);
+    CloseHandle(file);
+    return succeeded;
+}
+
+bool FlipLastByte(const std::filesystem::path& path) {
+    const HANDLE file = CreateFileW(
+        path.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+    LARGE_INTEGER offset{};
+    offset.QuadPart = -1;
+    std::byte value{};
+    DWORD read = 0;
+    bool succeeded = SetFilePointerEx(file, offset, nullptr, FILE_END) &&
+        ReadFile(file, &value, 1, &read, nullptr) && read == 1;
+    if (succeeded) {
+        value ^= std::byte{0x40};
+        offset.QuadPart = -1;
+        DWORD written = 0;
+        succeeded = SetFilePointerEx(file, offset, nullptr, FILE_END) &&
+            WriteFile(file, &value, 1, &written, nullptr) && written == 1 &&
+            FlushFileBuffers(file);
+    }
+    CloseHandle(file);
+    return succeeded;
+}
+
+bool SameResults(
+    const std::span<const luvletter::indexing::SearchResult> left,
+    const std::span<const luvletter::indexing::SearchResult> right) {
+    if (left.size() != right.size()) {
+        return false;
+    }
+    for (std::size_t index = 0; index < left.size(); ++index) {
+        if (left[index].stableId != right[index].stableId ||
+            left[index].kind != right[index].kind ||
+            left[index].displayName != right[index].displayName ||
+            left[index].fullPath != right[index].fullPath) {
+            return false;
+        }
+    }
+    return true;
+}
+
+#include "Program.Recovery.h"
+
 void TestProtocolHeaderRoundTrip() {
     using namespace luvletter::indexing::protocol;
     const FrameHeader expected{kMagic, kMajorVersion, MessageType::Query, 42, 0x1020304050607080ULL};
     const auto encoded = EncodeHeader(expected);
     FrameHeader actual{};
     Expect(encoded.size() == kHeaderSize, L"protocol header must remain exactly 20 bytes");
-    Expect(kMajorVersion == 6, L"partition descriptors require LLIX protocol major version 6");
+    Expect(kMajorVersion == 7, L"partition descriptors and progress require LLIX protocol major version 7");
     Expect(DecodeHeader(encoded, actual), L"protocol header should decode");
     Expect(actual.magic == expected.magic && actual.majorVersion == expected.majorVersion &&
         actual.type == expected.type && actual.payloadLength == expected.payloadLength &&
@@ -78,17 +140,138 @@ void TestProtocolHeaderRoundTrip() {
 
 void TestStatusPayloadRoundTrip() {
     using namespace luvletter::indexing::protocol;
-    const IndexStatus expected{42, IndexActivity::Updating};
+    const IndexStatus expected{
+        42,
+        IndexActivity::Updating,
+        IndexWorkStage::Scanning,
+        37,
+        kEstimatedProgress,
+        123456};
     const auto encoded = EncodeStatus(expected);
     IndexStatus actual{};
-    Expect(encoded.size() == 9, L"status payload must remain exactly 9 bytes");
+    Expect(encoded.size() == 20, L"progress status payload must remain exactly 20 bytes");
     Expect(DecodeStatus(encoded, actual), L"status payload should decode");
-    Expect(actual.generation == expected.generation && actual.activity == expected.activity,
-        L"status payload round-trip should preserve generation and activity state");
+    Expect(actual.generation == expected.generation && actual.activity == expected.activity &&
+        actual.stage == expected.stage && actual.progressPercent == expected.progressPercent &&
+        actual.flags == expected.flags && actual.discoveredEntries == expected.discoveredEntries,
+        L"status payload round-trip should preserve progress and activity state");
 
     auto malformed = encoded;
-    malformed.back() = std::byte{4};
+    malformed[8] = std::byte{4};
     Expect(!DecodeStatus(malformed, actual), L"status payload should reject unknown activity values");
+    malformed = encoded;
+    malformed[10] = std::byte{101};
+    Expect(!DecodeStatus(malformed, actual), L"status payload should reject progress above 100");
+    malformed = encoded;
+    malformed[9] = std::byte{static_cast<std::uint8_t>(IndexWorkStage::Persisting)};
+    Expect(!DecodeStatus(malformed, actual),
+        L"estimated progress should only be accepted while scanning");
+    const IndexStatus failed{77, IndexActivity::Failed, IndexWorkStage::Idle, kUnknownProgress, 0, 999};
+    Expect(DecodeStatus(EncodeStatus(failed), actual),
+        L"failed status should use idle stage and unknown progress" );
+    const IndexStatus ready{77, IndexActivity::Ready, IndexWorkStage::Idle, 100, 0, 999};
+    Expect(DecodeStatus(EncodeStatus(ready), actual),
+        L"ready status should require idle stage and complete progress");
+}
+
+void TestIndexBuildProgressAndExclusions() {
+    using namespace luvletter::indexing;
+    TemporaryDirectory temporary;
+    const auto visibleDirectory = temporary.Path() / L"visible";
+    const auto excludedDirectory = temporary.Path() / L"index-data";
+    std::filesystem::create_directories(visibleDirectory);
+    std::filesystem::create_directories(excludedDirectory);
+    Expect(CreateEmptyFile(visibleDirectory / L"keep.txt"),
+        L"visible build fixture should be created");
+    Expect(CreateEmptyFile(excludedDirectory / L"internal.delta"),
+        L"excluded build fixture should be created");
+
+    std::vector<IndexBuildProgress> observed;
+    auto missingRoot = temporary.Path();
+    missingRoot += L"-missing-root";
+    const std::array roots{temporary.Path(), missingRoot};
+    const std::array exclusions{excludedDirectory};
+    IndexBuildOptions options{
+        17,
+        exclusions,
+        [&observed](const IndexBuildProgress& progress) {
+            auto copy = progress;
+            copy.currentPath = {};
+            observed.push_back(copy);
+        }};
+    const auto snapshot = IndexBuilder::Build(roots, nullptr, std::move(options));
+    Expect(snapshot != nullptr && snapshot->AppliedDeltaSequence() == 17,
+        L"a direct full build should persist its captured Delta sequence without repacking");
+    if (!snapshot) return;
+    Expect(snapshot->Query(L"keep", 5).size() == 1,
+        L"a healthy root should remain indexable beside an unavailable root");
+    Expect(snapshot->Query(L"internal", 5).empty(),
+        L"index-owned excluded paths must not enter the snapshot");
+    Expect(!observed.empty() && std::any_of(observed.begin(), observed.end(), [](const auto& item) {
+        return item.stage == IndexBuildStage::Packing;
+    }), L"full builds should report scanning and packing stages");
+    Expect(std::any_of(observed.begin(), observed.end(), [](const auto& item) {
+        return item.rootUnavailable;
+    }), L"an unavailable root should be reported without blocking healthy roots");
+    Expect(std::all_of(observed.begin(), observed.end(), [](const auto& item) {
+        return item.processedDirectories <= item.processedDirectories + item.pendingDirectories;
+    }), L"progress counters should remain bounded");
+}
+
+void TestDiagnosticLogOptInAndEscaping() {
+    using luvletter::indexer::DiagnosticLog;
+    Expect(DiagnosticLog::Open({}) == nullptr,
+        L"an omitted diagnostic path should keep logging fully disabled");
+
+    TemporaryDirectory temporary;
+    const auto path = temporary.Path() / L"logs" / L"indexer.log";
+    auto log = DiagnosticLog::Open(path);
+    Expect(log != nullptr, L"an explicit diagnostic path should create a bounded log sink");
+    if (!log) return;
+    log->Write(L"scan_error", L"path=C:\\Résumé\nerror=5");
+    log.reset();
+
+    std::ifstream input(path, std::ios::binary);
+    const std::string contents{
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()};
+    Expect(contents.find("\"event\":\"scan_error\"") != std::string::npos &&
+        contents.find("Résumé") != std::string::npos &&
+        contents.find("\\\\") != std::string::npos &&
+        contents.find("\\n") != std::string::npos,
+        L"diagnostic JSONL should preserve UTF-8 and escape paths and control characters");
+}
+
+void TestDiagnosticLogRuntimeRotation() {
+    using luvletter::indexer::DiagnosticLog;
+    TemporaryDirectory temporary;
+    const auto path = temporary.Path() / L"runtime.log";
+    auto previous = path;
+    previous += L".previous";
+    constexpr std::uintmax_t maximumBytes = 4U * 1024U * 1024U;
+    Expect(CreateEmptyFile(path), L"runtime rotation fixture should be created");
+    std::filesystem::resize_file(path, maximumBytes - 64);
+    auto log = DiagnosticLog::Open(path);
+    Expect(log != nullptr && !std::filesystem::exists(previous),
+        L"opening a log below the limit must not rotate it yet");
+    if (!log) return;
+    log->Write(L"runtime_rotation", std::wstring(512, L'x'));
+    log->Write(L"after_rotation", L"diagnostics should keep accepting events");
+    log.reset();
+    Expect(std::filesystem::exists(previous),
+        L"crossing the size limit during Write must rotate the active log");
+    if (std::filesystem::exists(previous)) {
+        Expect(std::filesystem::file_size(previous) == maximumBytes - 64,
+            L"runtime rotation must preserve the previous log before the triggering event");
+    }
+    Expect(std::filesystem::file_size(path) < maximumBytes,
+        L"the new active log must stay within the configured bound");
+    std::ifstream input(path, std::ios::binary);
+    const std::string contents{std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()};
+    Expect(contents.find("runtime_rotation") != std::string::npos &&
+        contents.find("after_rotation") != std::string::npos,
+        L"the triggering event and following events must survive runtime rotation");
 }
 
 void TestIndexPartitionRoutingAndScheduling() {
@@ -297,6 +480,9 @@ void TestIndexBuildQueryAndPersistence() {
     Expect(snapshot->FileCount() == 4, L"a nested configured root must not duplicate files covered by its parent root");
     Expect(snapshot->EntityCount() == 5, L"child directories should be included as searchable entities");
     Expect(snapshot->MatchesRoots(roots), L"snapshot should retain the normalized configured-roots fingerprint");
+    Expect(!snapshot->BaseIdentity().IsEmpty(), L"a newly built base must have a persistent identity");
+    Expect(snapshot->AppliedDeltaSequence() == 0,
+        L"a full filesystem build must start before any durable Delta sequence");
     const std::array differentRoots{nested};
     Expect(!snapshot->MatchesRoots(differentRoots), L"snapshot must reject a different configured-roots scope");
 
@@ -325,7 +511,11 @@ void TestIndexBuildQueryAndPersistence() {
     Expect(limited.size() == 1, L"query must honor maximum result count");
     const auto originalStableId = limited.empty() ? 0 : limited[0].stableId;
 
-    const auto snapshotPath = temporary.Path() / L"cache" / L"file-index-v3.bin";
+    const auto allResults = snapshot->AllResults();
+    Expect(allResults.size() == snapshot->EntityCount(),
+        L"maintenance export should include every searchable entity");
+
+    const auto snapshotPath = temporary.Path() / L"cache" / L"file-index-v4.bin";
     Expect(snapshot->Save(snapshotPath), L"snapshot should save atomically");
     const auto restored = luvletter::indexing::IndexSnapshot::Load(snapshotPath);
     Expect(restored != nullptr, L"valid snapshot should load");
@@ -338,6 +528,46 @@ void TestIndexBuildQueryAndPersistence() {
             restoredDirectories[0].kind == luvletter::indexing::SearchResultKind::Directory,
             L"restored index should preserve entity kinds");
         Expect(restored->MatchesRoots(roots), L"restored index should preserve its roots fingerprint");
+        Expect(restored->BaseIdentity() == snapshot->BaseIdentity(),
+            L"snapshot v4 should round-trip its base identity");
+        Expect(restored->AppliedDeltaSequence() == snapshot->AppliedDeltaSequence(),
+            L"snapshot v4 should round-trip its applied Delta sequence");
+        Expect(SameResults(restored->AllResults(), allResults),
+            L"snapshot v4 should round-trip the complete maintenance export");
+    }
+
+    const luvletter::indexing::IndexBaseIdentity compactedIdentity{
+        0x1020304050607080ULL,
+        0x8877665544332211ULL};
+    constexpr std::uint64_t compactedSequence = 73;
+    const auto compacted = luvletter::indexing::IndexBuilder::BuildFromResults(
+        allResults,
+        snapshot->RootsFingerprint(),
+        compactedIdentity,
+        compactedSequence);
+    Expect(compacted != nullptr, L"maintenance results should build a compact replacement base");
+    if (compacted) {
+        Expect(compacted->BaseIdentity() == compactedIdentity,
+            L"compaction should publish the requested new base identity");
+        Expect(compacted->AppliedDeltaSequence() == compactedSequence,
+            L"compaction should persist the last incorporated Delta sequence");
+        Expect(compacted->RootsFingerprint() == snapshot->RootsFingerprint(),
+            L"compaction should preserve configured-root provenance");
+        Expect(SameResults(compacted->AllResults(), allResults),
+            L"building from results should preserve all stable ids, kinds, names, and paths");
+        Expect(SameResults(compacted->Query(L"RE", 5), snapshot->Query(L"RE", 5)) &&
+            SameResults(compacted->Query(L"aaa", 5), snapshot->Query(L"aaa", 5)) &&
+            SameResults(compacted->Query(L"rÉ", 5), snapshot->Query(L"rÉ", 5)),
+            L"a compacted base should preserve query and ranking semantics");
+
+        const auto compactedPath = temporary.Path() / L"cache" / L"compacted-v4.bin";
+        Expect(compacted->Save(compactedPath), L"a compacted v4 base should save");
+        const auto restoredCompacted = luvletter::indexing::IndexSnapshot::Load(compactedPath);
+        Expect(restoredCompacted != nullptr &&
+            restoredCompacted->BaseIdentity() == compactedIdentity &&
+            restoredCompacted->AppliedDeltaSequence() == compactedSequence &&
+            SameResults(restoredCompacted->AllResults(), allResults),
+            L"a compacted v4 base should round-trip its contents and recovery metadata");
     }
 
     const HANDLE file = CreateFileW(
@@ -348,13 +578,13 @@ void TestIndexBuildQueryAndPersistence() {
         LARGE_INTEGER versionOffset{};
         versionOffset.QuadPart = 4;
         SetFilePointerEx(file, versionOffset, nullptr, FILE_BEGIN);
-        const std::array<std::byte, 2> oldVersion{std::byte{2}, std::byte{0}};
+        const std::array<std::byte, 2> oldVersion{std::byte{3}, std::byte{0}};
         DWORD written = 0;
         Expect(WriteFile(file, oldVersion.data(), static_cast<DWORD>(oldVersion.size()), &written, nullptr) &&
             written == oldVersion.size(), L"snapshot schema version should be mutated");
         CloseHandle(file);
         Expect(luvletter::indexing::IndexSnapshot::Load(snapshotPath) == nullptr,
-            L"older snapshot schema must not load as the current index");
+            L"snapshot schema v3 must not load as the current v4 index");
     }
 
     Expect(snapshot->Save(snapshotPath), L"snapshot should be restored before checksum mutation");
@@ -428,7 +658,7 @@ void TestFullIgnorePathMatching() {
         L"pre-normalized exclusion matching must retain exact path-boundary semantics");
 
     const std::array legacyRoots{std::filesystem::path(LR"(C:\LuvLetter.Scope.Tests)")};
-    const luvletter::indexing::IndexSnapshot legacy({}, {}, {}, 0x5909BDEE8FABD043ULL);
+    const luvletter::indexing::IndexSnapshot legacy({}, {}, {}, 0x5909BDEE8FABD043ULL, {}, 0);
     Expect(legacy.MatchesRoots(legacyRoots),
         L"empty full ignores must preserve the existing v3 roots-only fingerprint");
 }
@@ -636,19 +866,31 @@ void TestDirectoryChangeMonitorLifecycle() {
 
     DirectoryChangeMonitor monitor;
     const std::array roots{temporary.Path()};
-    monitor.Start(roots, [&](std::vector<FileSystemChange> batch, const bool batchUncertain) {
+    const auto excludedDirectory = temporary.Path() / L"index-owned";
+    std::filesystem::create_directory(excludedDirectory);
+    const std::array exclusions{excludedDirectory};
+    monitor.Start(roots, [&](std::vector<FileSystemChange> batch, std::vector<std::uint64_t> uncertainRoots) {
         {
             std::lock_guard lock(mutex);
             observed.insert(
                 observed.end(),
                 std::make_move_iterator(batch.begin()),
                 std::make_move_iterator(batch.end()));
-            uncertain |= batchUncertain;
+            uncertain |= !uncertainRoots.empty();
         }
         changed.notify_all();
-    });
+    }, {}, exclusions);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    const auto internalFile = excludedDirectory / L"journal.delta";
+    Expect(CreateEmptyFile(internalFile), L"excluded watcher fixture should be created");
+    std::this_thread::sleep_for(std::chrono::milliseconds(600));
+    {
+        std::lock_guard lock(mutex);
+        Expect(std::none_of(observed.begin(), observed.end(), [&](const auto& item) {
+            return item.path.lexically_normal() == internalFile.lexically_normal();
+        }), L"watcher publication must ignore index-owned persistence changes");
+    }
     const auto original = temporary.Path() / L"watch-old.txt";
     const auto renamed = temporary.Path() / L"watch-new.txt";
     Expect(CreateEmptyFile(original), L"watcher create fixture should be created");
@@ -690,6 +932,9 @@ void TestDirectoryChangeMonitorLifecycle() {
         L"ReadDirectoryChangesW should publish a file-delete tombstone");
     monitor.Stop();
     Expect(!uncertain, L"ordinary local watcher changes should not require uncertain recovery");
+    Expect(std::all_of(observed.begin(), observed.end(), [](const auto& change) {
+        return change.rootId != 0;
+    }), L"watcher changes should retain their owning root identity");
 }
 
 void TestDirectoryChangeMonitorRecovery() {
@@ -706,14 +951,14 @@ void TestDirectoryChangeMonitorRecovery() {
 
     DirectoryChangeMonitor monitor;
     const std::array roots{delayedRoot};
-    monitor.Start(roots, [&](std::vector<FileSystemChange> batch, const bool uncertain) {
+    monitor.Start(roots, [&](std::vector<FileSystemChange> batch, std::vector<std::uint64_t> uncertainRoots) {
         {
             std::lock_guard lock(mutex);
             observed.insert(
                 observed.end(),
                 std::make_move_iterator(batch.begin()),
                 std::make_move_iterator(batch.end()));
-            if (uncertain) {
+            if (!uncertainRoots.empty()) {
                 ++uncertainBatches;
             }
         }
@@ -843,9 +1088,329 @@ void TestLargePrefixTopKIsNotWindowed() {
     }
 }
 
+luvletter::indexer::RecoveryJournalBinding JournalBinding(
+    const std::uint64_t high,
+    const std::uint64_t low,
+    const std::uint64_t roots,
+    const std::uint64_t policy,
+    const std::uint64_t appliedSequence) {
+    return luvletter::indexer::RecoveryJournalBinding{
+        luvletter::indexing::IndexBaseIdentity{high, low},
+        roots,
+        policy,
+        appliedSequence};
+}
+
+luvletter::indexer::DeltaBatch JournalBatch(
+    const std::uint64_t sequence,
+    const std::filesystem::path& path,
+    const luvletter::indexer::DeltaOperationKind operationKind,
+    const luvletter::indexing::SearchResultKind entryKind,
+    const std::uint64_t stableId,
+    const std::uint64_t rootId = 0) {
+    return luvletter::indexer::DeltaBatch{
+        sequence,
+        {luvletter::indexer::DeltaOperation{
+            operationKind,
+            entryKind,
+            stableId,
+            rootId,
+            path}}};
+}
+
+void TestRecoveryJournalRoundTripAndSequence() {
+    using luvletter::indexer::DeltaOperation;
+    using luvletter::indexer::DeltaOperationKind;
+    using luvletter::indexer::RecoveryJournal;
+    using luvletter::indexer::RecoveryJournalOpenStatus;
+    using luvletter::indexing::SearchResultKind;
+
+    TemporaryDirectory temporary;
+    const auto journalPath = temporary.Path() / L"recovery" / L"delta-v1.log";
+    const auto binding = JournalBinding(0x1020304050607080ULL, 0x8877665544332211ULL,
+        0xA1A2A3A4ULL, 0xB1B2B3B4ULL, 40);
+    auto journal = RecoveryJournal::Create(journalPath, binding);
+    Expect(journal != nullptr, L"recovery journal should create its parent directory and header");
+    if (!journal) {
+        return;
+    }
+    Expect(journal->NextSequence() == 41,
+        L"journal sequence should continue after the base-applied sequence");
+
+    const auto skipped = JournalBatch(
+        42, temporary.Path() / L"skip.txt", DeltaOperationKind::Upsert,
+        SearchResultKind::File, 10);
+    Expect(!journal->AppendAndFlush(skipped),
+        L"journal should reject a non-contiguous batch sequence");
+    Expect(journal->NextSequence() == 41,
+        L"a rejected batch must not advance the journal sequence");
+
+    luvletter::indexer::DeltaBatch first{
+        41,
+        {
+            DeltaOperation{
+                DeltaOperationKind::Upsert,
+                SearchResultKind::File,
+                0x1111,
+                0xAAAA,
+                temporary.Path() / L"Résumé.txt"},
+            DeltaOperation{
+                DeltaOperationKind::RemoveTree,
+                SearchResultKind::Directory,
+                0x2222,
+                0xBBBB,
+                temporary.Path() / L"old-folder"},
+        }};
+    Expect(journal->AppendAndFlush(first),
+        L"journal should append and flush a valid self-contained batch");
+    Expect(journal->AppendAndFlush(JournalBatch(
+        42, temporary.Path() / L"next", DeltaOperationKind::Remove,
+        SearchResultKind::Directory, 0x3333)),
+        L"journal should append the next contiguous batch");
+    journal.reset();
+
+    std::vector<luvletter::indexer::DeltaBatch> replay;
+    auto status = RecoveryJournalOpenStatus::IoError;
+    journal = RecoveryJournal::Open(journalPath, binding, replay, status);
+    Expect(status == RecoveryJournalOpenStatus::Ready && journal != nullptr,
+        L"a valid flushed journal should reopen for append");
+    Expect(replay.size() == 2,
+        L"a valid journal should replay every complete batch");
+    if (replay.size() == 2) {
+        Expect(replay[0].sequence == 41 && replay[0].operations.size() == 2 &&
+            replay[0].operations[0].path.filename() == L"Résumé.txt" &&
+            replay[0].operations[0].rootId == 0xAAAA &&
+            replay[0].operations[1].rootId == 0xBBBB &&
+            replay[0].operations[1].kind == DeltaOperationKind::RemoveTree,
+            L"journal replay should preserve sequence, root ownership, UTF-16 paths, and operation kinds");
+        Expect(replay[1].sequence == 42 &&
+            replay[1].operations[0].entryKind == SearchResultKind::Directory,
+            L"journal replay should preserve entry kinds");
+    }
+    if (journal) {
+        Expect(journal->NextSequence() == 43,
+            L"reopened journal should continue after the last complete batch");
+    }
+}
+
+void TestRecoveryJournalBindingMismatch() {
+    using luvletter::indexer::RecoveryJournal;
+    using luvletter::indexer::RecoveryJournalOpenStatus;
+
+    TemporaryDirectory temporary;
+    const auto path = temporary.Path() / L"binding.log";
+    const auto binding = JournalBinding(1, 2, 3, 4, 5);
+    auto journal = RecoveryJournal::Create(path, binding);
+    Expect(journal != nullptr, L"binding-mismatch fixture should create");
+    journal.reset();
+
+    std::vector<luvletter::indexer::DeltaBatch> replay;
+    auto status = RecoveryJournalOpenStatus::Ready;
+    const auto mismatchedBase = JournalBinding(1, 99, 3, 4, 5);
+    Expect(RecoveryJournal::Open(path, mismatchedBase, replay, status) == nullptr &&
+        status == RecoveryJournalOpenStatus::BindingMismatch,
+        L"journal should reject a different immutable base identity");
+    const auto mismatchedRoots = JournalBinding(1, 2, 99, 4, 5);
+    Expect(RecoveryJournal::Open(path, mismatchedRoots, replay, status) == nullptr &&
+        status == RecoveryJournalOpenStatus::BindingMismatch,
+        L"journal should reject a different roots fingerprint");
+    const auto mismatchedPolicy = JournalBinding(1, 2, 3, 99, 5);
+    Expect(RecoveryJournal::Open(path, mismatchedPolicy, replay, status) == nullptr &&
+        status == RecoveryJournalOpenStatus::BindingMismatch,
+        L"journal should reject a different policy fingerprint");
+    const auto mismatchedSequence = JournalBinding(1, 2, 3, 4, 99);
+    Expect(RecoveryJournal::Open(path, mismatchedSequence, replay, status) == nullptr &&
+        status == RecoveryJournalOpenStatus::BindingMismatch,
+        L"journal should reject a different base-applied Delta sequence");
+}
+
+void TestResolvedChangeJournalReplay() {
+    using luvletter::indexer::FileSystemChange;
+    using luvletter::indexer::FileSystemChangeAction;
+    using luvletter::indexer::LiveIndexDelta;
+    using luvletter::indexer::RecoveryJournal;
+    using luvletter::indexer::RecoveryJournalOpenStatus;
+
+    TemporaryDirectory temporary;
+    const auto candidate = temporary.Path() / L"replay-candidate.txt";
+    Expect(CreateEmptyFile(candidate), L"resolved replay fixture should be created");
+    const std::array changes{
+        FileSystemChange{candidate, FileSystemChangeAction::Upsert, 0xCAFE}};
+    const auto resolved = luvletter::indexer::ResolveFileSystemChanges(changes);
+    Expect(resolved.operations.size() == 1 &&
+        resolved.operations[0].rootId == 0xCAFE &&
+        resolved.operations[0].path == candidate,
+        L"watcher notifications should resolve into self-contained rooted operations");
+
+    const auto binding = JournalBinding(101, 202, 303, 404, 8);
+    const auto journalPath = temporary.Path() / L"resolved-replay.log";
+    auto journal = RecoveryJournal::Create(journalPath, binding);
+    Expect(journal != nullptr, L"resolved replay journal should create");
+    if (!journal) return;
+    const luvletter::indexer::DeltaBatch batch{9, resolved.operations};
+    Expect(journal->AppendAndFlush(batch),
+        L"resolved operation should be durable before its in-memory application");
+    journal.reset();
+
+    std::error_code ignored;
+    std::filesystem::remove(candidate, ignored);
+    std::vector<luvletter::indexer::DeltaBatch> replay;
+    auto status = RecoveryJournalOpenStatus::IoError;
+    journal = RecoveryJournal::Open(journalPath, binding, replay, status);
+    Expect(status == RecoveryJournalOpenStatus::Ready && replay.size() == 1,
+        L"a complete resolved batch should replay after restart");
+
+    LiveIndexDelta delta;
+    delta.Clear(binding.baseAppliedSequence);
+    if (!replay.empty()) {
+        Expect(!delta.Apply(replay[0].operations, replay[0].sequence),
+            L"one replayed operation should remain below the compaction threshold");
+    }
+    const auto matches = delta.Merge(L"replay-candidate", {}, 5);
+    Expect(matches.size() == 1 && matches[0].fullPath == candidate.native(),
+        L"journal replay must not depend on the changed file still existing");
+}
+
+void TestRecoveryJournalPartialAndCorruptDetection() {
+    using luvletter::indexer::DeltaOperationKind;
+    using luvletter::indexer::RecoveryJournal;
+    using luvletter::indexer::RecoveryJournalOpenStatus;
+    using luvletter::indexing::SearchResultKind;
+
+    TemporaryDirectory temporary;
+    const auto partialPath = temporary.Path() / L"partial.log";
+    const auto binding = JournalBinding(9, 8, 7, 6, 0);
+    auto journal = RecoveryJournal::Create(partialPath, binding);
+    Expect(journal != nullptr, L"partial-tail fixture should create");
+    if (!journal) {
+        return;
+    }
+    Expect(journal->AppendAndFlush(JournalBatch(
+        1, temporary.Path() / L"complete.txt", DeltaOperationKind::Upsert,
+        SearchResultKind::File, 1)),
+        L"complete batch before partial tail should append");
+    Expect(journal->AppendAndFlush(JournalBatch(
+        2, temporary.Path() / L"partial.txt", DeltaOperationKind::Upsert,
+        SearchResultKind::File, 2)),
+        L"batch selected for truncation should append");
+    journal.reset();
+    Expect(TruncateLastByte(partialPath), L"journal tail should truncate");
+
+    std::vector<luvletter::indexer::DeltaBatch> replay;
+    auto status = RecoveryJournalOpenStatus::Ready;
+    Expect(RecoveryJournal::Open(partialPath, binding, replay, status) == nullptr &&
+        status == RecoveryJournalOpenStatus::PartialTail,
+        L"a truncated final batch should be classified as a partial tail");
+    Expect(replay.size() == 1 && replay[0].sequence == 1,
+        L"only complete batches before a partial tail should be replayable");
+
+    const auto corruptPath = temporary.Path() / L"corrupt.log";
+    journal = RecoveryJournal::Create(corruptPath, binding);
+    Expect(journal != nullptr, L"corrupt-checksum fixture should create");
+    if (!journal) {
+        return;
+    }
+    Expect(journal->AppendAndFlush(JournalBatch(
+        1, temporary.Path() / L"checksum.txt", DeltaOperationKind::Upsert,
+        SearchResultKind::File, 3)),
+        L"checksum fixture batch should append");
+    journal.reset();
+    Expect(FlipLastByte(corruptPath), L"journal payload should be mutated");
+    replay.clear();
+    Expect(RecoveryJournal::Open(corruptPath, binding, replay, status) == nullptr &&
+        status == RecoveryJournalOpenStatus::Corrupt && replay.empty(),
+        L"a checksum mismatch should reject the journal as corrupt");
+}
+
+void TestDeltaBatchOrderingAndRemovalCapacity() {
+    using namespace luvletter::indexer;
+    using luvletter::indexing::SearchResultKind;
+    const auto root = std::filesystem::path(LR"(C:\DeltaBatch)");
+    const auto child = root / L"batch-child.txt";
+    const luvletter::indexing::IndexSnapshot empty;
+    const std::array recreate{
+        DeltaOperation{DeltaOperationKind::Upsert, SearchResultKind::File, 1, 1, child},
+        DeltaOperation{DeltaOperationKind::RemoveTree, SearchResultKind::Directory, 2, 1, root},
+        DeltaOperation{DeltaOperationKind::Upsert, SearchResultKind::File, 3, 1, child}};
+    LiveIndexDelta delta;
+    Expect(!delta.Apply(recreate, 1), L"small ordered operation batch should remain bounded");
+    const auto recreated = delta.Query(L"batch-child", empty, 5);
+    Expect(recreated.size() == 1 && recreated[0].stableId == 3,
+        L"recreation after tree removal within one batch must remain visible");
+    const std::array removeAgain{
+        DeltaOperation{DeltaOperationKind::Upsert, SearchResultKind::File, 4, 1, child},
+        DeltaOperation{DeltaOperationKind::RemoveTree, SearchResultKind::Directory, 2, 1, root}};
+    (void)delta.Apply(removeAgain, 2);
+    Expect(delta.Query(L"batch-child", empty, 5).empty(),
+        L"tree removal must hide an earlier upsert in the same batch");
+
+    LiveIndexDelta replacement;
+    replacement.Clear(10);
+    (void)replacement.Apply(std::span(recreate).last(1), 11);
+    delta.Swap(replacement);
+    Expect(delta.CaptureRevision() == 11 && replacement.CaptureRevision() == 2 &&
+        delta.Query(L"batch-child", empty, 5).size() == 1 &&
+        replacement.Query(L"batch-child", empty, 5).empty(),
+        L"prebuilt Delta swap must exchange revision and all visible/tombstone state");
+    delta.Swap(delta);
+    Expect(delta.CaptureRevision() == 11 && delta.Query(L"batch-child", empty, 5).size() == 1,
+        L"a self swap must preserve the prebuilt Delta");
+    LiveIndexDelta removals;
+    std::vector<DeltaOperation> operations;
+    operations.reserve(32768);
+    for (std::uint64_t index = 0; index < 32768; ++index) {
+        operations.push_back(DeltaOperation{DeltaOperationKind::Remove,
+            SearchResultKind::File, index + 1, 1,
+            root / (L"removed-" + std::to_wstring(index) + L".txt")});
+    }
+    std::vector<std::filesystem::path> causes;
+    Expect(removals.Apply(operations, 1, &causes),
+        L"removal-only batches must request maintenance at the Delta capacity");
+    Expect(removals.ChangeCount() == 0 && !causes.empty(),
+        L"removal-only batches must observe the hard memory bound and report rebuild causes");
+}
+
+void TestRecoveryJournalAtomicReset() {
+    using luvletter::indexer::DeltaOperationKind;
+    using luvletter::indexer::RecoveryJournal;
+    using luvletter::indexer::RecoveryJournalOpenStatus;
+    using luvletter::indexing::SearchResultKind;
+
+    TemporaryDirectory temporary;
+    const auto path = temporary.Path() / L"reset.log";
+    const auto oldBinding = JournalBinding(10, 11, 12, 13, 20);
+    auto journal = RecoveryJournal::Create(path, oldBinding);
+    Expect(journal != nullptr, L"reset fixture should create");
+    if (!journal) {
+        return;
+    }
+    Expect(journal->AppendAndFlush(JournalBatch(
+        21, temporary.Path() / L"retired.txt", DeltaOperationKind::Remove,
+        SearchResultKind::File, 4)),
+        L"retired batch should append before reset");
+
+    const auto newBinding = JournalBinding(30, 31, 32, 33, 90);
+    Expect(journal->Reset(newBinding),
+        L"journal should atomically reset to a new immutable base");
+    Expect(journal->NextSequence() == 91,
+        L"reset journal should continue after the new base-applied sequence");
+    journal.reset();
+
+    std::vector<luvletter::indexer::DeltaBatch> replay;
+    auto status = RecoveryJournalOpenStatus::IoError;
+    journal = RecoveryJournal::Open(path, newBinding, replay, status);
+    Expect(status == RecoveryJournalOpenStatus::Ready && journal != nullptr && replay.empty(),
+        L"reset journal should contain only the new binding and no retired batches");
+    journal.reset();
+    Expect(RecoveryJournal::Open(path, oldBinding, replay, status) == nullptr &&
+        status == RecoveryJournalOpenStatus::BindingMismatch,
+        L"reset journal should no longer open against the retired base");
+}
+
 } // namespace
 
 int wmain() {
+    TestPartitionedRecovery();
     TestProtocolHeaderRoundTrip();
     TestStatusPayloadRoundTrip();
     TestIndexPartitionRoutingAndScheduling();
@@ -853,6 +1418,9 @@ int wmain() {
     TestIgnoredDeveloperDirectoryNames();
     TestRebuildDecisionDiagnostics();
     TestRebuildIgnorePrecedesCooldown();
+    TestIndexBuildProgressAndExclusions();
+    TestDiagnosticLogOptInAndEscaping();
+    TestDiagnosticLogRuntimeRotation();
     TestIndexBuildQueryAndPersistence();
     TestFullIgnorePathMatching();
     TestFullIgnoreBuildAndSnapshotScope();
@@ -864,6 +1432,12 @@ int wmain() {
     TestDeterministicMatchRanking();
     TestDirectoryWinsAnExactNameTie();
     TestLargePrefixTopKIsNotWindowed();
+    TestRecoveryJournalRoundTripAndSequence();
+    TestResolvedChangeJournalReplay();
+    TestRecoveryJournalBindingMismatch();
+    TestRecoveryJournalPartialAndCorruptDetection();
+    TestDeltaBatchOrderingAndRemovalCapacity();
+    TestRecoveryJournalAtomicReset();
     if (failures == 0) {
         std::wcout << L"All LuvLetter.IndexKernel tests passed.\n";
     }

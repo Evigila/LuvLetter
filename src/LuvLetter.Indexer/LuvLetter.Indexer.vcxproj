@@ -89,10 +89,15 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="IndexDiagnostics.cpp" />
+    <ClCompile Include="IndexRecovery.cpp" />
     <ClCompile Include="IndexMaintenance.cpp" />
     <ClCompile Include="Main.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="IndexDiagnostics.h" />
+    <ClInclude Include="IndexGeneration.h" />
+    <ClInclude Include="IndexRecovery.h" />
     <ClInclude Include="IndexMaintenance.h" />
     <ClInclude Include="IndexPartitioning.h" />
     <ClInclude Include="PartitionedIndexStore.h" />

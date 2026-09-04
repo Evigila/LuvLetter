@@ -21,9 +21,23 @@ public enum FileIndexRuntimeActivity
     Failed,
 }
 
+public enum FileIndexRuntimeStage
+{
+    Idle,
+    Recovering,
+    Scanning,
+    Packing,
+    Compacting,
+    Persisting,
+}
+
 public sealed record FileIndexRuntimeState(
     FileIndexRuntimeActivity Activity,
-    ulong Generation)
+    ulong Generation,
+    FileIndexRuntimeStage Stage = FileIndexRuntimeStage.Idle,
+    byte? ProgressPercent = null,
+    bool ProgressIsEstimated = false,
+    ulong DiscoveredEntries = 0)
 {
     public static FileIndexRuntimeState Unavailable { get; } = new(
         FileIndexRuntimeActivity.Unavailable,

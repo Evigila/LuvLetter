@@ -10,7 +10,7 @@
 namespace luvletter::indexing::protocol {
 
 inline constexpr std::uint32_t kMagic = 0x58494C4C;
-inline constexpr std::uint16_t kMajorVersion = 6;
+inline constexpr std::uint16_t kMajorVersion = 7;
 inline constexpr std::uint32_t kHeaderSize = 20;
 inline constexpr std::uint32_t kMaximumPayloadSize = 1U * 1024U * 1024U;
 
@@ -41,9 +41,25 @@ enum class IndexActivity : std::uint8_t {
     Failed = 3,
 };
 
+enum class IndexWorkStage : std::uint8_t {
+    Idle = 0,
+    Recovering = 1,
+    Scanning = 2,
+    Packing = 3,
+    Compacting = 4,
+    Persisting = 5,
+};
+
+inline constexpr std::uint8_t kUnknownProgress = 0xFFU;
+inline constexpr std::uint8_t kEstimatedProgress = 0x01U;
+
 struct IndexStatus final {
     std::uint64_t generation = 0;
     IndexActivity activity = IndexActivity::Ready;
+    IndexWorkStage stage = IndexWorkStage::Idle;
+    std::uint8_t progressPercent = 100;
+    std::uint8_t flags = 0;
+    std::uint64_t discoveredEntries = 0;
 };
 
 inline void AppendU16(std::vector<std::byte>& destination, const std::uint16_t value) {
@@ -145,26 +161,53 @@ inline bool DecodeHeader(const std::span<const std::byte> bytes, FrameHeader& he
 
 inline std::vector<std::byte> EncodeStatus(const IndexStatus status) {
     std::vector<std::byte> bytes;
-    bytes.reserve(9);
+    bytes.reserve(20);
     AppendU64(bytes, status.generation);
     bytes.push_back(static_cast<std::byte>(status.activity));
+    bytes.push_back(static_cast<std::byte>(status.stage));
+    bytes.push_back(static_cast<std::byte>(status.progressPercent));
+    bytes.push_back(static_cast<std::byte>(status.flags));
+    AppendU64(bytes, status.discoveredEntries);
     return bytes;
 }
 
 inline bool DecodeStatus(const std::span<const std::byte> bytes, IndexStatus& status) {
-    if (bytes.size() != 9) {
+    if (bytes.size() != 20) {
         return false;
     }
     std::size_t cursor = 0;
     if (!ReadU64(bytes, cursor, status.generation)) {
         return false;
     }
-    const auto activity = std::to_integer<std::uint8_t>(bytes[cursor]);
+    const auto activity = std::to_integer<std::uint8_t>(bytes[cursor++]);
     if (activity > static_cast<std::uint8_t>(IndexActivity::Failed)) {
         return false;
     }
     status.activity = static_cast<IndexActivity>(activity);
-    return true;
+    const auto stage = std::to_integer<std::uint8_t>(bytes[cursor++]);
+    if (stage > static_cast<std::uint8_t>(IndexWorkStage::Persisting)) {
+        return false;
+    }
+    status.stage = static_cast<IndexWorkStage>(stage);
+    status.progressPercent = std::to_integer<std::uint8_t>(bytes[cursor++]);
+    status.flags = std::to_integer<std::uint8_t>(bytes[cursor++]);
+    if (!ReadU64(bytes, cursor, status.discoveredEntries) ||
+        (status.flags & ~kEstimatedProgress) != 0 ||
+        (status.progressPercent > 100 && status.progressPercent != kUnknownProgress) ||
+        ((status.flags & kEstimatedProgress) != 0 &&
+            (status.stage != IndexWorkStage::Scanning ||
+                status.progressPercent == kUnknownProgress))) {
+        return false;
+    }
+    if (status.activity == IndexActivity::Ready) {
+        return status.stage == IndexWorkStage::Idle &&
+            status.progressPercent == 100 && status.flags == 0;
+    }
+    if (status.activity == IndexActivity::Failed) {
+        return status.stage == IndexWorkStage::Idle &&
+            status.progressPercent == kUnknownProgress && status.flags == 0;
+    }
+    return status.stage != IndexWorkStage::Idle && status.progressPercent != 100;
 }
 
 } // namespace luvletter::indexing::protocol

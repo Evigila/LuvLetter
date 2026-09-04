@@ -2,14 +2,19 @@
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
+#include <objbase.h>
 
 #include <algorithm>
 #include <array>
+#include <cstring>
 #include <limits>
+#include <map>
 #include <optional>
 #include <system_error>
 #include <type_traits>
 #include <utility>
+
+#pragma comment(lib, "Ole32.lib")
 
 namespace luvletter::indexing {
 namespace {
@@ -17,8 +22,8 @@ namespace {
 static_assert(sizeof(IndexSnapshot::EntityRecord) == 24, "EntityRecord must remain compact.");
 
 constexpr std::uint32_t kSnapshotMagic = 0x49464C4C; // LLFI
-constexpr std::uint16_t kSnapshotVersion = 3;
-constexpr std::uint16_t kSnapshotHeaderSize = 80;
+constexpr std::uint16_t kSnapshotVersion = 4;
+constexpr std::uint16_t kSnapshotHeaderSize = 104;
 constexpr std::uint64_t kPersistedDirectorySize = 12;
 constexpr std::uint64_t kPersistedEntitySize = 24;
 constexpr std::uint32_t kNoParent = (std::numeric_limits<std::uint32_t>::max)();
@@ -32,12 +37,27 @@ struct SnapshotMetadata final {
     std::uint64_t poolBytes = 0;
     std::uint64_t fileLength = 0;
     std::uint64_t rootsFingerprint = 0;
+    IndexBaseIdentity baseIdentity{};
+    std::uint64_t appliedDeltaSequence = 0;
     std::uint64_t payloadChecksum = 0;
+};
+
+struct TemporaryDirectory final {
+    std::uint32_t parentIndex;
+    std::wstring name;
+};
+
+struct TemporaryEntity final {
+    std::uint32_t directoryIndex;
+    std::wstring name;
+    std::uint64_t stableId;
+    SearchResultKind kind;
 };
 
 struct PendingDirectory final {
     std::filesystem::path path;
     std::uint32_t directoryIndex;
+    bool rootDirectory = false;
 };
 
 void AppendU16(std::vector<std::byte>& bytes, const std::uint16_t value) {
@@ -333,6 +353,40 @@ bool BaseEntityLess(
     return leftStableId < rightStableId;
 }
 
+bool IsSameOrChildPath(
+    const std::filesystem::path& candidate,
+    const std::filesystem::path& parent) {
+    return CompareOrdinalIgnoreCase(candidate.native(), parent.native()) == 0 ||
+        IsDirectoryCoveredBy(candidate, parent);
+}
+
+bool IsExcludedPath(
+    const std::filesystem::path& candidate,
+    const std::span<const std::filesystem::path> exclusions) {
+    return std::any_of(exclusions.begin(), exclusions.end(), [&](const auto& exclusion) {
+        return IsSameOrChildPath(candidate, exclusion);
+    });
+}
+
+void ReportProgress(
+    const IndexBuildProgressCallback& callback,
+    const IndexBuildProgress& progress) noexcept {
+    if (!callback) {
+        return;
+    }
+    try {
+        callback(progress);
+    } catch (...) {
+        // Diagnostics and presentation cannot terminate index construction.
+    }
+}
+
+struct OrdinalPathLess final {
+    bool operator()(const std::wstring& left, const std::wstring& right) const noexcept {
+        return CompareOrdinalIgnoreCase(left, right) < 0;
+    }
+};
+
 bool WriteAll(const HANDLE file, const std::span<const std::byte> bytes) {
     std::size_t cursor = 0;
     while (cursor < bytes.size()) {
@@ -375,6 +429,9 @@ std::vector<std::byte> EncodeMetadata(const SnapshotMetadata& metadata) {
     AppendU64(bytes, metadata.poolBytes);
     AppendU64(bytes, metadata.fileLength);
     AppendU64(bytes, metadata.rootsFingerprint);
+    AppendU64(bytes, metadata.baseIdentity.high);
+    AppendU64(bytes, metadata.baseIdentity.low);
+    AppendU64(bytes, metadata.appliedDeltaSequence);
     AppendU64(bytes, metadata.payloadChecksum);
     return bytes;
 }
@@ -395,8 +452,95 @@ bool DecodeMetadata(const std::span<const std::byte> bytes, SnapshotMetadata& me
         ReadU64(bytes, cursor, metadata.poolBytes) &&
         ReadU64(bytes, cursor, metadata.fileLength) &&
         ReadU64(bytes, cursor, metadata.rootsFingerprint) &&
+        ReadU64(bytes, cursor, metadata.baseIdentity.high) &&
+        ReadU64(bytes, cursor, metadata.baseIdentity.low) &&
+        ReadU64(bytes, cursor, metadata.appliedDeltaSequence) &&
         ReadU64(bytes, cursor, metadata.payloadChecksum) &&
+        !metadata.baseIdentity.IsEmpty() &&
         cursor == bytes.size();
+}
+
+std::uint64_t ComputeSnapshotChecksum(
+    const std::span<const std::byte> records,
+    const std::span<const std::byte> stringPool,
+    const std::uint64_t rootsFingerprint,
+    const IndexBaseIdentity baseIdentity,
+    const std::uint64_t appliedDeltaSequence) {
+    std::vector<std::byte> provenance;
+    provenance.reserve(4 * sizeof(std::uint64_t));
+    AppendU64(provenance, rootsFingerprint);
+    AppendU64(provenance, baseIdentity.high);
+    AppendU64(provenance, baseIdentity.low);
+    AppendU64(provenance, appliedDeltaSequence);
+    return HashBytes(stringPool, HashBytes(records, HashBytes(provenance)));
+}
+
+std::shared_ptr<const IndexSnapshot> PackSnapshot(
+    std::vector<TemporaryDirectory> directories,
+    std::vector<TemporaryEntity> entities,
+    const std::uint64_t rootsFingerprint,
+    const IndexBaseIdentity baseIdentity,
+    const std::uint64_t appliedDeltaSequence) {
+    if (baseIdentity.IsEmpty()) {
+        return {};
+    }
+
+    std::sort(entities.begin(), entities.end(), [](const TemporaryEntity& left, const TemporaryEntity& right) {
+        return BaseEntityLess(
+            left.name,
+            left.kind,
+            left.stableId,
+            right.name,
+            right.kind,
+            right.stableId);
+    });
+
+    std::vector<wchar_t> stringPool;
+    std::vector<IndexSnapshot::DirectoryRecord> packedDirectories;
+    std::vector<IndexSnapshot::EntityRecord> packedEntities;
+    packedDirectories.reserve(directories.size());
+    packedEntities.reserve(entities.size());
+
+    auto addString = [&stringPool](const std::wstring_view value) -> std::optional<std::uint32_t> {
+        if (value.size() > (std::numeric_limits<std::uint32_t>::max)() - stringPool.size()) {
+            return std::nullopt;
+        }
+        const auto offset = static_cast<std::uint32_t>(stringPool.size());
+        stringPool.insert(stringPool.end(), value.begin(), value.end());
+        return offset;
+    };
+
+    for (const auto& directory : directories) {
+        const auto offset = addString(directory.name);
+        if (!offset.has_value() || directory.name.size() > (std::numeric_limits<std::uint32_t>::max)()) {
+            return {};
+        }
+        packedDirectories.push_back(IndexSnapshot::DirectoryRecord{
+            directory.parentIndex,
+            *offset,
+            static_cast<std::uint32_t>(directory.name.size())});
+    }
+    for (const auto& entity : entities) {
+        const auto offset = addString(entity.name);
+        if (!offset.has_value() || entity.name.size() > (std::numeric_limits<std::uint32_t>::max)()) {
+            return {};
+        }
+        packedEntities.push_back(IndexSnapshot::EntityRecord{
+            entity.directoryIndex,
+            *offset,
+            static_cast<std::uint32_t>(entity.name.size()),
+            static_cast<std::uint32_t>(entity.stableId),
+            static_cast<std::uint32_t>(entity.stableId >> 32U),
+            static_cast<std::uint32_t>(entity.kind)});
+    }
+
+    return std::make_shared<const IndexSnapshot>(
+        std::move(packedDirectories),
+        std::move(packedEntities),
+        std::move(stringPool),
+        rootsFingerprint,
+        baseIdentity,
+        appliedDeltaSequence);
 }
 
 } // namespace
@@ -445,6 +589,33 @@ bool PathExclusions::ContainsNormalized(const std::filesystem::path& path) const
         separator = candidate.find_first_of(L"\\/", separator + 1);
     }
     return false;
+}
+
+IndexBaseIdentity CreateIndexBaseIdentity() noexcept {
+    GUID value{};
+    if (SUCCEEDED(CoCreateGuid(&value))) {
+        static_assert(sizeof(value) == 2 * sizeof(std::uint64_t));
+        static_assert(sizeof(IndexBaseIdentity) == sizeof(value));
+        IndexBaseIdentity identity{};
+        std::memcpy(&identity, &value, sizeof(identity));
+        if (!identity.IsEmpty()) {
+            return identity;
+        }
+    }
+
+    LARGE_INTEGER counter{};
+    QueryPerformanceCounter(&counter);
+    FILETIME time{};
+    GetSystemTimeAsFileTime(&time);
+    const auto timestamp = static_cast<std::uint64_t>(time.dwLowDateTime) |
+        static_cast<std::uint64_t>(time.dwHighDateTime) << 32U;
+    IndexBaseIdentity fallback{
+        timestamp ^ static_cast<std::uint64_t>(counter.QuadPart),
+        static_cast<std::uint64_t>(GetCurrentProcessId()) << 32U ^ GetTickCount64()};
+    if (fallback.IsEmpty()) {
+        fallback.low = 1;
+    }
+    return fallback;
 }
 
 SearchMatchQuality ClassifySearchMatch(
@@ -504,11 +675,15 @@ IndexSnapshot::IndexSnapshot(
     std::vector<DirectoryRecord> directories,
     std::vector<EntityRecord> entities,
     std::vector<wchar_t> stringPool,
-    const std::uint64_t rootsFingerprint)
+    const std::uint64_t rootsFingerprint,
+    const IndexBaseIdentity baseIdentity,
+    const std::uint64_t appliedDeltaSequence)
     : directories_(std::move(directories)),
       entities_(std::move(entities)),
       stringPool_(std::move(stringPool)),
-      rootsFingerprint_(rootsFingerprint) {}
+      rootsFingerprint_(rootsFingerprint),
+      baseIdentity_(baseIdentity),
+      appliedDeltaSequence_(appliedDeltaSequence) {}
 
 std::wstring_view IndexSnapshot::PoolString(const std::uint32_t offset, const std::uint32_t length) const noexcept {
     if (offset > stringPool_.size() || length > stringPool_.size() - offset) {
@@ -643,6 +818,23 @@ std::vector<SearchResult> IndexSnapshot::Query(
     return results;
 }
 
+std::vector<SearchResult> IndexSnapshot::AllResults() const {
+    std::vector<SearchResult> results;
+    results.reserve(entities_.size());
+    for (const auto& entity : entities_) {
+        auto fullPath = ReconstructPath(entity);
+        if (fullPath.empty()) {
+            continue;
+        }
+        results.push_back(SearchResult{
+            entity.StableId(),
+            static_cast<SearchResultKind>(entity.kind),
+            std::wstring(PoolString(entity.nameOffset, entity.nameLength)),
+            std::move(fullPath)});
+    }
+    return results;
+}
+
 bool IndexSnapshot::MatchesRoots(
     const std::span<const std::filesystem::path> roots,
     const std::span<const std::filesystem::path> fullIgnorePaths) const {
@@ -658,7 +850,8 @@ std::size_t IndexSnapshot::FileCount() const noexcept {
 }
 
 bool IndexSnapshot::Save(const std::filesystem::path& filePath) const {
-    if (directories_.size() > (std::numeric_limits<std::uint32_t>::max)() ||
+    if (baseIdentity_.IsEmpty() ||
+        directories_.size() > (std::numeric_limits<std::uint32_t>::max)() ||
         entities_.size() > (std::numeric_limits<std::uint32_t>::max)() ||
         stringPool_.size() > (std::numeric_limits<std::uint32_t>::max)()) {
         return false;
@@ -702,7 +895,7 @@ bool IndexSnapshot::Save(const std::filesystem::path& filePath) const {
     constexpr std::size_t chunkCapacity = 48U * 1024U;
     std::vector<std::byte> records;
     records.reserve(chunkCapacity);
-    std::uint64_t checksum = 14695981039346656037ULL;
+    std::uint64_t checksum = ComputeSnapshotChecksum({}, {}, rootsFingerprint_, baseIdentity_, appliedDeltaSequence_);
     const auto flushRecords = [&] {
         if (records.empty()) return true;
         checksum = HashBytes(records, checksum);
@@ -740,7 +933,7 @@ bool IndexSnapshot::Save(const std::filesystem::path& filePath) const {
     }
     const SnapshotMetadata metadata{
         directories_.size(), entities_.size(), stringPool_.size(), directoryBytes,
-        entityBytes, poolBytes, fileLength, rootsFingerprint_, checksum};
+        entityBytes, poolBytes, fileLength, rootsFingerprint_, baseIdentity_, appliedDeltaSequence_, checksum};
     const auto header = EncodeMetadata(metadata);
     LARGE_INTEGER beginning{};
     succeeded = succeeded && SetFilePointerEx(handle, beginning, nullptr, FILE_BEGIN) &&
@@ -809,7 +1002,7 @@ std::shared_ptr<const IndexSnapshot> IndexSnapshot::Load(const std::filesystem::
     entities.reserve(static_cast<std::size_t>(metadata.entityCount));
     std::vector<std::byte> recordChunk;
     recordChunk.reserve(48U * 1024U);
-    std::uint64_t checksum = 14695981039346656037ULL;
+    std::uint64_t checksum = ComputeSnapshotChecksum({}, {}, metadata.rootsFingerprint, metadata.baseIdentity, metadata.appliedDeltaSequence);
     constexpr std::size_t directoriesPerChunk = (48U * 1024U) / kPersistedDirectorySize;
     constexpr std::size_t entitiesPerChunk = (48U * 1024U) / kPersistedEntitySize;
     while (valid && directories.size() < metadata.directoryCount) {
@@ -902,14 +1095,20 @@ std::shared_ptr<const IndexSnapshot> IndexSnapshot::Load(const std::filesystem::
         std::move(directories),
         std::move(entities),
         std::move(stringPool),
-        metadata.rootsFingerprint);
+        metadata.rootsFingerprint,
+        metadata.baseIdentity,
+        metadata.appliedDeltaSequence);
 }
 
 std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
     const std::span<const std::filesystem::path> roots,
     const std::atomic_bool* cancellation,
-    const std::span<const std::filesystem::path> fullIgnorePaths) {
+    const std::span<const std::filesystem::path> fullIgnorePaths,
+    IndexBuildOptions options) {
     const PathExclusions exclusions(fullIgnorePaths);
+    std::vector<std::filesystem::path> scanExclusions(fullIgnorePaths.begin(), fullIgnorePaths.end());
+    scanExclusions.insert(scanExclusions.end(), options.excludedPaths.begin(), options.excludedPaths.end());
+    const PathExclusions excludedScanPaths(scanExclusions);
     const auto normalizedRoots = NormalizeRoots(roots, exclusions);
     const auto rootsFingerprint = ComputeRootsFingerprint(normalizedRoots, exclusions);
 
@@ -925,18 +1124,30 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
         stringPool.insert(stringPool.end(), value.begin(), value.end());
         return offset;
     };
+    std::uint64_t processedDirectories = 0;
 
     for (const auto& root : normalizedRoots) {
         if (cancellation != nullptr && cancellation->load(std::memory_order_relaxed)) {
             return {};
         }
-        if (exclusions.Contains(root)) {
+        if (excludedScanPaths.Contains(root)) {
             continue;
         }
         const DWORD rootAttributes = AttributesOf(root);
         if (rootAttributes == INVALID_FILE_ATTRIBUTES ||
             (rootAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
-            return {};
+            const DWORD errorCode = rootAttributes == INVALID_FILE_ATTRIBUTES
+                ? GetLastError()
+                : ERROR_DIRECTORY;
+            ReportProgress(options.progress, IndexBuildProgress{
+                IndexBuildStage::Scanning,
+                processedDirectories,
+                pending.size(),
+                entities.size(),
+                root.native(),
+                errorCode,
+                true});
+            continue;
         }
         if (directories.size() >= (std::numeric_limits<std::uint32_t>::max)()) {
             return {};
@@ -947,8 +1158,14 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
         if (!rootOffset) return {};
         directories.push_back(IndexSnapshot::DirectoryRecord{
             kNoParent, *rootOffset, static_cast<std::uint32_t>(rootName.size())});
-        pending.push_back(PendingDirectory{root, rootIndex});
+        pending.push_back(PendingDirectory{root, rootIndex, true});
     }
+
+    ReportProgress(options.progress, IndexBuildProgress{
+        IndexBuildStage::Scanning,
+        processedDirectories,
+        pending.size(),
+        entities.size()});
 
     while (!pending.empty()) {
         if (cancellation != nullptr && cancellation->load(std::memory_order_relaxed)) {
@@ -956,6 +1173,13 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
         }
         PendingDirectory current = std::move(pending.back());
         pending.pop_back();
+
+        ReportProgress(options.progress, IndexBuildProgress{
+            IndexBuildStage::Scanning,
+            processedDirectories,
+            pending.size() + 1U,
+            entities.size(),
+            current.path.native()});
 
         auto searchPath = ExtendedPath(current.path);
         searchPath /= L"*";
@@ -978,24 +1202,25 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
         }
         if (find == INVALID_HANDLE_VALUE) {
             const DWORD error = GetLastError();
-            const bool isRoot = directories[current.directoryIndex].parentIndex == kNoParent;
-            if (error == ERROR_FILE_NOT_FOUND) {
-                // A wildcard can find no entries in an empty directory. A root
-                // that disappeared during enumeration must not replace its cache.
-                const DWORD attributes = AttributesOf(current.path);
-                if (attributes != INVALID_FILE_ATTRIBUTES &&
-                    (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-                    continue;
-                }
-            }
-            if (!isRoot && (error == ERROR_ACCESS_DENIED ||
-                    error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)) {
-                // Protected or concurrently removed descendants are expected.
+            const DWORD attributes = error == ERROR_FILE_NOT_FOUND
+                ? AttributesOf(current.path) : INVALID_FILE_ATTRIBUTES;
+            const bool emptyDirectory = error == ERROR_FILE_NOT_FOUND &&
+                attributes != INVALID_FILE_ATTRIBUTES &&
+                (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            ++processedDirectories;
+            ReportProgress(options.progress, IndexBuildProgress{
+                IndexBuildStage::Scanning, processedDirectories, pending.size(),
+                entities.size(), current.path.native(),
+                emptyDirectory ? ERROR_SUCCESS : error,
+                current.rootDirectory && !emptyDirectory});
+            if (emptyDirectory || current.rootDirectory || error == ERROR_ACCESS_DENIED ||
+                error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
                 continue;
             }
             return {};
         }
 
+        std::uint64_t entriesSinceProgress = 0;
         do {
             if (cancellation != nullptr && cancellation->load(std::memory_order_relaxed)) {
                 FindClose(find);
@@ -1008,9 +1233,9 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
             const auto entryPath = (current.path / name).lexically_normal();
             const auto& entryText = entryPath.native();
             const bool extendedEntry = entryText.starts_with(L"\\\\?\\");
-            if (!exclusions.Empty() && (extendedEntry
-                    ? exclusions.Contains(entryPath)
-                    : exclusions.ContainsNormalized(entryPath))) {
+            if (!excludedScanPaths.Empty() && (extendedEntry
+                    ? excludedScanPaths.Contains(entryPath)
+                    : excludedScanPaths.ContainsNormalized(entryPath))) {
                 continue;
             }
             if (entities.size() >= (std::numeric_limits<std::uint32_t>::max)()) {
@@ -1043,7 +1268,7 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
                     static_cast<std::uint32_t>(stableId >> 32U),
                     static_cast<std::uint32_t>(SearchResultKind::Directory)});
                 if ((data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0) {
-                    pending.push_back(PendingDirectory{entryPath, directoryIndex});
+                    pending.push_back(PendingDirectory{entryPath, directoryIndex, false});
                 }
             } else {
                 entities.push_back(IndexSnapshot::EntityRecord{
@@ -1054,9 +1279,27 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
                     static_cast<std::uint32_t>(stableId >> 32U),
                     static_cast<std::uint32_t>(SearchResultKind::File)});
             }
+            if (++entriesSinceProgress >= 4096U) {
+                entriesSinceProgress = 0;
+                ReportProgress(options.progress, IndexBuildProgress{
+                    IndexBuildStage::Scanning,
+                    processedDirectories,
+                    pending.size() + 1U,
+                    entities.size(),
+                    current.path.native()});
+            }
         } while (FindNextFileW(find, &data));
         const DWORD enumerationError = GetLastError();
         FindClose(find);
+        ++processedDirectories;
+        ReportProgress(options.progress, IndexBuildProgress{
+            IndexBuildStage::Scanning,
+            processedDirectories,
+            pending.size(),
+            entities.size(),
+            current.path.native(),
+            enumerationError == ERROR_NO_MORE_FILES ? ERROR_SUCCESS : enumerationError,
+            false});
         if (enumerationError != ERROR_NO_MORE_FILES) {
             return {};
         }
@@ -1065,6 +1308,8 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
     if (cancellation != nullptr && cancellation->load(std::memory_order_relaxed)) {
         return {};
     }
+    ReportProgress(options.progress, IndexBuildProgress{
+        IndexBuildStage::Packing, processedDirectories, 0, entities.size()});
     const auto pooledName = [&stringPool](const IndexSnapshot::EntityRecord& record) {
         return std::wstring_view(stringPool.data() + record.nameOffset, record.nameLength);
     };
@@ -1086,7 +1331,113 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
         std::move(directories),
         std::move(entities),
         std::move(stringPool),
-        rootsFingerprint);
+        rootsFingerprint,
+        CreateIndexBaseIdentity(),
+        options.appliedDeltaSequence);
+}
+
+std::shared_ptr<const IndexSnapshot> IndexBuilder::BuildFromResults(
+    const std::span<const SearchResult> results,
+    const std::uint64_t rootsFingerprint,
+    const IndexBaseIdentity baseIdentity,
+    const std::uint64_t appliedDeltaSequence) {
+    if (baseIdentity.IsEmpty()) {
+        return {};
+    }
+
+    struct NormalizedResult final {
+        SearchResult result;
+        std::filesystem::path path;
+    };
+
+    std::vector<NormalizedResult> normalizedResults;
+    normalizedResults.reserve(results.size());
+    for (const auto& result : results) {
+        if (result.displayName.empty() || result.fullPath.empty() ||
+            (result.kind != SearchResultKind::File && result.kind != SearchResultKind::Directory)) {
+            return {};
+        }
+        auto path = NormalizePath(result.fullPath);
+        if (path.filename().native() != result.displayName || path.parent_path().empty()) {
+            return {};
+        }
+        normalizedResults.push_back(NormalizedResult{result, std::move(path)});
+    }
+
+    std::sort(normalizedResults.begin(), normalizedResults.end(), [](const auto& left, const auto& right) {
+        const int foldedOrder = CompareOrdinalIgnoreCase(left.path.native(), right.path.native());
+        return foldedOrder != 0
+            ? foldedOrder < 0
+            : CompareOrdinal(left.path.native(), right.path.native(), FALSE) < 0;
+    });
+    for (std::size_t index = 1; index < normalizedResults.size(); ++index) {
+        if (CompareOrdinalIgnoreCase(
+                normalizedResults[index - 1].path.native(),
+                normalizedResults[index].path.native()) == 0) {
+            return {};
+        }
+    }
+
+    std::vector<TemporaryDirectory> directories;
+    std::vector<TemporaryEntity> entities;
+    std::map<std::wstring, std::uint32_t, OrdinalPathLess> directoryIndices;
+    entities.reserve(normalizedResults.size());
+
+    const auto ensureDirectory = [&](const std::filesystem::path& input)
+        -> std::optional<std::uint32_t> {
+        auto current = NormalizePath(input);
+        std::vector<std::filesystem::path> missing;
+        std::uint32_t parentIndex = kNoParent;
+        while (true) {
+            if (const auto found = directoryIndices.find(current.native());
+                found != directoryIndices.end()) {
+                parentIndex = found->second;
+                break;
+            }
+            missing.push_back(current);
+            const auto parent = current.parent_path();
+            if (parent.empty() || CompareOrdinalIgnoreCase(parent.native(), current.native()) == 0) {
+                break;
+            }
+            current = parent;
+        }
+
+        for (auto iterator = missing.rbegin(); iterator != missing.rend(); ++iterator) {
+            if (directories.size() >= (std::numeric_limits<std::uint32_t>::max)()) {
+                return std::nullopt;
+            }
+            auto name = parentIndex == kNoParent
+                ? iterator->native()
+                : iterator->filename().native();
+            if (name.empty()) {
+                return std::nullopt;
+            }
+            const auto index = static_cast<std::uint32_t>(directories.size());
+            directories.push_back(TemporaryDirectory{parentIndex, std::move(name)});
+            directoryIndices.emplace(iterator->native(), index);
+            parentIndex = index;
+        }
+        return parentIndex;
+    };
+
+    for (const auto& normalized : normalizedResults) {
+        const auto directoryIndex = ensureDirectory(normalized.path.parent_path());
+        if (!directoryIndex.has_value()) {
+            return {};
+        }
+        entities.push_back(TemporaryEntity{
+            *directoryIndex,
+            normalized.result.displayName,
+            normalized.result.stableId,
+            normalized.result.kind});
+    }
+
+    return PackSnapshot(
+        std::move(directories),
+        std::move(entities),
+        rootsFingerprint,
+        baseIdentity,
+        appliedDeltaSequence);
 }
 
 std::wstring Utf8ToWide(const std::string_view text) {

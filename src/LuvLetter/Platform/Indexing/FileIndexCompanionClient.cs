@@ -242,6 +242,11 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IIndexRefresh
                 System.Globalization.CultureInfo.InvariantCulture));
             startInfo.ArgumentList.Add("--data-dir");
             startInfo.ArgumentList.Add(options.DataDirectory);
+            if (options.DiagnosticLogPath() is { } diagnosticLogPath)
+            {
+                startInfo.ArgumentList.Add("--diagnostic-log");
+                startInfo.ArgumentList.Add(diagnosticLogPath);
+            }
             process = Process.Start(startInfo)
                 ?? throw new InvalidOperationException("The file-index companion did not start.");
             process.OutputDataReceived += (_, output) =>
@@ -334,7 +339,20 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IIndexRefresh
                         FileIndexActivity.Failed => FileIndexRuntimeActivity.Failed,
                         _ => FileIndexRuntimeActivity.Unavailable,
                     },
-                    status.Value.IndexGeneration);
+                    status.Value.IndexGeneration,
+                    status.Value.Stage switch
+                    {
+                        FileIndexWorkStage.Idle => FileIndexRuntimeStage.Idle,
+                        FileIndexWorkStage.Recovering => FileIndexRuntimeStage.Recovering,
+                        FileIndexWorkStage.Scanning => FileIndexRuntimeStage.Scanning,
+                        FileIndexWorkStage.Packing => FileIndexRuntimeStage.Packing,
+                        FileIndexWorkStage.Compacting => FileIndexRuntimeStage.Compacting,
+                        FileIndexWorkStage.Persisting => FileIndexRuntimeStage.Persisting,
+                        _ => FileIndexRuntimeStage.Idle,
+                    },
+                    status.Value.ProgressPercent,
+                    status.Value.ProgressIsEstimated,
+                    status.Value.DiscoveredEntries);
                 lock (sessionStateLock)
                 {
                     if (!ReferenceEquals(currentSession, session)

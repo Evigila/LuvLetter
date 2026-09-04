@@ -24,7 +24,9 @@ public interface INativeShell
 
     void SynchronizeQuickActions(IReadOnlyList<QuickActionSnapshot> quickActions);
 
-    void SetInputCandidates(IReadOnlyList<InputCandidate> candidates, ulong revision);
+    InputCandidateSetResult SetInputCandidates(
+        IReadOnlyList<InputCandidate> candidates,
+        ulong revision);
 
     void ToggleCommandInput();
 

@@ -107,6 +107,18 @@ reserved product capabilities. Architectural ownership and dependency rules rema
   uncertainty or Delta thresholds.
 - Added snapshot v3 provenance and integrity checks. Cached entities carry their type,
   roots are fingerprinted, and a payload checksum rejects silent corruption.
+- Added persistent incremental recovery. Snapshot v4 carries an immutable base identity
+  and applied Delta sequence; complete, checksummed write-ahead batches replay only over
+  the matching base, roots, and enumeration policy.
+- Added crash-safe Delta compaction through identity-named snapshot/journal pairs and an
+  atomically replaced active-generation manifest per filesystem partition. Healthy
+  partitions remain recoverable when another configured root is unavailable.
+- Added estimated initial-scan progress with discovered-entry counts and exact packing,
+  compaction, and persistence stages. The existing persistent activity now updates an
+  in-place ten-segment progress bar instead of showing only an indefinite spinner.
+- Added explicit opt-in, bounded JSONL indexer diagnostics through
+  `LUVLETTER_INDEXER_LOG`, including throttled scan progress, filesystem errors,
+  no-progress detection, recovery, persistence, and publication events.
 
 ### Changed
 
@@ -119,14 +131,15 @@ reserved product capabilities. Architectural ownership and dependency rules rema
   pooled contiguous storage, and reused candidate-window rendering resources across
   ordinary result updates. Explicit Settings close now releases the window visual tree.
 - Reduced filesystem indexing peaks by building compact records directly, decoding cache
-  records into final vectors, and streaming snapshot writes and checksums. Existing valid
-  primary cache files are rotated to backup by hard link or file copy when possible.
+  records into final vectors, and streaming snapshot writes and checksums. Partition
+  publication now requires a complete persisted snapshot/journal pair; failed persistence
+  retains the previous query view.
 - Batched watcher changes by owning partition and bounded Delta and cross-partition result
   merges to the requested Top-K. Full-ignore checks now use an empty-list fast path and
   sorted path-boundary lookup without repeated normalization on hot scanner paths.
-- Upgraded LLIX to v6 so managed configuration sends partition IDs, roots, delegated
-  subtrees, maintenance tiers, maximum ages, and automatic gaps. Snapshot schema v3 and
-  Native ABI v7 remain unchanged.
+- Upgraded LLIX to v7, combining partition IDs, roots, delegated subtrees, maintenance
+  tiers, maximum ages, and automatic gaps with work-stage, percentage, estimate, and
+  discovered-entry status fields. Persisted snapshots use schema v4; Native ABI remains v7.
 - Extended `index.refresh` to request both file and application catalogs. Existing ignore,
   cooldown, full-exclusion, and console-color semantics also apply to application events.
 - Rank a bounded pool of up to 64 matches per source before taking visible results;
@@ -186,14 +199,24 @@ reserved product capabilities. Architectural ownership and dependency rules rema
   directory result type introduced in v2 and adds `Ready`, `InitialBuild`, and `Updating`
   status values so presentation does not infer work type from generation numbers.
 - Hidden persistent-only message queues no longer run a continuous animation timer.
+- Candidate publication now treats Native `S_FALSE` as a stale revision instead of
+  committing managed activation tokens. Long secondary labels are truncated on a safe
+  UTF-16 boundary while activation retains the complete path, and InputWindow and Quick
+  Actions now hide each other before presentation.
+- Removed the second full result extraction, sort, and repack from normal filesystem
+  construction. The scan now writes its captured Delta sequence into the packed snapshot
+  directly, reducing initial-build CPU time and peak allocations.
+- Excluded index-owned snapshot, journal, manifest, and diagnostic-log paths from scanning
+  and filesystem notifications, preventing maintenance writes from scheduling themselves.
+- An unavailable configured root no longer blocks publication for every healthy root.
+  Existing results under the unavailable root are retained while healthy roots reconcile.
 
 ### Reserved
 
 - The final candidate row reserves Global Search. Activating it currently reports that
   the feature is not implemented and keeps the input open.
 - Filesystem search currently covers case-insensitive exact-name, exact-stem, and prefix
-  matching. Fuzzy matching, pinyin matching, durable offline incremental recovery,
-  NTFS MFT/USN acceleration, and configurable UI settings are reserved for later
-  iterations.
+  matching. Fuzzy matching, pinyin matching, NTFS USN-based offline catch-up,
+  MFT acceleration, and configurable UI settings are reserved for later iterations.
 - Echo is the current natural-language fallback for `Gen` and `Ask`; this response path
   is reserved for a future AI search integration.

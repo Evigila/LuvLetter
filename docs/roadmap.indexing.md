@@ -1,7 +1,7 @@
 # File Indexing Roadmap
 
 This document records the intended evolution of filename indexing, candidate production,
-and file activation. It is a planning document: Phases 1 and 2 are complete. User-visible
+and file activation. It is a planning document: Phases 1 through 3 are complete. User-visible
 work is recorded in `changelog.md` only after it is implemented, while ownership and
 dependency rules remain in `architecture.md`.
 
@@ -13,8 +13,8 @@ For a concise implemented-versus-planned comparison and concrete search examples
 `indexing-capabilities.md`.
 
 Independent partition ownership, startup scheduling, and per-scope maintenance now have
-an implemented baseline described in `roadmap.index-partitions.md`. Whole-volume scope,
-durable Delta recovery, live ownership migration, and Settings controls remain planned.
+an implemented baseline described in `roadmap.index-partitions.md`, including durable
+Delta recovery. Whole-volume scope, live ownership migration, and Settings controls remain planned.
 
 ## Product invariants
 
@@ -73,7 +73,7 @@ fuzzy ranking, pinyin matching, content indexing, or an implemented Global Searc
 
 Phase 2 completes the expected file-and-folder candidate behavior and makes names created
 during the current session searchable without waiting for the periodic reconciliation.
-Its Delta state is memory-only; durable change replay remains a later phase.
+Phase 2 introduced memory-only Delta state; Phase 3 adds durable change replay.
 
 ### Win32 enumeration and error isolation
 
@@ -191,10 +191,10 @@ No edit distance, token score, usage history, or pinyin score participates in Ph
   keeps the input open. Shift+Enter reveals a file or folder in its containing location;
   Enter opens the selected item using the Windows shell.
 - The kernel suite covers file and directory records, Unicode prefix lookup,
-  deterministic ranking, overlapping roots, v3 persistence, provenance mismatch,
+  deterministic ranking, overlapping roots, v4 persistence, provenance mismatch,
   checksum corruption, Delta ordering, ancestor tombstones, rebuild-cutoff pruning, and
   live create/rename/delete notifications.
-- Core and Native suites cover LLIX v6 activity decoding, Native ABI v7, icon categories,
+- Core and Native suites cover LLIX v7 activity/progress decoding, Native ABI v7, icon categories,
   default and same-revision selection, persistent message timelines, stale revision
   rejection, and file/folder activation success or failure.
 
@@ -203,7 +203,7 @@ checklist remains the release-validation surface for focus, Shell activation, re
 Known Folders, partition recovery, notification overflow, and perceived performance on
 representative machines.
 
-## Phase 3 — Persistent incremental recovery `[Planned]`
+## Phase 3 — Persistent incremental recovery `[Complete]`
 
 Phase 3 makes bounded incremental maintenance survive companion restarts and reduces the
 frequency of complete construction:
@@ -218,6 +218,23 @@ frequency of complete construction:
   healthy roots from recovering.
 - Reconcile after incomplete shutdown, watcher gaps, checkpoint mismatch, or log
   corruption. Recovery prefers a safe full rebuild over silently incomplete results.
+
+Phase 3 is implemented with snapshot schema v4, immutable base identities, monotonic
+Delta batch sequences, and a write-ahead recovery journal per filesystem partition. Each
+journal header binds the
+exact base, root fingerprint, enumeration-policy fingerprint, and base-applied sequence;
+each flushed batch carries a checksum and self-contained root-owned UTF-16 operations.
+Complete batches replay on startup, while a partial tail or mismatched/corrupt journal
+keeps the last complete snapshot and schedules reconciliation.
+
+Compaction folds bounded batches into a new immutable snapshot and preserves batches newer
+than its cutoff in a new journal. Both files are durable before the active-generation
+manifest changes, so the previous pair remains recoverable across an interrupted switch.
+Each partition commits independently. Healthy partitions continue publishing while an
+unavailable partition retains its previous complete results and retries. Watcher uncertainty
+without a trustworthy source still requests recovery across all file partitions.
+Network, removable, and notification-unreliable roots retain the bounded reconciliation
+policy below.
 
 Network shares, removable media, and filesystems without dependable change notifications
 continue to use bounded reconciliation rather than receiving weaker correctness claims.
@@ -368,18 +385,18 @@ candidates, persistence, or activation:
     message, does not open the wrong item, and keeps InputWindow open.
 14. Change configured roots and confirm a snapshot from the previous scope is not exposed
     as if it belonged to the new scope.
-15. With the app stopped and both cache files backed up elsewhere, corrupt or truncate
-    the primary snapshot and confirm the compatible `.bak` supplies candidates before
-    scanning completes. Repeat with both files invalid and confirm background rebuilding
-    leaves the main application operational.
+15. With the app stopped and the partition cache directory backed up elsewhere, corrupt
+    or truncate one active snapshot. Confirm its incompatible data is rejected, healthy
+    partitions stay searchable, and background rebuilding leaves the application operational.
+    Also exercise legacy `.bin`/`.bak` migration before an active manifest exists.
 16. Terminate the companion during a query and confirm supervision restarts it, stale
     results are rejected, and the current input refreshes after readiness returns.
 17. Exercise `Gen`, `Ask`, and `Cmd` with identical text and confirm their candidate and
     submission rules remain isolated.
 18. Observe a large rebuild on battery and AC power and confirm Windows reports background
     processing behavior while input animation and keyboard navigation remain smooth.
-19. Start without a compatible snapshot and confirm `正在生成索引表` remains visible with a
-    rotating indicator until publication, then becomes `索引已就绪` for five seconds.
+19. Start without a compatible snapshot and confirm `正在生成索引表` remains visible with
+    progress updates until publication, then becomes `索引已就绪` for five seconds.
 20. Start with a compatible snapshot or trigger scheduled maintenance and confirm the
     persistent activity reads `正在更新索引`; hiding the queue must not consume continuous
     animation CPU, and showing it again must resume the spinner.
@@ -457,6 +474,29 @@ candidates, persistence, or activation:
     the 4096 slots, and a full map must still classify ignored paths as `Ignored` rather
     than `Capacity` or `Cooldown`. Confirm force refresh still bypasses ordinary ignores
     and cooldowns while full-ignore exclusions remain enforced.
+40. Create or rename an indexed item, terminate the companion after the change is visible,
+    and confirm the item is restored from the complete journal batch after supervision
+    restarts the companion.
+41. Truncate the final journal batch and restart. Confirm complete earlier batches remain
+    visible, the partial tail is not applied, and background reconciliation replaces it.
+42. Interrupt compaction before and after the active-manifest switch. Confirm startup uses
+    either the complete old pair or the complete new pair, never a mixed snapshot and log.
+43. Disconnect one configured root while another remains available. Confirm the healthy
+    root continues returning recovered and newly journaled results, and that no partial
+    full-scan generation deletes the disconnected root's previous results.
+44. Remove the active snapshot, start the application, and confirm the persistent message
+    shows a monotonic ten-segment bar, an explicitly approximate scan percentage, and a
+    growing discovered-entry count. Confirm packing and saving advance through their fixed
+    final stages before `索引已就绪`.
+45. Set `LUVLETTER_INDEXER_LOG=debug`, repeat an initial build, and inspect
+    `%LocalAppData%\LuvLetter\Index\v1\logs\indexer.log`. Confirm progress appears at a
+    bounded cadence, errors identify the affected path and Win32 code, and publication is
+    recorded. Keep the companion running while the file reaches 4 MiB and confirm rotation
+    to one `.previous` archive. Unset the variable and confirm subsequent starts do not
+    append diagnostics.
+46. Keep the default user-profile root and confirm files beneath
+    `%LocalAppData%\LuvLetter\Index\v1` never appear as candidates and snapshot/journal/log
+    writes do not create a continuing rebuild loop.
 
 Automated suites cover deterministic logic and protocol boundaries, but they do not
 replace these user-driven focus, shell-activation, and perceived-performance checks.

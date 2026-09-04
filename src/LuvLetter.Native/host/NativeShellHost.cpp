@@ -32,9 +32,6 @@ namespace
 	constexpr DWORD RequestTimeoutMs = 5000;
 	constexpr DWORD ShutdownTimeoutMs = 5000;
 	constexpr int32_t MaxQuickActions = 4096;
-	constexpr int32_t MaxInputCandidates = 32;
-	constexpr size_t MaxCandidatePrimaryLength = 512;
-	constexpr size_t MaxCandidateSecondaryLength = 2048;
 	constexpr int32_t MaxMessageLength = 4096;
 
 	enum class RequestKind
@@ -424,7 +421,8 @@ HRESULT NativeShellHost::SetInputCandidates(
 	int32_t count,
 	uint64_t revision)
 {
-	if (count < 0 || count > MaxInputCandidates || (count > 0 && items == nullptr))
+	if (count < 0 || count > LUVLETTER_NATIVE_MAX_INPUT_CANDIDATES
+		|| (count > 0 && items == nullptr))
 	{
 		return E_INVALIDARG;
 	}
@@ -455,8 +453,8 @@ HRESULT NativeShellHost::SetInputCandidates(
 
 			const auto primaryLength = wcsnlen_s(
 				source.primaryText,
-				MaxCandidatePrimaryLength + 1);
-			if (primaryLength > MaxCandidatePrimaryLength)
+				static_cast<size_t>(LUVLETTER_NATIVE_MAX_CANDIDATE_PRIMARY_LENGTH) + 1);
+			if (primaryLength > LUVLETTER_NATIVE_MAX_CANDIDATE_PRIMARY_LENGTH)
 			{
 				request->Release();
 				return E_INVALIDARG;
@@ -471,8 +469,8 @@ HRESULT NativeShellHost::SetInputCandidates(
 			{
 				const auto secondaryLength = wcsnlen_s(
 					source.secondaryText,
-					MaxCandidateSecondaryLength + 1);
-				if (secondaryLength > MaxCandidateSecondaryLength)
+					static_cast<size_t>(LUVLETTER_NATIVE_MAX_CANDIDATE_SECONDARY_LENGTH) + 1);
+				if (secondaryLength > LUVLETTER_NATIVE_MAX_CANDIDATE_SECONDARY_LENGTH)
 				{
 					request->Release();
 					return E_INVALIDARG;
@@ -769,6 +767,7 @@ HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 	case RequestKind::ShowInput:
 	{
 		CapturePreviousForegroundWindow();
+		quickActionsWindow_->Hide();
 		const auto monitor = CaptureTargetMonitor();
 		inputWindow_->Show(monitor, previousForegroundHwnd_);
 		const auto activated = TryActivateInteractiveWindow(
@@ -792,6 +791,7 @@ HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 		else if (!inputWindow_->IsVisible())
 		{
 			CapturePreviousForegroundWindow();
+			quickActionsWindow_->Hide();
 			const auto monitor = CaptureTargetMonitor();
 			inputWindow_->Show(monitor, previousForegroundHwnd_);
 			const auto activated = TryActivateInteractiveWindow(
@@ -805,6 +805,7 @@ HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 		else
 		{
 			CapturePreviousForegroundWindow();
+			quickActionsWindow_->Hide();
 			inputWindow_->SetPreviousForegroundWindow(previousForegroundHwnd_);
 			const auto activated = TryActivateInteractiveWindow(
 				inputWindow_->WindowHandle(),
@@ -828,6 +829,8 @@ HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 	case RequestKind::ShowQuickActions:
 		if (quickActionsWindow_->IsEmpty()) return S_FALSE;
 		CapturePreviousForegroundWindow();
+		inputWindow_->Hide();
+		inputCandidatesWindow_->Hide();
 		{
 			const auto monitor = CaptureTargetMonitor();
 			quickActionsWindow_->Show(monitor, previousForegroundHwnd_);
@@ -848,6 +851,8 @@ HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 		else if (!quickActionsWindow_->IsEmpty())
 		{
 			CapturePreviousForegroundWindow();
+			inputWindow_->Hide();
+			inputCandidatesWindow_->Hide();
 			const auto monitor = CaptureTargetMonitor();
 			quickActionsWindow_->Show(monitor, previousForegroundHwnd_);
 			return TryActivateInteractiveWindow(

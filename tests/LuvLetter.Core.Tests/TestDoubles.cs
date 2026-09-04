@@ -43,6 +43,8 @@ internal sealed class FakeNativeShellApi : INativeShellApi
 
     public int SetFeatureItemsResult { get; set; }
 
+    public int SetInputCandidatesResult { get; set; }
+
     public int ToggleInputBoxResult { get; set; }
 
     public int HidePopupsResult { get; set; }
@@ -201,7 +203,7 @@ internal sealed class FakeNativeShellApi : INativeShellApi
         InputCandidates = copied;
         InputCandidateRevision = revision;
         InputCandidateTextPointersWerePacked = textPointersWerePacked;
-        return 0;
+        return SetInputCandidatesResult;
     }
 
     public int EnqueueMessage(string text, int length)
@@ -401,6 +403,9 @@ internal sealed class FakeNativeShell : INativeShell
 
     public int HidePopupsCalls { get; private set; }
 
+    public InputCandidateSetResult SetInputCandidatesResult { get; set; } =
+        InputCandidateSetResult.Accepted;
+
     public void ApplyConfiguration(
         InputBoxConfiguration inputBoxConfiguration,
         QuickActionsConfiguration quickActionsConfiguration)
@@ -413,8 +418,13 @@ internal sealed class FakeNativeShell : INativeShell
     public void SynchronizeQuickActions(IReadOnlyList<QuickActionSnapshot> quickActions) =>
         SynchronizedSnapshots.Add(quickActions.ToArray());
 
-    public void SetInputCandidates(IReadOnlyList<InputCandidate> candidates, ulong revision) =>
+    public InputCandidateSetResult SetInputCandidates(
+        IReadOnlyList<InputCandidate> candidates,
+        ulong revision)
+    {
         CandidateSnapshots.Add((candidates.ToArray(), revision));
+        return SetInputCandidatesResult;
+    }
 
     public void ToggleCommandInput() => ToggleCommandInputCalls++;
 

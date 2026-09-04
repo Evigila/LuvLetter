@@ -85,7 +85,7 @@ std::shared_ptr<const IndexSnapshot> CreateSnapshot(const std::size_t entityCoun
         std::move(directories),
         std::move(entities),
         std::move(pool),
-        0);
+        0, luvletter::indexing::CreateIndexBaseIdentity(), 0);
 }
 
 double Percentile(const std::vector<double>& sorted, const double percentile) {

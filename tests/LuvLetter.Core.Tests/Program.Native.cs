@@ -264,7 +264,7 @@ internal static partial class Program
             Assert.Equal(InputMode.General, change.Mode);
             Assert.Equal(42UL, change.Revision);
 
-            service.SetInputCandidates(
+            var acceptedCandidates = service.SetInputCandidates(
             [
                 new InputCandidate(
                     7,
@@ -279,6 +279,7 @@ internal static partial class Program
                     "电源",
                     string.Empty),
             ], revision: 42);
+            Assert.Equal(InputCandidateSetResult.Accepted, acceptedCandidates);
             Assert.Equal(42UL, nativeApi.InputCandidateRevision);
             Assert.Equal(2, nativeApi.InputCandidates.Count);
             Assert.Equal(7UL, nativeApi.InputCandidates[0].Token);
@@ -289,6 +290,40 @@ internal static partial class Program
             Assert.True(
                 nativeApi.InputCandidateTextPointersWerePacked,
                 "Candidate text pointers must reference one contiguous UTF-16 payload.");
+
+            var longSecondaryText = new string(
+                'x',
+                InputCandidatePresentation.MaximumSecondaryTextLength - 1)
+                + "\U0001F642-tail";
+            var longTextCandidate = new InputCandidate(
+                8,
+                CandidateKind.File,
+                CandidateIconKind.GenericFile,
+                "long-path.txt",
+                longSecondaryText);
+            Assert.Equal(
+                InputCandidateSetResult.Accepted,
+                service.SetInputCandidates([longTextCandidate], revision: 43));
+            Assert.Equal(
+                InputCandidatePresentation.MaximumSecondaryTextLength - 1,
+                nativeApi.InputCandidates[0].Secondary.Length,
+                "Candidate presentation truncation split a UTF-16 surrogate pair.");
+            Assert.True(
+                ReferenceEquals(longSecondaryText, longTextCandidate.SecondaryText),
+                "ABI presentation truncation must not replace the Core activation value.");
+
+            nativeApi.SetInputCandidatesResult = 1;
+            Assert.Equal(
+                InputCandidateSetResult.Stale,
+                service.SetInputCandidates([longTextCandidate], revision: 42));
+            Assert.Equal(
+                InputCandidateSetResult.Stale,
+                service.SetInputCandidates([], revision: 42),
+                "The empty candidate fast path must preserve stale-revision rejection.");
+            nativeApi.SetInputCandidatesResult = unchecked((int)0x80004005);
+            Assert.Throws<ExternalException>(
+                () => service.SetInputCandidates([longTextCandidate], revision: 44));
+            nativeApi.SetInputCandidatesResult = 0;
 
             var candidateActivated = new TaskCompletionSource<CandidateActivated>(
                 TaskCreationOptions.RunContinuationsAsynchronously);

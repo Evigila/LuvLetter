@@ -107,9 +107,10 @@ copies the bounded strings before the region is returned to the pool.
   it does not retain a second per-entity temporary name graph.
 - Prefix queries use the sorted filename records and reconstruct full paths only for the
   bounded result set.
-- The v3 persisted snapshot validates its magic, schema, roots fingerprint, payload
-  checksum, sizes, references, and ordering before it is accepted. Record sections are
-  decoded directly into final vectors and saved through a fixed-size streaming buffer.
+- The v4 persisted snapshot validates its magic, schema, roots fingerprint, immutable
+  base identity, applied Delta sequence, payload checksum, sizes, references, and
+  ordering before it is accepted. Record sections are decoded directly into final vectors
+  and saved through a fixed-size streaming buffer.
 
 ### `src/LuvLetter.Indexer`
 
@@ -117,7 +118,7 @@ copies the bounded strings before the region is returned to the pool.
 - It connects to a per-run random Named Pipe, exits when the pipe closes or its parent
   process ends, and serves one captured read view across independent filesystem
   partitions. Each partition owns an immutable baseline, bounded live Delta, policy,
-  cache/backup, generation, and refresh state.
+  snapshot/journal pair, active-generation manifest, generation, and refresh state.
 - Filesystem ownership uses the most specific configured root. Every ancestor scan
   excludes all delegated child roots, so logical nested scopes have one physical owner.
   Desktop and Downloads are startup-critical; the user-profile remainder and other
@@ -125,12 +126,22 @@ copies the bounded strings before the region is returned to the pool.
   by tier, overdue/dirty/starvation age, and measured prior cost.
 - `ReadDirectoryChangesW` watchers coalesce file and folder name changes for 250 ms.
   Each batch is normalized once, grouped by longest-root owner, and applied per partition.
-  Upserts and tombstones then merge only with that baseline; directory-prefix tombstones
-  hide stale descendants. Overflow without a
-  trustworthy source requests safe recovery for all file partitions. Requests coalesce,
-  never overlap one partition's active build, and respect that partition's automatic
-  gap. If a Delta exceeds its retained capacity, that partition falls back to its last
-  complete baseline until reconciliation succeeds.
+  Resolved, root-owned upserts and tombstones are flushed to an integrity-checked
+  per-partition recovery journal before they enter the live Delta; directory-prefix tombstones hide
+  stale descendants. Complete batches replay only over their exact base, roots, policy,
+  and applied sequence. Partial tails, corruption, watcher uncertainty, and unavailable
+  roots retain the last complete generation and request safe reconciliation.
+- Full scans omit the index data directory and any external diagnostic-log files
+  from both enumeration and change notifications. This prevents snapshot, journal, and
+  log writes from feeding back into the indexer's own Delta.
+- Initial scans report directory progress while constructing the packed snapshot in one
+  pass. The scan percentage is explicitly estimated because recursive enumeration does
+  not know the final directory count before discovery; packing and persistence use fixed
+  stage percentages.
+  Overflow without a trustworthy source requests safe recovery for all file partitions.
+  Requests coalesce, never overlap a partition's active build, and respect its automatic
+  gap. A Delta exceeding its retained capacity falls back to that partition's last complete
+  baseline until reconciliation succeeds.
 - It is deliberately not a Windows Service and does not require administrator access.
 
 ## Host lifecycle
@@ -316,18 +327,12 @@ sleeps until the next lifecycle boundary. Manually hiding the surface therefore 
 rendering rather than activity lifetime, and a hidden persistent-only queue does not run
 a background animation timer.
 
-Snapshot writes stream encoded records and the checksum through a fixed-size buffer to a
-same-directory temporary file, flush it, and atomically replace the old file. Query
-publication is independent: a completed in-memory partition generation can continue
-serving when persistence fails. Each partition's `.bak` file retains its preceding
-scope-compatible snapshot (or the first completed snapshot when no predecessor exists).
-When the current primary is valid, hard-link or copy rotation preserves it without
-serializing the old in-memory snapshot; unsupported filesystems fall back to serialization.
-Startup tries the backup if the primary is missing, invalid, or incompatible. Both files
-use the same validation rules. Failed root access or unexpected enumeration errors do not
-publish a replacement partition; ordinary inaccessible or disappearing descendants remain
-skippable. A failed build keeps that partition's previous query view and retries after its
-automatic gap instead of entering a tight loop.
+Snapshot writes stream encoded records and the checksum through a fixed-size buffer.
+Each partition's snapshot and recovery-journal generations use one immutable base identity.
+Compaction writes and flushes a new snapshot and its retained journal tail before atomically
+replacing the small per-partition active-generation manifest. The old pair remains authoritative
+until that final switch, so interruption cannot join a snapshot to the wrong log. Query publication follows
+the same switch; persistence failure keeps the previous complete generation serving.
 
 ## File-index lifecycle and protocol
 
@@ -335,9 +340,11 @@ The default scope is divided into startup-critical Desktop/Downloads, the user-p
 remainder, and other configured or redirected Known Folder roots. Every parent descriptor
 delegates its nested roots. An explicitly configured reparse root is retained as an
 independent owner even when its path is textually below another root. Scope-compatible
-snapshots load independently from
-`%LocalAppData%\LuvLetter\Index\v1\partitions\partition-<id-hash>.bin` and its `.bak`.
-The `v1` directory is the cache namespace and is independent of snapshot schema v3.
+snapshot/journal pairs load independently through
+`%LocalAppData%\LuvLetter\Index\v1\partitions\partition-<id-hash>\file-index-v4.active`.
+The manifest selects identity-named `file-index-v4-<identity>.bin` and `.delta` files.
+Compatible legacy `partition-<id-hash>.bin`/`.bak` caches are considered during migration.
+The `v1` directory is the cache namespace and is independent of snapshot schema v4.
 Loading and validation run on the file worker outside the pipe handshake and request
 loop. Publishing a compatible cache increments aggregate status so unchanged input
 refreshes before rescans finish. Queries may briefly omit a partition while its cache is
@@ -349,24 +356,33 @@ partitions use 30 minutes. Periodic deadlines start at scope configuration and r
 independent of event-triggered and manual scans. Busy deadlines coalesce into one pending
 request; the per-partition one-minute automatic gap still applies. A shared publication
 lease gives each query one stable cross-partition read view while baseline/Delta swaps are
-brief exclusive operations. MFT/USN integration, durable Delta, a persisted SnapshotSet
-manifest, fuzzy matching, pinyin matching, and privileged services remain outside this
+brief exclusive operations. Count and memory thresholds compact each journal into a new
+immutable base without scanning. Each partition queues compaction at 8 MiB of retained
+operation storage or 4096 batches. At a 16 MiB retained-operation budget, maintenance
+keeps the complete existing overlay, stops accepting further incremental batches, and
+requires reconciliation before resuming. This prevents a persistence failure from growing
+the recovery backlog indefinitely; query results can remain stale until reconciliation
+succeeds. MFT/USN integration, a persisted SnapshotSet manifest for live ownership
+migration, fuzzy matching, pinyin matching, and privileged services remain outside this
 baseline.
 
-The `LLIX` v6 protocol uses a fixed 20-byte little-endian header, UTF-8 length-prefixed
+The `LLIX` v7 protocol uses a fixed 20-byte little-endian header, UTF-8 length-prefixed
 strings, request IDs, editor revisions, and a 1 MiB payload ceiling. Managed owns the
 single pipe server and starts `LuvLetter.Indexer.exe` with the pipe name, parent process
 ID, and data directory. Scope configuration carries stable partition IDs, roots,
 delegated subtrees, tiers, maximum ages, automatic gaps, and global ignore policies. The
 pipe is restricted to the current user. Protocol, timeout,
 or process failures invalidate the whole session and trigger bounded background restart;
-the command and Echo paths remain available. A compact status request reports the index
-generation and an explicit `Ready`, `InitialBuild`, `Updating`, or `Failed` activity. Core maps an
-initial build to the persistent `正在生成索引表` activity, maintenance rebuilds including
-the six-minute reconciliation to `正在更新索引`, and a successfully published generation to
-the five-second `索引已就绪` completion. Failed scans dismiss the spinner and report a
-delayed retry without announcing success; existing snapshots remain queryable. Session
-loss maps locally to `Unavailable`,
+the command and Echo paths remain available. A compact status request reports generation,
+an explicit `Ready`, `InitialBuild`, `Updating`, or `Failed` activity, work stage, optional
+percentage, whether that percentage is estimated, and the number of entries discovered
+so far. Core maps initial construction to `正在生成索引表`
+and maintenance to `正在更新索引`, with an in-place ten-segment
+progress bar. Initial scanning is labelled with `约` rather than presenting a discovered
+work queue as an exact total; packing, compaction, and persistence are exact stages. A
+successfully published generation becomes the five-second `索引已就绪` completion. Failed
+scans report a delayed retry without announcing success; existing partition snapshots
+remain queryable. Session loss maps locally to `Unavailable`,
 dismisses the spinner without a false completion, and rejects stale session state. Session
 readiness and completed generations requeue the latest unchanged editor revision, so a
 user does not need to type another character after the initial background build, a live
@@ -490,8 +506,8 @@ Full-ignore entries are filtered before directory traversal and before watcher e
 enter the Delta. Fully excluded roots do not open directory watches. Root provenance
 also fingerprints the normalized exclusions, so an older cache containing newly excluded
 paths cannot be published, including through backup fallback. Changing exclusions can
-therefore require an initial scan before results appear. Snapshot schema v3 is retained;
-an empty full-ignore list preserves compatibility with previous v3 root fingerprints.
+therefore require an initial scan before results appear. Snapshot schema v4 and recovery
+journal bindings validate the current scope and enumeration policy together.
 These are path-scope rules, not file-identity rules across junction aliases, and they do
 not erase already-existing cache files from disk.
 
@@ -524,7 +540,7 @@ The built-in `index.refresh` command in `Gen` or `Cmd` requests both filesystem 
 application catalogs. Filesystem refresh fans out across enabled partitions regardless of
 rebuild-ignore, cooldown, and automatic-gap rules. Full-ignore exclusions still apply.
 If a partition scan is already running, one follow-up request is coalesced rather than
-cancelling or overlapping it. LLIX v6
+cancelling or overlapping it. LLIX v7
 carries maintenance settings with root configuration and acknowledges `Refresh` with a
 status response. Disconnected manual requests wait for the next companion connection.
 
@@ -583,6 +599,14 @@ a scan can combine several causes. Ordinary changes handled entirely by the Delt
 not claim to rebuild the index. Ignored paths are not logged individually on every write.
 Watcher overflow cannot identify its source path and is reported as recovery, not as a
 known file change; it can still request reconciliation even when exclusions are present.
+
+Diagnostic logging is off by default and does not create or touch a log file. Set
+`LUVLETTER_INDEXER_LOG=debug` before starting the application to write bounded UTF-8 JSONL
+diagnostics to `%LocalAppData%\LuvLetter\Index\v1\logs\indexer.log`; an absolute value may
+select another file. The active file rotates at 4 MiB to one `.previous` archive. Events
+cover process and pipe lifetime, scan progress and filesystem errors, 30-second no-progress
+detection, journal recovery, compaction, snapshot persistence, activation, cancellation,
+and publication. Logging failure never makes indexing unavailable.
 
 ## Build and tests
 
