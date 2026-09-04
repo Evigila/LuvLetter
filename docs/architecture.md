@@ -339,35 +339,61 @@ Three independently editable lists control rebuild triggers:
 | --- | --- |
 | `IgnoreRebuildDirectories` | The user's temporary directory and LuvLetter's index data directory. Add specific noisy workspace paths here. |
 | `IgnoreRebuildDirectoryNames` | Complete directory components at any depth, covering the developer directories listed below. |
-| `IgnoreRebuildCacheDirectories` | Absolute package-cache paths for NuGet, Maven, Cargo, npm, pip, Yarn, pnpm, and uv. |
+| `IgnoreRebuildCacheDirectories` | Absolute package caches and editor state paths; includes NuGet, Maven, Cargo, npm, Python, Go, Gradle, sbt, VS Code, and Cursor. |
 
-The directory-name defaults are:
+The complete directory-name defaults are maintained in `FileIndexIgnoreDefaults.cs`:
 
-- Version control and IDE metadata: `.git`, `.hg`, `.svn`, `.vs`, `.idea`.
-- Dependencies and build results: `node_modules`, `.pnpm-store`, `.yarn`, `bin`, `obj`,
-  `build`, `dist`, `target`, `coverage`, `TestResults`.
-- Web-tool output: `.next`, `.nuxt`, `.output`, `.svelte-kit`, `.angular`, `.turbo`,
-  `.parcel-cache`.
-- Python environments and caches: `.venv`, `venv`, `__pycache__`, `.pytest_cache`,
-  `.mypy_cache`, `.ruff_cache`, `.tox`.
-- Other build caches: `.gradle`, `.dart_tool`.
+| Category | Exact directory names |
+| --- | --- |
+| Version control and editors | `.git`, `.hg`, `.svn`, `.vs`, `.idea`, `.vscode`, `.vscode-insiders`, `.vscode-server`, `.vscode-server-insiders` |
+| Coding agents | `.cursor`, `.cursor-server`, `.codex`, `.claude`, `.copilot`, `.agents` |
+| Dependencies and package managers | `node_modules`, `.npm`, `.pnpm`, `.pnpm-store`, `.yarn`, `.bun`, `.nuget`, `nuget`, `packages`, `.paket`, `vendor`, `.bundle`, `.gradle`, `.pub-cache`, `.pub` |
+| Python environments | `.venv`, `venv`, `.ven`, `__pypackages__`, `.conda`, `.pixi` |
+| Build and test output | `bin`, `obj`, `build`, `out`, `dist`, `target`, `artifacts`, `.build`, `_build`, `coverage`, `TestResults` |
+| Native, JVM, and mobile build data | `CMakeFiles`, `cmake-build-debug`, `cmake-build-release`, `.cxx`, `.kotlin`, `.bloop`, `.bsp`, `.metals`, `.dart_tool`, `Pods`, `DerivedData`, `Carthage`, `.swiftpm` |
+| Python and shared caches | `.cache`, `__pycache__`, `.pycache`, `pycache`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `.tox`, `.nox`, `.hypothesis`, `.ipynb_checkpoints`, `.pdm-build` |
+| Web and test caches | `.next`, `.nuxt`, `.output`, `.svelte-kit`, `.angular`, `.turbo`, `.parcel-cache`, `.sass-cache`, `.nyc_output`, `.vite`, `.vitest`, `.astro`, `.docusaurus`, `.vercel`, `.netlify`, `.serverless` |
 
-Package-cache defaults are `%USERPROFILE%\.nuget\packages`,
-`%USERPROFILE%\.m2\repository`, `%USERPROFILE%\.cargo\registry`,
-`%USERPROFILE%\.cargo\git`, `%LOCALAPPDATA%\npm-cache`, `%LOCALAPPDATA%\pip\Cache`,
-`%LOCALAPPDATA%\Yarn\Cache`, `%LOCALAPPDATA%\pnpm\store`, and
-`%LOCALAPPDATA%\uv\cache`. Custom cache locations can replace or extend that list;
-the indexer does not inspect tool-specific configuration or discover directories by
-recursively searching for dependencies.
+Absolute cache/state defaults cover the following subtrees:
+
+| Base directory | Relative paths |
+| --- | --- |
+| `%USERPROFILE%` | `.nuget\packages`, `.m2\repository`, `.cargo\registry`, `.cargo\git`, `go\pkg\mod`, `.gradle`, `.sbt\boot`, `.ivy2\cache` |
+| `%LOCALAPPDATA%` | `npm-cache`, `pip\Cache`, `Yarn\Cache`, `pnpm\store`, `uv\cache`, `NuGet\v3-cache`, `NuGet\plugins-cache`, `NuGet\Cache`, `pypoetry\Cache`, `go-build` |
+| `%APPDATA%` | `Code`, `Code - Insiders`, `Cursor` |
+
+The editor data roots cover logs, local history, workspace databases, and extension
+storage, including Copilot. Their ordinary folder names such as `logs`, `History`, or
+`workspaceStorage` are not global name rules. Custom data homes, including overridden
+`CODEX_HOME`, `CLAUDE_CONFIG_DIR`, or `COPILOT_HOME`, can be added as absolute scopes;
+the indexer does not read another tool's configuration to discover them.
+
+Directory choices follow [NuGet's documented cache locations](https://learn.microsoft.com/en-us/nuget/consume-packages/managing-the-global-packages-and-cache-folders),
+[Gradle's directory layout](https://docs.gradle.org/current/userguide/directory_layout.html),
+[Python's bytecode cache convention](https://peps.python.org/pep-3147/),
+[Cursor rules](https://docs.cursor.com/context/rules),
+[Claude's configuration and state directories](https://code.claude.com/docs/en/claude-directory),
+and [Copilot CLI's configuration directory](https://docs.github.com/en/copilot/reference/copilot-cli-reference/cli-config-dir-reference).
+Codex's `.codex` scope was also checked against the local session/cache/database layout.
 
 Names match case-insensitively as whole path components: `.git` does not match `.github`
 or `.gitignore`, and `bin` does not match `binoculars` or a `.bin` extension. General
-source/workspace roots such as `src`, `source`, `repos`, and `projects` are not defaults.
-All three lists retain live updates, periodic scanning, and search coverage.
+source/workspace roots such as `src`, `source`, `repos`, `projects`, and `lib` are not
+defaults. Neither are entire `.github` trees, model/dataset folders, or all hidden
+directories. Names like `packages` and `vendor` can also contain authored source in a
+monorepo: they suppress complete rebuild requests but retain live updates, periodic
+scanning, and search. All three lists retain that same search coverage.
+No wildcard `*pycache*` rule is introduced; the table lists exact supported variants.
+Individual configuration files such as `AGENTS.md`, `CLAUDE.md`, `.cursorrules`, and
+`copilot-instructions.md` are not matched by a file-extension or filename ignore rule.
 
 Older JSON files that omit a setting receive its defaults in memory without
-rewriting the file or changing existing lists. Providing a list replaces that field's
-defaults; an explicit `[]` disables it. The example above omits the directory-name and
+rewriting the file. A supplied name or cache list that still exactly matches the previous
+shipped default set is upgraded in memory, ignoring order and case. Lists with custom
+additions or removals remain unchanged; an explicit `[]` disables that list. Other settings,
+including full ignores and intervals, are preserved. A gray configuration message reports
+the upgrade. Customized lists can copy selected new entries from the tables above.
+The example above omits the directory-name and
 package-cache fields and therefore uses their defaults. Restart the app after editing. The two
 absolute-path lists together allow at most 1024 entries; the name list allows 128 single
 components of at most 255 characters, with no wildcards, separators, or trailing dots
@@ -393,12 +419,23 @@ an empty full-ignore list preserves compatibility with previous v3 root fingerpr
 These are path-scope rules, not file-identity rules across junction aliases, and they do
 not erase already-existing cache files from disk.
 
+For known-path events, full ignore is checked before live updates. Ordinary changes
+then update the Delta; only changes requiring full reconciliation reach the rebuild
+policy. That policy checks absolute ignore scopes and directory-name ignores before
+any cooldown lookup, expiry cleanup, insertion, or capacity check. A match returns
+`Ignored` immediately: it cannot consume a cooldown slot, extend a deadline, or produce
+a red per-path cooldown refusal, even when the cooldown map is already full.
+
 The in-memory cooldown map records paths whose reconciliation requests were accepted.
 Repeated events for the same normalized path cannot request another rebuild until its
 deadline, and suppressed events do not extend that deadline. The map expires entries
 and is capped at 4096; when full it suppresses new keys until room is available. Watcher
 overflow has no trustworthy source path and uses one shared cooldown entry, so it cannot
 be attributed to an ignored directory. Such uncertainty can still queue a recovery scan.
+Ordinary ignore retains Delta processing and therefore cannot prevent all watcher or
+pending-buffer overflow. Recovery is logged separately from known-path file triggers.
+The watcher observes file/directory name changes; an in-place content-only write does
+not itself request a full filename-index scan.
 
 Accepted requests are coalesced, with at most one scan running and a one-minute global
 gap between automatic scans. Thus six minutes is the periodic interval, not a guarantee

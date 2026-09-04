@@ -134,8 +134,11 @@ No edit distance, token score, usage history, or pinyin score participates in Ph
   incremental updates and scheduled search coverage. Track accepted trigger paths in a
   bounded sixty-second cooldown map; suppression does not extend a path's deadline.
 - Default ignore rules cover generated developer directories by complete component name
-  and common package caches by absolute path. Keep source roots active, preserve user
-  overrides, and apply missing-field defaults when reading older configurations.
+  and common package/editor caches by absolute path, including .NET and coding-agent
+  state. Keep source roots active, preserve user overrides, and apply missing-field
+  defaults or upgrade exact legacy default sets in memory when reading older configurations.
+- Match ordinary ignores before every cooldown operation, including expiry and capacity
+  checks. Ignored changes never consume cooldown slots or produce per-path cooldown refusals.
 - Support a separate `FullIgnorePaths` list for exact files and directory subtrees.
   Exclude these paths before enumeration and live updates, and include the normalized
   exclusions in cache provenance so stale excluded results cannot reappear on startup.
@@ -429,6 +432,19 @@ candidates, persistence, or activation:
     does not cause scan failure or a root-access attempt. In a separate session simulate
     unattributed watcher overflow; confirm diagnostics identify watcher recovery rather
     than attributing the event to an ignored file.
+37. Generate repeated create/rename activity under `out`, `packages`, `.nuget`, `.cache`,
+    `__pycache__`, `.vscode`, `.cursor`, `.codex`, `.copilot`, and `.claude` in a disposable
+    workspace. Confirm no known-path rebuild or red cooldown refusal is produced there,
+    while files remain searchable. Check that ordinary `src`, `.github`, `outdoor`,
+    and `my_pycache_notes` folders remain eligible for rebuild requests.
+38. Restart with the previous complete default name/cache arrays, including reordered or
+    case-varied entries. Confirm a gray upgrade diagnostic appears and new rules apply
+    without rewriting the JSON. Repeat with a custom addition, a removed entry, and `[]`;
+    confirm each customized list is preserved independently and other settings are intact.
+39. Run the focused cooldown-priority regression: ignored churn must not consume any of
+    the 4096 slots, and a full map must still classify ignored paths as `Ignored` rather
+    than `Capacity` or `Cooldown`. Confirm force refresh still bypasses ordinary ignores
+    and cooldowns while full-ignore exclusions remain enforced.
 
 Automated suites cover deterministic logic and protocol boundaries, but they do not
 replace these user-driven focus, shell-activation, and perceived-performance checks.

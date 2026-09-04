@@ -23,6 +23,9 @@ internal static partial class Program
         ("Input candidate routing and activation", TestInputCandidates),
         ("Plugin loading and registration isolation", TestPluginLoader),
         ("Configuration store round-trip and migration", TestConfigurationStore),
+        ("Index ignore default validation", TestIndexIgnoreDefaults),
+        ("Legacy index ignore default migration", TestLegacyIndexIgnoreUpgrade),
+        ("Customized index ignore preservation", TestCustomIndexIgnoreConfiguration),
     ];
 
     public static async Task<int> Main()

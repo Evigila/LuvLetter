@@ -208,6 +208,39 @@ void TestRebuildDecisionDiagnostics() {
         L"unattributed recovery must expose its own remaining cooldown");
 }
 
+void TestRebuildIgnorePrecedesCooldown() {
+    using luvletter::indexer::IndexRebuildPolicy;
+    using luvletter::indexer::RebuildDecision;
+    using std::chrono::seconds;
+    const std::filesystem::path root = LR"(C:\LuvLetter.Policy.Tests)";
+    const auto now = IndexRebuildPolicy::Clock::time_point{};
+    IndexRebuildPolicy policy;
+    policy.Configure({root / L"ignored"}, seconds(60), {L".codex", L"node_modules"});
+
+    bool allIgnored = true;
+    bool allValidAccepted = true;
+    for (int index = 0; index < 4096; ++index) {
+        const auto name = std::to_wstring(index);
+        const auto scoped = policy.Evaluate(root / L"ignored" / name, now);
+        const auto developer = policy.Evaluate(root / L"repo" / L".CODEX" / L"sessions" / name, now);
+        allIgnored &= scoped.decision == RebuildDecision::Ignored &&
+            developer.decision == RebuildDecision::Ignored &&
+            scoped.remainingCooldownSeconds == seconds(0) && developer.remainingCooldownSeconds == seconds(0);
+        allValidAccepted &= policy.Evaluate(root / L"source" / name, now).decision == RebuildDecision::Accepted;
+    }
+    Expect(allIgnored && allValidAccepted,
+        L"ignored churn must not consume any cooldown slots or block interleaved source changes");
+    Expect(policy.Evaluate(root / L"source" / L"extra", now).decision == RebuildDecision::Capacity,
+        L"the valid events should fill exactly the bounded cooldown capacity");
+    Expect(policy.Evaluate(root / L"ignored" / L"0", now + seconds(30)).decision == RebuildDecision::Ignored &&
+        policy.Evaluate(root / L"repo" / L"node_modules" / L"fresh", now + seconds(30)).decision == RebuildDecision::Ignored,
+        L"both repeated ignored paths and new ignored paths must stay ignored when the cooldown map is full");
+    const auto active = policy.Evaluate(root / L"source" / L"0", now + seconds(30));
+    Expect(active.decision == RebuildDecision::Cooldown && active.remainingCooldownSeconds == seconds(30) &&
+        policy.Evaluate(root / L"source" / L"0", now + seconds(60)).decision == RebuildDecision::Accepted,
+        L"ignored events must not alter a valid path's cooldown or its expiry");
+}
+
 void TestIndexBuildQueryAndPersistence() {
     TemporaryDirectory temporary;
     const auto nested = temporary.Path() / L"aaa";
@@ -761,6 +794,7 @@ int wmain() {
     TestIndexRebuildPolicy();
     TestIgnoredDeveloperDirectoryNames();
     TestRebuildDecisionDiagnostics();
+    TestRebuildIgnorePrecedesCooldown();
     TestIndexBuildQueryAndPersistence();
     TestFullIgnorePathMatching();
     TestFullIgnoreBuildAndSnapshotScope();

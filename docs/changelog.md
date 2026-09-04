@@ -26,6 +26,9 @@ reserved product capabilities. Architectural ownership and dependency rules rema
   build output, virtual environments, and package caches. Exact directory-name matching
   works across workspace locations; older configuration files receive defaults for new
   fields while explicit empty lists remain respected.
+- Expanded ordinary rebuild-ignore defaults for .NET/NuGet, native and web build output,
+  Python/notebook caches, VS Code, and Codex/Cursor/Copilot/Claude directories. These
+  rules retain search coverage and do not populate full-ignore exclusions.
 - Added the `Gen`, `Ask`, and `Cmd` input modes with a persistent status tag inside the
   input surface.
 - Added a clipped vertical transition for mode changes: the outgoing tag label exits
@@ -77,6 +80,11 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 
 ### Changed
 
+- Upgrade unchanged legacy default name/cache lists in memory while preserving customized
+  lists, explicit empty lists, full ignores, and timing settings. Existing configuration
+  files are not rewritten.
+- Made the ignore-before-cooldown contract explicit and added regression coverage:
+  ignored events consume no cooldown slots and remain ignored even at full capacity.
 - Kept six-minute periodic deadlines independent of file changes and manual refreshes.
   Busy ticks merge into one request, with the existing automatic minimum gap preserved.
 - Upgraded LLIX to v5 to carry full-ignore paths; snapshot schema v3 and Native ABI v7

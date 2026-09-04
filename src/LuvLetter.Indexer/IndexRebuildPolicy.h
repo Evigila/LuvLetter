@@ -84,6 +84,8 @@ public:
             return {RebuildDecision::InvalidPath};
         }
         std::lock_guard lock(mutex_);
+        // Ignore decisions precede all cooldown lookups, expiry, and capacity
+        // accounting. Ignored churn must never consume or prolong a cooldown.
         for (const auto& directory : ignoredDirectories_) {
             if (key == directory ||
                 (key.size() > directory.size() && key.starts_with(directory) &&
@@ -102,14 +104,14 @@ public:
                 }
             }
         }
-        return EvaluateKey(std::move(key), now);
+        return EvaluateCooldown(std::move(key), now);
     }
 
     // A watcher overflow has no trustworthy file path. It shares one bounded
     // cooldown entry and cannot be matched to an ignored directory scope.
     [[nodiscard]] RebuildEvaluation EvaluateUnknown(const Clock::time_point now) {
         std::lock_guard lock(mutex_);
-        return EvaluateKey({}, now);
+        return EvaluateCooldown({}, now);
     }
 
     [[nodiscard]] bool Accept(
@@ -172,7 +174,7 @@ private:
         return folded;
     }
 
-    [[nodiscard]] RebuildEvaluation EvaluateKey(std::wstring key, const Clock::time_point now) {
+    [[nodiscard]] RebuildEvaluation EvaluateCooldown(std::wstring key, const Clock::time_point now) {
         if (cooldown_ == std::chrono::seconds::zero()) {
             return {RebuildDecision::Accepted};
         }

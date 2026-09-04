@@ -22,28 +22,9 @@ internal sealed class FileIndexMaintenanceOptions
 
     // Exact directory components, not globs or repository-root exclusions.
     // Initializers also supply defaults when older JSON omits these new fields.
-    public string[] IgnoreRebuildDirectoryNames { get; init; } =
-    [
-        ".git", ".hg", ".svn", ".vs", ".idea",
-        "node_modules", ".pnpm-store", ".yarn",
-        "bin", "obj", "build", "dist", "target", "coverage", "TestResults",
-        ".next", ".nuxt", ".output", ".svelte-kit", ".angular", ".turbo", ".parcel-cache",
-        ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", ".tox",
-        ".gradle", ".dart_tool",
-    ];
+    public string[] IgnoreRebuildDirectoryNames { get; init; } = FileIndexIgnoreDefaults.CreateDirectoryNames();
 
-    public string[] IgnoreRebuildCacheDirectories { get; init; } =
-    [
-        "%USERPROFILE%\\.nuget\\packages",
-        "%USERPROFILE%\\.m2\\repository",
-        "%USERPROFILE%\\.cargo\\registry",
-        "%USERPROFILE%\\.cargo\\git",
-        "%LOCALAPPDATA%\\npm-cache",
-        "%LOCALAPPDATA%\\pip\\Cache",
-        "%LOCALAPPDATA%\\Yarn\\Cache",
-        "%LOCALAPPDATA%\\pnpm\\store",
-        "%LOCALAPPDATA%\\uv\\cache",
-    ];
+    public string[] IgnoreRebuildCacheDirectories { get; init; } = FileIndexIgnoreDefaults.CreateCacheDirectories();
 
     internal string[] NormalizedIgnoreDirectories() => IgnoreRebuildDirectories
         .Concat(IgnoreRebuildCacheDirectories)
@@ -163,7 +144,7 @@ internal sealed class FileIndexMaintenanceOptions
                     new JsonSerializerOptions { PropertyNameCaseInsensitive = true })
                     ?? throw new InvalidDataException("Index maintenance configuration is empty.");
                 loaded.Validate();
-                return loaded;
+                return loaded.UpgradeLegacyIgnoreDefaults();
             }
 
             var defaults = new FileIndexMaintenanceOptions();
@@ -180,5 +161,30 @@ internal sealed class FileIndexMaintenanceOptions
             Console.Error.WriteLine($"[Index][configuration-error] Indexing paused until maintenance configuration is fixed: {exception.Message}");
             return new FileIndexMaintenanceOptions { IsAvailable = false };
         }
+    }
+
+    internal FileIndexMaintenanceOptions UpgradeLegacyIgnoreDefaults()
+    {
+        var names = FileIndexIgnoreDefaults.UpgradeDirectoryNames(IgnoreRebuildDirectoryNames);
+        var caches = FileIndexIgnoreDefaults.UpgradeCacheDirectories(IgnoreRebuildCacheDirectories);
+        if (ReferenceEquals(names, IgnoreRebuildDirectoryNames)
+            && ReferenceEquals(caches, IgnoreRebuildCacheDirectories))
+        {
+            return this;
+        }
+
+        var upgraded = new FileIndexMaintenanceOptions
+        {
+            RefreshIntervalSeconds = RefreshIntervalSeconds,
+            TriggerCooldownSeconds = TriggerCooldownSeconds,
+            FullIgnorePaths = FullIgnorePaths,
+            IsAvailable = IsAvailable,
+            IgnoreRebuildDirectories = IgnoreRebuildDirectories,
+            IgnoreRebuildDirectoryNames = names,
+            IgnoreRebuildCacheDirectories = caches,
+        };
+        upgraded.Validate();
+        Console.WriteLine("[Index][configuration] Previous default ignore lists upgraded in memory | user_file=unchanged");
+        return upgraded;
     }
 }
