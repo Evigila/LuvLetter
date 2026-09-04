@@ -8,6 +8,33 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 
 ### Added
 
+- Added non-overlapping filesystem partitions for Desktop, Downloads, the user-profile
+  remainder, and other configured roots. Each partition owns its baseline, live Delta,
+  rebuild policy, cache/backup, generation, and refresh schedule; parent scans exclude
+  every delegated child root.
+- Added longest-root filesystem event routing, per-partition reconciliation/cooldown,
+  one bounded priority worker, and stable cross-partition Top-K queries under a shared
+  publication view. Startup-critical partitions default to six-minute reconciliation;
+  normal partitions default to 30 minutes.
+- Split application discovery into independently cached and published Start Menu,
+  App Paths, AppsFolder, curated-system, and portable partitions. A slow or failed source
+  retains its last valid data and cannot delay healthy-source publication.
+- Added curated Windows Settings, Control Panel, MMC, and common system-tool entries,
+  non-package AppsFolder items, localized Shell labels, and trusted Start Menu Shell/PIDL,
+  `.msc`, and `.cpl` activation while rejecting arbitrary URI and Shell targets.
+- Added fixed bounded STA discovery/activation workers and per-source application retry
+  backoff. Portable-root count no longer creates a matching number of permanent threads.
+- Added application discovery for Start Menu executable shortcuts, App Paths, packaged
+  AppsFolder entries, and configured portable roots. Display-name and executable aliases
+  include whitespace-compacted matching for names such as `Microsoft To Do`.
+- Added application Enter activation, classic application reveal, and explicit packaged
+  reveal/failure feedback. Launches revalidate cached targets, preserve shortcut semantics,
+  reject stale activation, and keep newer input open after late completion.
+- Added an independent application cache and backup, source-specific failure retention,
+  startup reuse, Start Menu monitoring, periodic reconciliation, and full-ignore filtering.
+- Added configurable application ranking bias and an injectable priority provider.
+  Applications and in-scope `.exe` files precede ordinary files by default; an additional
+  file priority can override the bias. Usage-history collection remains future work.
 - Added `FullIgnorePaths` for exact file and directory-subtree exclusions from both
   live updates and complete scans. Scope-compatible caches include these exclusions;
   forced refreshes preserve them.
@@ -59,8 +86,8 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 - Added explicit index lifecycle feedback. Initial construction reports
   `正在生成索引表`, background maintenance reports `正在更新索引`, and successful
   publication completes the activity with `索引已就绪`.
-- Added command-name candidates from the registered command snapshot. `Gen` gives file
-  results priority and uses commands as remaining direct matches; `Cmd` shows commands
+- Added command-name candidates from the registered command snapshot. `Gen` gives direct
+  search results priority and uses commands as remaining direct matches; `Cmd` shows commands
   only; `Ask` shows no candidates.
 - Added editor revisions and latest-wins query delivery so slow results from older input
   cannot replace or activate the current candidate list.
@@ -80,6 +107,18 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 
 ### Changed
 
+- Upgraded LLIX to v6 so managed configuration sends partition IDs, roots, delegated
+  subtrees, maintenance tiers, maximum ages, and automatic gaps. Snapshot schema v3 and
+  Native ABI v7 remain unchanged.
+- Extended `index.refresh` to request both file and application catalogs. Existing ignore,
+  cooldown, full-exclusion, and console-color semantics also apply to application events.
+- Rank a bounded pool of up to 64 matches per source before taking visible results;
+  keep the default five direct results and one Global Search row. Application publication
+  refreshes unchanged input and preserves surviving candidate tokens.
+- Corrected file and classic application Shell success detection so opening an existing
+  process does not require a new process handle. App Paths launches use verified absolute
+  targets and child-only private PATH values; private-environment launches that require
+  elevation report that the original shortcut is needed.
 - Upgrade unchanged legacy default name/cache lists in memory while preserving customized
   lists, explicit empty lists, full ignores, and timing settings. Existing configuration
   files are not rewritten.

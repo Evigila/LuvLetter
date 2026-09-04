@@ -1,4 +1,6 @@
 using System.IO;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace LuvLetter.Platform.Indexing;
 
@@ -24,34 +26,67 @@ internal sealed class FileIndexClientOptions
 
     internal TimeSpan QueryTimeout { get; init; } = TimeSpan.FromMilliseconds(500);
 
-    internal IReadOnlyList<string> NormalizedRoots()
+    internal IReadOnlyList<FileIndexPartitionDescriptor> NormalizedPartitions()
     {
-        var normalized = Roots
-            .Where(static root => !string.IsNullOrWhiteSpace(root))
-            .Select(Path.GetFullPath)
-            .Select(static root => Path.TrimEndingDirectorySeparator(root))
+        var roots = Roots.Where(static root => !string.IsNullOrWhiteSpace(root))
+            .Select(Path.GetFullPath).Select(Path.TrimEndingDirectorySeparator)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(static root => root.Length)
             .ThenBy(static root => root, StringComparer.OrdinalIgnoreCase)
             .ToArray();
+        var configuredRoots = roots.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var profile = NormalizeKnownFolder(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+        var desktop = NormalizeKnownFolder(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory));
+        var downloads = string.IsNullOrEmpty(profile) ? null : NormalizeKnownFolder(Path.Combine(profile, "Downloads"));
+        var claimed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var descriptors = new List<FileIndexPartitionDescriptor>();
 
-        var fullIgnorePaths = Maintenance.NormalizedFullIgnorePaths();
-        var retained = new List<string>(normalized.Length);
-        foreach (var candidate in normalized)
+        Add("filesystem:desktop", desktop, FileIndexMaintenanceTier.StartupCritical);
+        Add("filesystem:downloads", downloads, FileIndexMaintenanceTier.StartupCritical);
+        if (profile is not null && roots.Contains(profile, StringComparer.OrdinalIgnoreCase))
         {
-            var comparisonPath = fullIgnorePaths.Length == 0
-                ? candidate : FileIndexMaintenanceOptions.NormalizeScopePath(candidate);
-            var fullyIgnored = fullIgnorePaths.Any(parent => IsSameOrChild(parent, comparisonPath));
-            // Keep excluded roots in the configured scope without probing their metadata.
-            if (!retained.Any(parent => IsSameOrChild(parent, candidate))
-                || (!fullyIgnored && IsReparseDirectory(candidate)))
-            {
-                retained.Add(candidate);
-            }
+            var delegated = descriptors.Select(item => item.Root)
+                .Where(root => IsSameOrChild(profile, root) && !root.Equals(profile, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            descriptors.Add(Create("filesystem:user-profile", profile, delegated, FileIndexMaintenanceTier.Normal));
+            claimed.Add(profile);
+        }
+        foreach (var root in roots)
+        {
+            if (claimed.Contains(root)) continue;
+            Add("filesystem:root-" + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(root.ToUpperInvariant())))[..16].ToLowerInvariant(),
+                root, FileIndexMaintenanceTier.Normal);
+        }
+        for (var index = 0; index < descriptors.Count; ++index)
+        {
+            var parent = descriptors[index];
+            var delegated = descriptors
+                .Where(child => !child.Root.Equals(parent.Root, StringComparison.OrdinalIgnoreCase)
+                    && IsSameOrChild(parent.Root, child.Root))
+                .Select(static child => child.Root)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .OrderBy(static path => path.Length)
+                .ThenBy(static path => path, StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            descriptors[index] = parent with { DelegatedSubtrees = delegated };
+        }
+        return descriptors;
+
+        void Add(string id, string? root, FileIndexMaintenanceTier tier)
+        {
+            if (root is null || !configuredRoots.Contains(root) || !claimed.Add(root)) return;
+            descriptors.Add(Create(id, root, [], tier));
         }
 
-        return retained;
+        FileIndexPartitionDescriptor Create(string id, string root, string[] delegated, FileIndexMaintenanceTier tier) =>
+            new(id, root, delegated, tier,
+                tier == FileIndexMaintenanceTier.StartupCritical
+                    ? Maintenance.RefreshIntervalSeconds : Maintenance.NormalPartitionRefreshIntervalSeconds,
+                Maintenance.AutomaticRebuildGapSeconds);
     }
+
+    private static string? NormalizeKnownFolder(string path) => string.IsNullOrWhiteSpace(path)
+        ? null : Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
 
     internal void Validate()
     {
@@ -95,24 +130,6 @@ internal sealed class FileIndexClientOptions
             .Where(static path => !string.IsNullOrWhiteSpace(path))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
-    }
-
-    private static bool IsReparseDirectory(string path)
-    {
-        try
-        {
-            var attributes = File.GetAttributes(path);
-            return (attributes & FileAttributes.Directory) != 0
-                && (attributes & FileAttributes.ReparsePoint) != 0;
-        }
-        catch (IOException)
-        {
-            return false;
-        }
-        catch (UnauthorizedAccessException)
-        {
-            return false;
-        }
     }
 
     private static bool IsSameOrChild(string parent, string candidate)

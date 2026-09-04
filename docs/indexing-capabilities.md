@@ -1,6 +1,6 @@
 # Indexing Capability Overview
 
-This document describes implemented behavior reviewed against commit `4c1b940`. It
+This document describes the current filesystem and application search implementation. It
 separates code capabilities from proposed work and does not certify every manual test
 or the performance targets in the roadmaps. Ownership is documented in `architecture.md`;
 future work is tracked in `roadmap.indexing.md` and `roadmap.applications.md`.
@@ -9,22 +9,23 @@ future work is tracked in `roadmap.indexing.md` and `roadmap.applications.md`.
 
 | Area | Current behavior | Boundary |
 | --- | --- | --- |
-| Entities | Files and directory names, independent of extension. | No file contents, modification-date fields, or size filters. |
-| Default scope | Current user profile, Downloads, and Desktop/Documents/Pictures/Music/Videos Known Folders; redirected locations are retained and overlaps deduplicated. | No default whole-disk or installed-application scan. Included roots are internal options, not user-facing JSON/Settings controls. |
+| Entities | Files, directory names, and launchable application entries. | No file contents, modification-date fields, or size filters. |
+| Default scope | Files: startup-critical Desktop/Downloads partitions, the user-profile remainder, and configured/redirected Known Folder partitions. Applications: user/common Start Menu, App Paths, packaged and non-package AppsFolder entries, and curated Windows system entries. | No whole-disk scan or recursive Program Files/Windows scan. File roots remain internal options; portable application roots have JSON configuration. |
 | Hidden and system entries | Readable entries can be indexed; there is no blanket hidden/system exclusion. | Ordinary access permissions still apply. |
 | Links and junctions | Encountered reparse directories appear as folder candidates. | Their descendants are not traversed by default. Explicitly configured reparse roots can be traversed. |
-| Matching | Case-insensitive Unicode exact name, exact file stem, then name prefix; outer input whitespace is trimmed. | No substring, full-path, fuzzy, pinyin, wildcard, token-reordering, or internal-whitespace normalization. |
-| Ranking | Deterministic name-based tiers, folder-first ties for otherwise equal names, and stable identity ordering. | No recency, usage history, favorites, or personalized ranking. |
-| Candidates | `Gen` provides up to five filesystem/command results plus one reserved Global Search row by default; files take precedence. | `Cmd` only offers commands; `Ask` has no filesystem candidates. Limits are internal options rather than Settings controls. |
+| Matching | Case-insensitive exact name/stem and prefix. Applications also match executable aliases and whitespace-compacted names. | No substring, full-path, fuzzy, pinyin, wildcard, or token-reordering. Internal whitespace stays significant for ordinary filenames. |
+| Ranking | Configurable application bias plus name score and optional additional priority; rank up to 64 retrieved matches per source before truncating. | Usage history is not recorded. The injected priority provider can promote files above applications; history-aware retrieval beyond the pool is future work. |
+| Candidates | `Gen` merges applications and files, then fills unused direct slots with commands; five direct results plus Global Search by default. | `Cmd` only offers commands; `Ask` has no candidates. Limits are internal options rather than Settings controls. |
 | Keyboard behavior | Up/Down selects, Enter opens, Shift+Enter reveals in Explorer; same-input refresh preserves selection where possible. | No preview, multi-select, copy-path action, or implemented Global Search page. |
-| Executables and shortcuts | In-scope `.exe` and `.lnk` files have an executable glyph and can be opened through the Windows Shell. | No application catalog, friendly-name discovery, App Paths enumeration, or packaged-app activation. |
+| Executables and shortcuts | Trusted Start Menu links, registered programs, packaged AUMIDs, non-package AppsFolder items, curated Settings/Control Panel/MMC/system tools, portable roots, and ordinary in-scope executables can launch. Original shortcut and Shell activation semantics are retained. | Packaged/Shell reveal may be unavailable. Generic document links remain files. Arbitrary URI/Shell targets are rejected. Private-PATH App Paths launches requiring elevation report an original-shortcut fallback. |
 | Type icons | Built-in glyphs distinguish folders, documents, images, archives, audio, video, executables, and generic files. | No real executable icons or thumbnails. |
 | Live maintenance | Name-change notifications maintain an in-memory Delta of creates, renames, and deletions in coalesced 250 ms batches. | This is a scheduling interval, not a measured latency guarantee. In-place content writes are not subscribed to. |
-| Reconciliation | Startup scan, independent six-minute periodic deadlines, event-triggered reconciliation, watcher recovery, and `index.refresh`. | One scan at a time; automatic scans respect a one-minute global gap. Accepted work may be queued or coalesced. |
-| Cache | Validated local v3 snapshot, backup fallback, atomic replacement, and background startup loading before rescan; failed scans retain the previous usable snapshot. | Cache loading takes time. Missing/incompatible caches require construction; live Delta and offline changes are not durably replayed. |
+| Reconciliation | Per-partition startup scan, six-minute startup-critical and 30-minute normal file deadlines, event-targeted reconciliation, watcher recovery, and force-all `index.refresh`. | One file build runs at a time; automatic work respects each partition's one-minute gap. Accepted work may be queued or coalesced. |
+| File cache | One validated atomic v3 snapshot and backup per filesystem partition, loaded independently before its rescan; failed scans retain that partition's previous usable snapshot. | Cache loading takes time. Missing/incompatible partitions require construction; live Delta and offline changes are not durably replayed. A durable SnapshotSet manifest is not implemented yet. |
+| Application cache | One v2 manifest/snapshot/backup pair per source, with source/scope validation, checksum, independent startup publication, and source-local failure retention. | No first-launch results before discovery when a compatible source cache is absent. Removed-source cache garbage collection is pending. |
 | Ignore and cooldown | Ordinary directory/path ignores precede cooldown; full ignores exclude exact files/subtrees. Per-path cooldown defaults to 60 seconds. | Ordinary ignored paths remain scanned and searchable. No globs or `.gitignore` parsing. Unattributed overflow can still request recovery. |
-| Configuration | `maintenance.json` controls refresh interval, cooldown, ordinary ignores, and full ignores; unmodified legacy defaults upgrade in memory. | Read once per launch. `index.refresh` does not reload settings; invalid configuration pauses indexing until corrected and restarted. |
-| Reliability and feedback | Background companion, supervised restart, stale-query rejection, lifecycle messages, and event-colored debug logs. | A failed configured root prevents the entire new snapshot from publishing; healthy roots are not published independently. |
+| Configuration | Shared `maintenance.json` controls maintenance and exclusions; `Applications/settings.json` provides `PortableRoots`. | Read once per launch. `index.refresh` does not reload settings. Invalid shared configuration pauses both indexes; invalid application configuration pauses only its catalog. |
+| Reliability and feedback | Background companion, supervised restart, stale-query rejection, per-partition event logs, fixed application STA workers, and source-local application retry/backoff. | A failed filesystem partition retains its own prior snapshot and retries; the aggregate four-state file status cannot yet expose every partition field to Settings. |
 
 ## Practical search examples
 
@@ -41,8 +42,8 @@ eligibility, not a guarantee that the item wins a slot among the top five result
 | `项目计划.docx` | `计划` or `xiangmu` | No match; substring and pinyin search are absent. |
 | `report.pdf` | `*.pdf` or `type:pdf` | No extension-filter syntax. |
 | `report.pdf` | Its complete directory path plus filename | No full-path query routing. |
-| `Microsoft To Do.lnk` | `Microsoft todo` | No match; internal spaces are significant. |
-| Installed Microsoft To Do | `Microsoft To Do` | Installation alone creates no filesystem candidate; application discovery is planned. |
+| Ordinary `Microsoft To Do.lnk` file | `Microsoft todo` | Filename matching alone still preserves internal spaces. |
+| Discovered Microsoft To Do application | `Microsoft To Do` or `Microsoft todo` | Display-name or whitespace-compacted application match; Enter activates its AUMID. |
 
 ## Maintenance distinctions
 
@@ -52,10 +53,10 @@ Directory moves/imports can require reconciliation: old descendants disappear th
 prefix filtering, while new descendants may wait for the next permitted scan.
 
 Periodic deadlines start with scope configuration and are not reset by event-driven or
-manual scans. Per-path cooldown suppresses repeated requests by one path; the global
-automatic gap spaces complete scans even when many different paths change. Force
+manual scans. Per-path cooldown suppresses repeated requests by one path; each partition's
+automatic gap spaces its complete scans even when many different paths change. Force
 refresh bypasses ordinary ignores and cooldowns, honors full exclusions, and never
-overlaps an active scan.
+overlaps an active scan in the same partition.
 
 Ordinary ignore lowers trigger frequency, but does not reduce periodic enumeration or
 complete snapshot size. Dependency trees, caches, and agent state can still contribute
@@ -66,32 +67,38 @@ unattributed watcher or pending-buffer overflow.
 Delta changes are memory-only. After restart, queries may temporarily show the last
 saved full snapshot until reconciliation catches up. With no compatible cache, complete
 results require an initial scan. Changed full exclusions invalidate old-scope caches.
-At the retained-Delta safety limit, queries fall back to the complete baseline, which
-can also temporarily be stale. Failed root scans preserve the old snapshot as a whole.
+At the retained-Delta safety limit, queries fall back to that partition's complete
+baseline, which can also temporarily be stale. Failed root scans preserve only the
+affected partition's old snapshot.
 
-Candidates are checked for existence/kind before activation. The current launcher still
-bases success on receiving a process handle; more accurate Windows Shell success
-reporting is part of the application roadmap.
+Applications have a separate persistent catalog and per-source refresh state. Healthy
+sources publish and persist while an unavailable source retains its old entries and
+backs off independently. Start Menu notifications target the owning partition;
+registrations, AppsFolder, system entries, and portable roots are periodically checked.
+`index.refresh` fans out across both services. Cache affects startup availability, not
+ranking. Full-ignore rules also filter known application paths.
+
+File candidates are checked for existence/kind before activation, while catalog entries
+revalidate their launch descriptors and registrations. Windows Shell acceptance no longer
+requires a new process handle. A late application launch cannot close a newer input query.
 
 ## Proposed next capabilities
 
-All items below are proposals. This order reflects the current application-search use
-case and can change with user priorities.
+All items below are proposals and can change with user priorities.
 
-1. **Application discovery and activation:** Start Menu shortcuts, App Paths, portable
-   roots, and Windows Shell packaged entries; friendly names, aliases, AUMID activation,
-   independent cache, and launch-identity deduplication. Microsoft To Do is a first-release
-   manual acceptance case.
+1. **Usage-aware ranking:** collect successful activations, persist stable identities,
+   and define frequency/recency/pinning boosts through the existing priority interface.
+   Extend retrieval so frequently used items outside the current pool remain discoverable.
 2. **Scope and diagnostics controls:** included roots, ignores, pause/resume, last
    successful build, entry counts, cache state, and per-root errors in Settings. Explain
    why an expected item is outside scope or excluded.
-3. **Richer name retrieval:** path/word matching and application whitespace aliases,
+3. **Richer name retrieval:** path/word matching and execution-alias coverage,
    followed by bounded fuzzy and optional pinyin matching. Preserve exact-match priority
    and measure the effect on query cost and ranking.
 4. **A real Global Search view:** pagination, filters, preview, copy-path, recent items,
    and favorites. Date/size filters require metadata absent from the current records.
-5. **Durable incremental recovery:** persist Delta checkpoints, recover changes across
-   restarts, and isolate unavailable roots so healthy roots can continue updating.
+5. **Durable incremental recovery:** persist Delta checkpoints and a SnapshotSet manifest,
+   recover changes across restarts, and support staged ownership-map changes at runtime.
 6. **Measured performance work:** establish large-corpus benchmarks before considering
    mmap snapshots, lower-memory construction, and conditional NTFS USN/MFT acceleration.
    Retain ordinary watcher/scanning fallbacks.
@@ -101,4 +108,4 @@ case and can change with user priorities.
 
 Performance figures in the indexing roadmap are targets, not measured results. Use its
 manual acceptance checklist to validate representative files, scopes, and configurations;
-use the application roadmap checklist once that module is implemented.
+use the application-search checklist for application discovery, ranking, and activation.

@@ -1,192 +1,192 @@
-# Application Search Roadmap
+# Application Search
 
-This document proposes application discovery, matching, and activation. All additions
-below are planned. Implemented file indexing remains documented in `architecture.md`
-and `roadmap.indexing.md`; application features enter `changelog.md` after delivery.
-
-## Current behavior
-
-The filesystem index already includes `.exe` files within its configured roots.
-`CandidateIconClassifier` gives them an executable glyph, and
-`WindowsFileCandidateLauncher.Open` delegates Enter activation to the Windows Shell.
-Default roots cover the user profile and redirected user folders, so installed programs
-outside those roots are not systematically discovered. Application display names and
-aliases are not represented separately from filenames.
-
-The next module should add an application catalog alongside the existing file index.
-Its purpose is to find launchable application entries by recognizable names while
-preserving ordinary file and folder search.
-
-### Microsoft To Do discovery gap
-
-A local read-only check confirmed Microsoft To Do is installed and registered as
-`Microsoft.Todos_8wekyb3d8bbwe!App`. Its package manifest names `Todo.exe` inside
-`Program Files\WindowsApps`, outside the default file-index roots. The current code
-does not enumerate Windows application registrations, so this launchable application
-is not discovered by its Start Menu display name. The checked full-ignore list was
-empty; ordinary rebuild-ignore rules do not remove search results.
-
-There is also a separate matching gap: the filename matcher ignores case but preserves
-internal spaces. `Microsoft todo` is not a prefix of `Microsoft To Do`; changing the
-spelling alone still cannot supply the missing application entry. `Gen` currently
-queries files, `Cmd` only offers commands, and `Ask` offers no candidates.
-
-The proposed first release should therefore include packaged-app discovery and
-activation, with Microsoft To Do as a manual acceptance case. These remain planned
-capabilities; this diagnosis does not implement or launch an application.
+Application search is implemented in `Gen`. This document records source coverage,
+ranking, Windows activation, and manual acceptance cases. Compilation is verified;
+runtime acceptance remains a manual task.
 
 ## Discovery sources
 
-| Source | Planned behavior |
-| --- | --- |
-| Current-user and common Start Menu Programs folders | Discover application shortcuts, retain their display names and original launch entries, and resolve metadata on a background STA worker. |
-| Current-user and machine App Paths registrations | Read both registry views where available, collect executable aliases and registered paths, and honor per-user precedence. |
-| Windows Shell application folder | Discover packaged application display names and stable AppUserModelIDs (AUMIDs), including Microsoft To Do, without recursively scanning package installation directories. |
-| Explicit portable-application directories | Enumerate `.exe` files in configured roots with bounded background traversal. Keep these roots separate from general file-index scope. |
-| Existing filesystem candidates | Continue to expose matching `.exe` files under current file roots even when they have no application registration. |
+| Source | Implemented behavior | Boundary |
+| --- | --- | --- |
+| User and common Start Menu Programs folders | Read trusted `.lnk` entries, retain the original shortcut and localized label, and support executable, `.msc`, `.cpl`, and Shell/PIDL targets. | Document links and untrusted or unresolved targets are not promoted to applications. |
+| User and machine App Paths | Read both registry views per hive and retain registered paths, aliases, and private search directories. User/machine precedence is applied when equivalent results merge. | This is registration discovery, not a scan of all installed executables. Registry changes depend on periodic or forced refresh. |
+| Windows Shell AppsFolder | Discover packaged AUMIDs and non-package launchable Shell items with localized display names. | Covers entries exposed by AppsFolder, including Microsoft To Do; does not recursively scan WindowsApps. |
+| Curated Windows system entries | Publish a strict local whitelist of Settings pages, Control Panel canonical entries, MMC tools, and common system executables. | Arbitrary URI, `shell:` text, and unlisted Control Panel targets are rejected. Availability is checked locally. |
+| Configured portable roots | Recursively discover `.exe` entries, using file descriptions and filename aliases. | Empty by default; reparse points are not traversed. |
+| Existing file index | In-scope `.exe` results receive application ranking bias and an executable glyph. | Other `.lnk` files remain ordinary file candidates unless discovered as applications. |
 
-App Paths registers executable locations and may provide a per-application search path;
-its launch semantics must be retained by the adapter. The discovery sources are
-complementary rather than a claim to enumerate every installed program.
-[Application registration](https://learn.microsoft.com/en-us/windows/win32/shell/app-registration).
+These sources do not promise every installed program. Programs without registrations
+need explicit portable roots or existing file-index coverage. Program Files and Windows
+are not recursively scanned by default. Traversal is bounded to 100,000 visited entries,
+20,000 matches per source, and 32 directory levels; the catalog permits 20,000 entries
+before deduplication.
 
-Do not add recursive scans of every Program Files or Windows directory by default.
-That would expose many support binaries and repeat expensive work. User-selected
-portable roots cover programs without a shortcut or registration. A generic `.lnk`
-that opens a document is still a file candidate, not automatically an application.
-Packaged application entries belong in the first release. The Shell applications folder
-is virtual, so a filesystem traversal cannot substitute for application discovery.
-[FOLDERID_AppsFolder](https://learn.microsoft.com/en-us/windows/win32/shell/knownfolderid#FOLDERID_AppsFolder).
-Other non-file launch targets can be considered separately.
+Configure portable roots in
+`%LocalAppData%\LuvLetter\Applications\settings.json`:
 
-## Ownership and candidate integration
+```json
+{
+  "PortableRoots": ["D:\\PortableApps"]
+}
+```
 
-- Core owns application entry contracts, matching, ranking, and candidate activation
-  decisions through `IApplicationCatalog` and `IApplicationLauncher` boundaries.
-- The Windows layer owns Start Menu and registry discovery, shortcut metadata, cache
-  persistence, and Shell activation. It publishes an immutable catalog generation.
-- The C++ filesystem index remains focused on files and directories. Application
-  metadata does not expand its compact records, snapshot schema, or LLIX protocol.
-- `InputCandidateCoordinator` combines bounded application and file results for the
-  latest editor revision. A missing or rebuilding source cannot erase the other source's
-  usable candidates. Catalog publication requeries unchanged input.
-- Use a distinct managed application activation target and stable identity. Native can
-  initially render the existing generic file row with its executable glyph; keep the
-  application descriptor behind the token. Adding an application-specific native enum
-  later would require coordinated ABI versioning.
+Use absolute paths; environment variables are expanded. Settings are read once per
+launch. Invalid application settings pause this catalog with a console diagnostic.
+Correct the file and restart; `index.refresh` does not reload configuration.
 
-An application entry stores a stable ID, display name, aliases, source, launch kind,
-launch descriptor, optional resolved executable path, working directory, and generation.
-The display string is never parsed as a command line. Native receives only bounded row
-text, icon category, and an opaque activation token.
+## Matching and ranking
 
-## Matching and result policy
+Applications use case-insensitive exact and prefix name/alias matching. Executable
+aliases include filenames with and without `.exe`. A lower-priority whitespace-compacted
+key allows `Microsoft todo` and `Microsoft To Do` to identify the same discovered entry.
+Filename matching is unchanged. Queries containing directory separators are not treated
+as application names. Substring, fuzzy, pinyin, reordered-word, and full-path matching
+remain future work.
 
-Use case-insensitive exact name/alias matches first, then exact filename stems, then
-prefix matches. Executable aliases include the filename with and without `.exe`, so
-`Code`, `code.exe`, and `Visual Studio Code` can identify the same entry when discovered
-metadata supplies those names. Application entries win equal-strength ties against
-ordinary filesystem rows; a weak application prefix must not outrank an exact file match.
+Direct matches pass through `ICandidateRankingPolicy` before visible truncation:
 
-Add a lower-priority whitespace-compacted key for application display names and aliases,
-so `Microsoft todo` can identify `Microsoft To Do` after discovery. Preserve the original
-label and prioritize its exact spelling. Apply this normalization only to application
-matching, preserve distinct identities when keys collide, and leave filename matching
-unchanged.
+```text
+application bias + name-match score + additional priority
+```
 
-Retain the default five direct results plus one Global Search row. `Gen` merges
-applications and filesystem matches, then fills remaining capacity with commands;
-`Cmd` remains commands-only and `Ask` retains its current behavior. Query text with a
-directory separator favors filesystem paths. Full-path text search is not implied by
-the current filename-only kernel and needs separate routing if added later.
+`CandidateRankingOptions.ApplicationBias` defaults to 1,000 for catalog applications
+and standalone executables, and zero for ordinary files/folders. Match scores range
+from 80 to 300: exact display name, exact alias, compacted exact name, literal prefix,
+then compacted prefix. File scores retain exact name, exact stem, and prefix tiers.
+Without additional priority, a matching application precedes even an exact ordinary
+file match. Ties retain the source's stable order.
 
-Deduplicate equivalent launch descriptors across shortcuts, registrations, and files.
-Use executable target, arguments, working directory, and relevant launch semantics;
-do not merge solely by display name or executable path. Two shortcuts selecting different
-profiles or modes remain distinct and receive disambiguating secondary text. When
-equivalence cannot be established, preserve both entries. Exact duplicate filesystem
-rows can yield their slot to the catalog entry with its friendly name.
+`ICandidatePriorityProvider` can add priority to application or file identities, allowing
+a file to outrank an application. This release does not record usage, learn from launches,
+or persist priority history. The catalog cache accelerates loading and has no ranking
+advantage. Each source currently retrieves up to 64 matches before ranking; future
+history-aware retrieval must also address items outside that pool.
 
-For packaged entries, use AUMID as the primary identity. Merge an equivalent Start Menu
-entry only when it resolves to that same launch identity, never just a matching label.
+The default remains five direct results plus one reserved Global Search row. `Gen`
+merges applications and files, then fills unused direct slots with commands. `Cmd`
+remains commands-only; `Ask` has no candidates. Application publication refreshes
+unchanged input. On a new revision, available applications can appear while the file
+query completes; same-revision refresh preserves surviving activation tokens.
 
-## Launch behavior
+## Identity and activation
 
-Enter submits one launch request for the selected entry. Shift+Enter reveals the
-resolved executable when available, otherwise the original shortcut. A stale token,
-removed target, denied launch, or user-cancelled elevation keeps input visible and
-reports the corresponding result. Shell acceptance closes input; it does not guarantee
-that the target application has completed initialization.
+Core owns application contracts, name matching, ranking, and activation decisions.
+Windows owns discovery, persistence, and launch adapters. Native renders its existing
+file row with an executable glyph and opaque token; file snapshot v3 and Native ABI v7
+remain unchanged. LLIX v6 carries filesystem partition descriptors independently of
+application activation.
 
-Launch shortcuts through their original `.lnk` entry. Shortcut metadata can include
-arguments, working directory, and show state; replacing it with a bare executable can
-change application behavior. Direct portable executables use their containing directory
-as the default working directory.
-[Shell links](https://learn.microsoft.com/en-us/windows/win32/shell/links).
+Entries have stable source IDs and explicit launch descriptors. Display text is never
+parsed as a command line. Identical shortcut bytes can merge, packaged entries use AUMID,
+and executable registrations retain their launch metadata. Equivalent names become
+aliases. Matching labels alone never establish equivalence. Different shortcut arguments,
+show states, or elevation metadata remain distinct. Ambiguous cross-source duplicates
+remain separate. A file row yields only to a known equivalent catalog launch target.
 
-Packaged applications use their AUMID through `IApplicationActivationManager`, rather
-than directly starting an executable from `WindowsApps`. Report its activation result
-and retain input on failure. A packaged entry without a meaningful file/shortcut target
-reports Shift+Enter reveal as unavailable instead of inventing a filesystem location.
-[ActivateApplication](https://learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/nf-shobjidl_core-iapplicationactivationmanager-activateapplication).
+Enter submits one catalog activation at a time on a dedicated background STA worker.
+Shortcuts launch through their original `.lnk`; portable executables use their containing
+directory as the working directory. Packaged applications use
+`IApplicationActivationManager` with their AUMID. Cached targets, registrations, and
+known full-ignore paths are rechecked before activation. Removed or changed entries
+report a refresh/retry diagnostic.
 
-Use a dedicated Windows STA activation path with explicit success, cancellation, and
-failure results. The current `Process.Start(...) != null` check should be replaced:
-Shell success does not require a new process handle. Use the Shell operation result,
-close returned handles where applicable, and keep launches outside query locks.
-[ShellExecuteExW](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-shellexecuteexw),
-[SHELLEXECUTEINFOW](https://learn.microsoft.com/en-us/windows/win32/api/shellapi/ns-shellapi-shellexecuteinfow).
+App Paths launches use the verified absolute executable, preventing same-name search
+collisions. Registrations with private search directories use a child-only PATH
+environment and `UseShellExecute=false`; the host PATH stays unchanged. If this route
+requires elevation, it reports that the original shortcut is needed instead of silently
+dropping the environment. Other classic launches use `ShellExecuteExW`.
+[App Paths registration](https://learn.microsoft.com/en-us/windows/win32/shell/app-registration).
+
+Shell success no longer depends on receiving a new process handle; the generic file
+launcher uses the same corrected acceptance rule. Failure or cancelled elevation keeps
+input visible. Success closes it only while the originating editor revision is current.
+Acceptance does not certify completed application initialization.
+
+Shift+Enter reveals a classic application's resolved executable. Packaged entries report
+that ordinary file reveal is unavailable and keep input open. Real executable icons,
+thumbnails, and user-defined launch arguments remain future work.
 
 ## Cache and maintenance
 
-Maintain an independent versioned application cache under
-`%LocalAppData%\LuvLetter\Applications`. Load the last validated catalog before a
-background source refresh, publish atomically, and preserve a backup. Failed reads of
-one discovery source retain that source's last valid entries; a confirmed uninstall
-removes entries. Revalidate the launch target when the user activates a cached result.
+Each discovery source owns an independent cache pair under:
 
-Start Menu changes request a coalesced refresh. Recheck registrations periodically,
-defaulting to six minutes with the established one-minute automatic cooldown. Portable
-roots use bounded maintenance rather than running scans on each keystroke. Extend
-`index.refresh` to refresh both catalogs. Application maintenance does not launch programs
-or read executable icons on the query path. Begin with the existing executable glyph;
-real icons, fuzzy matching, pinyin, and usage-based ranking can follow separately.
+```text
+%LocalAppData%\LuvLetter\Applications\v2\partitions\<source-hash>.manifest.json
+%LocalAppData%\LuvLetter\Applications\v2\partitions\<source-hash>.snapshot.json
+%LocalAppData%\LuvLetter\Applications\v2\partitions\<source-hash>.manifest.json.bak
+%LocalAppData%\LuvLetter\Applications\v2\partitions\<source-hash>.snapshot.json.bak
+```
 
-## Delivery sequence
+Startup loads and publishes each compatible source cache independently before discovery.
+Validation checks schema, size, checksum, source identity, entry shape, source scope, and
+full-ignore provenance. An invalid primary pair falls back to its compatible backup pair.
+Each completed source immediately rebuilds the immutable merged query view and notifies
+the candidate pipeline. A first launch without a usable source cache still requires that
+source's discovery.
 
-1. **Classic and packaged applications:** Start Menu shortcuts, App Paths, Windows Shell
-   application entries, configured portable roots, executable/display-name aliases,
-   bounded merged candidates, deduplication, and explicit launch/reveal outcomes.
-   Include Microsoft To Do and AUMID activation; correct generic launch-result handling.
-2. **Persistent application catalog:** independent snapshot and backup, startup reuse,
-   source-specific failure retention, periodic/event maintenance, and `index.refresh`
-   integration. Deliver this with the first user-facing release to preserve fast startup.
-3. **Optional coverage:** execution aliases, real icons, and richer matching after the
-   first application-discovery and activation paths pass manual acceptance.
+A failed source retains its previous entries; a successful empty source removes them.
+Healthy sources publish and persist without waiting for slow or failed sources. Atomic
+saves retain the preceding valid generation for that source as backup; persistence
+failure does not discard usable in-memory results. A disconnected portable root is
+unavailable, not empty. Old merged v1 application caches are not migrated.
+
+Maintenance shares the file-index configuration: each application source has a six-minute
+periodic deadline and a 60-second automatic gap by default, with bounded per-path cooldown
+for Start Menu events. Failed sources retain dirty state and retry after 1, 2, 4, then at
+most 6 minutes. Start Menu changes target only their owning source; registrations,
+AppsFolder, system entries, and portable roots refresh periodically. `index.refresh`
+requests all application and file partitions and bypasses automatic cooldown.
+
+Dispatch is bounded globally and by source category. Shell metadata and all other
+discovery operations use two fixed STA workers, while activation owns a third fixed STA
+worker. Adding portable roots therefore does not add permanent threads. One source has at
+most one active discovery plus one coalesced follow-up request.
+
+For known events, full ignore and ordinary rebuild ignore precede cooldown. Ordinary
+ignore retains periodic discovery and search. `FullIgnorePaths` excludes known shortcut
+targets, executables, working directories, and package installation paths at discovery,
+cache publication, and activation. App Paths search directories are environment metadata,
+not indexed targets. Unattributed watcher errors request recovery. Debug events reuse
+the existing cause colors and identify `catalog=applications`.
 
 ## Manual acceptance checklist
 
-1. Search a known executable under the current user profile and confirm Enter starts it.
-2. Find a Start Menu application installed outside the profile by its display name and
-   executable alias, with and without `.exe`; confirm one equivalent primary entry.
-3. Launch a portable executable whose path contains spaces or Unicode and which expects
-   its own directory as the working directory.
-4. Launch two shortcuts to the same executable with different arguments and confirm their
-   modes remain distinct. Reopen an already-running single-instance application without
-   reporting failure merely because a new process handle is absent.
-5. Delete an indexed target, cancel an elevation prompt, and simulate a stale candidate
-   revision; confirm input stays usable and nothing else is launched.
-6. Confirm Shift+Enter reveals the intended executable or shortcut, and ordinary file,
-   folder, command, and Ask-mode behavior remains unchanged.
-7. Restart with a valid application cache, disconnect the filesystem companion, and
-   simulate a failed application source refresh; verify available catalog results remain
-   usable and refresh automatically after recovery.
-8. With Microsoft To Do installed, search `Microsoft To Do` and `Microsoft todo` in
-   `Gen`; confirm one equivalent application entry, then verify Enter activation both
-   when closed and already running. No package installation directory scan is required.
-9. Restart with cached packaged entries, then uninstall a disposable test app and verify
-   a stale activation reports failure and the next successful catalog refresh removes it.
-   An entry without a filesystem target must handle Shift+Enter explicitly.
+1. Start with `start.bat`. In `Gen`, search `Microsoft To Do` and `Microsoft todo`;
+   confirm the packaged application appears and Enter opens it.
+2. Find a Start Menu application outside the profile using its label and executable
+   alias. Confirm Enter launches it and Shift+Enter selects its executable in Explorer.
+3. Use a query shared by an application and an ordinary file; confirm the application
+   appears first. Check standalone executable priority and an ordinary document shortcut.
+4. Configure a narrow portable root, restart, and check space/Unicode paths, aliases,
+   and working-directory-sensitive launch.
+5. Check two shortcuts with different arguments to the same executable remain available;
+   identical copied links should merge. Matching labels alone must not collapse entries.
+6. Restart with a cache and observe results before discovery completes. Keep the same
+   query open through refresh and confirm surviving selection remains stable.
+7. With LuvLetter stopped, back up the cache and damage its primary; restart and confirm
+   backup recovery. Repeat with neither usable file and confirm discovery rebuilds it.
+   Restore saved files after the check.
+8. Disconnect a portable root, add a healthy Start Menu application, refresh, and restart.
+   Confirm the healthy addition is cached and the unavailable source retains old entries.
+   Activating an unavailable target must report failure without closing input.
+9. Repeatedly change a disposable Start Menu shortcut. Confirm ignored changes never
+   enter cooldown; other events provide trigger/cooldown context. Run `index.refresh`
+   in `Cmd` and confirm both catalogs report forced work in green.
+10. Full-ignore a disposable shortcut or application path, restart, and verify cached and
+    fresh results exclude it. Ordinary ignore must retain search coverage.
+11. Cancel elevation, retry an already running program, and remove a disposable target
+    after discovery. Verify launch feedback and repeated-Enter suppression.
+12. Change input/mode while an activation is pending; completion must not close the new
+    query. Check `Cmd`, `Ask`, file/folder reveal, and reserved Global Search behavior.
+13. Manually run the Core test executable after building to check matcher tiers, distinct
+    IDs, injected file priority, ranking before truncation, source failure isolation,
+    same-revision tokens, and cancelled/stale application activation.
 
-These are proposed acceptance scenarios. No application feature or runtime test is
-introduced by this planning document.
+## Remaining work
+
+Usage-history collection and persistence, pinning/recency, history-aware retrieval,
+execution aliases, richer matching, real icons, source diagnostics in Settings, and
+the full Global Search page are separate follow-up capabilities. App Paths registry,
+AppsFolder, and curated-system change notifications are not subscribed yet and rely on
+periodic or forced refresh. Removed portable-source cache files are harmless and are not
+garbage-collected yet.

@@ -11,5 +11,8 @@
     <ProjectReference Include="../../src/LuvLetter.Core/LuvLetter.Core.csproj" />
     <Compile Include="../../src/LuvLetter/Platform/Indexing/FileIndexIgnoreDefaults.cs" Link="Indexing/FileIndexIgnoreDefaults.cs" />
     <Compile Include="../../src/LuvLetter/Platform/Indexing/FileIndexMaintenanceOptions.cs" Link="Indexing/FileIndexMaintenanceOptions.cs" />
+    <Compile Include="../../src/LuvLetter/Platform/Indexing/FileIndexPartitionDescriptor.cs" Link="Indexing/FileIndexPartitionDescriptor.cs" />
+    <Compile Include="../../src/LuvLetter/Platform/Indexing/FileIndexClientOptions.cs" Link="Indexing/FileIndexClientOptions.cs" />
+    <Compile Include="../../src/LuvLetter/Platform/Indexing/FileIndexProtocol.cs" Link="Indexing/FileIndexProtocol.cs" />
   </ItemGroup>
 </Project>

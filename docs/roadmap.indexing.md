@@ -5,12 +5,16 @@ and file activation. It is a planning document: Phases 1 and 2 are complete. Use
 work is recorded in `changelog.md` only after it is implemented, while ownership and
 dependency rules remain in `architecture.md`.
 
-Application discovery and executable launch improvements are proposed separately in
-`roadmap.applications.md`; the existing filesystem index already includes `.exe` files
+Application discovery, extensible ranking, and launch behavior are documented separately
+in `roadmap.applications.md`; the filesystem index also includes `.exe` files
 inside its configured scope.
 
 For a concise implemented-versus-planned comparison and concrete search examples, see
 `indexing-capabilities.md`.
+
+Independent partition ownership, startup scheduling, and per-scope maintenance now have
+an implemented baseline described in `roadmap.index-partitions.md`. Whole-volume scope,
+durable Delta recovery, live ownership migration, and Settings controls remain planned.
 
 ## Product invariants
 
@@ -190,13 +194,14 @@ No edit distance, token score, usage history, or pinyin score participates in Ph
   deterministic ranking, overlapping roots, v3 persistence, provenance mismatch,
   checksum corruption, Delta ordering, ancestor tombstones, rebuild-cutoff pruning, and
   live create/rename/delete notifications.
-- Core and Native suites cover LLIX v5 activity decoding, Native ABI v7, icon categories,
+- Core and Native suites cover LLIX v6 activity decoding, Native ABI v7, icon categories,
   default and same-revision selection, persistent message timelines, stale revision
   rejection, and file/folder activation success or failure.
 
-Phase 2 is implemented. The manual acceptance checklist remains the release-validation
-surface for focus, Shell activation, redirected Known Folders, notification overflow,
-and perceived performance on representative machines.
+Phase 2 and the first filesystem-partition baseline are implemented. The manual acceptance
+checklist remains the release-validation surface for focus, Shell activation, redirected
+Known Folders, partition recovery, notification overflow, and perceived performance on
+representative machines.
 
 ## Phase 3 — Persistent incremental recovery `[Planned]`
 

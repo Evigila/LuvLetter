@@ -28,6 +28,9 @@ Windows implementations through `IApplicationShell`, `IActivationGestureService`
 - `Platform/Activation`: the low-level Windows keyboard hook and Dispatcher adapter.
 - `Platform/Indexing`: companion-process supervision, the Named Pipe client and protocol
   validation, default index roots, and Windows file open/reveal behavior.
+- `Platform/Applications`: background STA discovery and activation for Start Menu,
+  App Paths, packaged applications, and configured portable roots; independently
+  persisted application catalog and maintenance.
 - `Platform/Tray`: notification-area UI and settings-view lifetime.
 - `Hosting`: Generic Host registrations and the WPF-specific `IHostLifetime`.
 - `Program`: the STA/single-instance entry point. It builds and starts the Host, delegates
@@ -42,8 +45,10 @@ Windows implementations through `IApplicationShell`, `IActivationGestureService`
   then offers the text to ordered `IGeneralInputMatcher` implementations before falling
   back to an Echo response.
 - `Application/InputCandidateCoordinator`: a separate hosted input pipeline. It consumes
-  only the latest editor revision, combines file and command candidates according to the
-  active mode, owns activation tokens, and rejects stale results before Native display.
+  only the latest editor revision, ranks application and file candidates, fills command
+  candidates according to the active mode, owns activation tokens, and rejects stale
+  results before Native display. Application contracts and the injectable ranking policy
+  live alongside it; Windows metadata and launching stay behind these ports.
 - `Modules/Settings`: one cohesive settings capability containing the public service port,
   editor DTOs, validation/mapping, transactional apply/rollback, and the non-removable
   built-in settings plugin.
@@ -101,15 +106,21 @@ with an older DLL.
 
 - A hidden, ordinary-user companion process owned by the main application.
 - It connects to a per-run random Named Pipe, exits when the pipe closes or its parent
-  process ends, serves queries from the current immutable snapshot plus a bounded live
-  Delta, and rebuilds on a Windows background-processing thread.
+  process ends, and serves one captured read view across independent filesystem
+  partitions. Each partition owns an immutable baseline, bounded live Delta, policy,
+  cache/backup, generation, and refresh state.
+- Filesystem ownership uses the most specific configured root. Every ancestor scan
+  excludes all delegated child roots, so logical nested scopes have one physical owner.
+  Desktop and Downloads are startup-critical; the user-profile remainder and other
+  configured roots use normal maintenance by default. One shared worker schedules builds
+  by tier, overdue/dirty/starvation age, and measured prior cost.
 - `ReadDirectoryChangesW` watchers coalesce file and folder name changes for 250 ms.
-  Upserts and tombstones are merged with the base generation; directory-prefix
-  tombstones hide stale descendants. Overflow, ambiguous directory rename recovery, and
-  Delta thresholds request a safe background rebuild. Requests are coalesced and never
-  cancel an active scan; automatic retries and event-driven scans wait at least one
-  minute after the preceding scan finishes. If Delta exceeds its retained capacity,
-  queries fall back to the last complete snapshot until reconciliation succeeds.
+  Upserts and tombstones route to the longest-root owner and merge with only that
+  baseline; directory-prefix tombstones hide stale descendants. Overflow without a
+  trustworthy source requests safe recovery for all file partitions. Requests coalesce,
+  never overlap one partition's active build, and respect that partition's automatic
+  gap. If a Delta exceeds its retained capacity, that partition falls back to its last
+  complete baseline until reconciliation succeeds.
 - It is deliberately not a Windows Service and does not require administrator access.
 
 ## Host lifecycle
@@ -126,8 +137,10 @@ Hosted services have a fixed dependency order:
 
 1. `FileIndexCompanionClient` starts its supervisor in the background; a missing or
    incompatible companion degrades to no file candidates instead of blocking startup.
-2. `InputCandidateCoordinator` subscribes the revisioned Native input stream.
-3. `ApplicationCoordinator` applies Native configuration, loads built-in and external
+2. `WindowsApplicationCatalog` begins independent cache loading and source discovery.
+3. `InputCandidateCoordinator` subscribes the revisioned Native input stream and both
+   index publication streams.
+4. `ApplicationCoordinator` applies Native configuration, loads built-in and external
    plugins, synchronizes Quick Actions, subscribes runtime events, and starts activation
    gestures. The lazily created settings window remains closed.
 
@@ -216,20 +229,42 @@ produces Echo when no matcher accepts the text.
 
 Real-time candidate production is separate from final submission. Each actual text or
 mode change increments an editor revision, immediately clears the old Native snapshot,
-and enters a capacity-one latest-wins pipeline. `Gen` queries files first, fills any
-remaining direct-result capacity with command prefixes, then appends the reserved Global
+and enters a capacity-one latest-wins pipeline. `Gen` merges application and file matches,
+fills remaining direct-result capacity with command prefixes, then appends the reserved Global
 Search row. `Ask` publishes no candidates. `Cmd` queries commands only. The default
 configuration allows five direct results and one Global Search row, while the limit is
 owned by `InputCandidateOptions` rather than Native rendering code.
 
+Each source retrieves up to 64 matches before `ICandidateRankingPolicy` orders the merged
+pool. The default combines a 1,000-point application bias, name-match score, and an
+optional `ICandidatePriorityProvider` boost. Standalone indexed `.exe` files receive the
+same bias. An ordinary file can outrank an application through additional priority;
+usage collection and a persisted history are not implemented yet. Application caching
+does not affect rank. Future history-based retrieval must also account for results
+outside the bounded retrieval pool.
+
+`IApplicationCatalog` publishes application names, executable aliases, and explicit
+launch descriptors. Application matching adds a secondary whitespace-compacted key, so
+`Microsoft todo` can match `Microsoft To Do`; the filename kernel remains unchanged.
+Available applications can publish before a new revision's file query completes.
+Catalog changes requery unchanged input without discarding surviving selection tokens.
+
 A non-empty new editor revision selects and visibly highlights its first candidate. A
 same-revision index refresh reuses stable candidate tokens and preserves the selected
 token when it still exists; if that token disappears, selection falls back to the first
-candidate. Up or Down moves the selection. Enter opens the selected file or folder;
+candidate. Up or Down moves the selection. Enter opens the selected application, file, or folder;
 Shift+Enter reveals it in Explorer. A successful filesystem or command activation closes
 InputWindow, while Enter when no candidates exist follows ordinary submission and does
 not close it. Global Search currently reports its reserved status through the message
 queue and keeps the input open.
+
+Catalog application activation is asynchronous and single-flight. A successful late
+completion cannot hide input from a newer editor revision. Classic applications retain
+their shortcut or executable launch semantics; packaged entries activate by AUMID and
+report ordinary file reveal as unavailable. Shell acceptance uses `ShellExecuteExW`
+rather than requiring a new process handle. Native receives only bounded display text,
+an executable glyph, and the managed activation token; no ABI or file protocol change
+is required. Source coverage and launch limitations are in `roadmap.applications.md`.
 
 The built-in settings plugin is always Quick Action slot 1 and is displayed as
 `Control Center`. Quick Actions exposes the numeric slots 1 through 9. Selecting an
@@ -258,36 +293,45 @@ rendering rather than activity lifetime, and a hidden persistent-only queue does
 a background animation timer.
 
 Snapshot writes use a same-directory temporary file, flush it, and atomically replace the
-old file. Query publication is independent: a completed in-memory generation can continue
-serving when persistence fails. A `.bak` file retains the preceding scope-compatible
-snapshot (or the first completed snapshot when no predecessor exists). Startup tries
-this backup if the primary is missing, invalid, or incompatible. Both files use the same
-validation and atomic-save rules. Failed root access or unexpected enumeration errors
-do not publish a replacement snapshot; ordinary inaccessible or disappearing descendants
-remain skippable. A failed rebuild keeps the previous query view and retries after
-one minute instead of entering a tight loop.
+old file. Query publication is independent: a completed in-memory partition generation
+can continue serving when persistence fails. Each partition's `.bak` file retains its
+preceding scope-compatible snapshot (or the first completed snapshot when no predecessor
+exists). Startup tries that backup if the primary is missing, invalid, or incompatible.
+Both files use the same validation and atomic-save rules. Failed root access or unexpected
+enumeration errors do not publish a replacement partition; ordinary inaccessible or
+disappearing descendants remain skippable. A failed build keeps that partition's previous
+query view and retries after its automatic gap instead of entering a tight loop.
 
 ## File-index lifecycle and protocol
 
-The default scope is the current user profile plus redirected Windows Known Folders that
-resolve outside it; an explicitly configured reparse root is retained even when its path
-is textually below another root. The last scope-compatible snapshot is loaded from
-`%LocalAppData%\LuvLetter\Index\v1\file-index-v3.bin`. The `v1` directory is the cache
-namespace and is independent of snapshot schema v3. Loading and validating the primary
-or its `.bak` fallback runs on the worker, outside the pipe handshake and request loop.
-Publishing a compatible cache increments the generation so unchanged input refreshes
-before the startup rescan finishes. Queries may briefly have no file results while the
-cache itself is loading; they do not wait for a full directory scan. Cache-directory
-write events are ignored by live maintenance to avoid feeding persistence back into it.
-A periodic reconciliation becomes due every six minutes from scope configuration,
-independent of file-triggered and manual scans. Busy deadlines coalesce into one pending
-scan; the automatic minimum gap still applies. MFT/USN integration, fuzzy matching, pinyin matching,
-and privileged services remain outside this phase.
+The default scope is divided into startup-critical Desktop/Downloads, the user-profile
+remainder, and other configured or redirected Known Folder roots. Every parent descriptor
+delegates its nested roots. An explicitly configured reparse root is retained as an
+independent owner even when its path is textually below another root. Scope-compatible
+snapshots load independently from
+`%LocalAppData%\LuvLetter\Index\v1\partitions\partition-<id-hash>.bin` and its `.bak`.
+The `v1` directory is the cache namespace and is independent of snapshot schema v3.
+Loading and validation run on the file worker outside the pipe handshake and request
+loop. Publishing a compatible cache increments aggregate status so unchanged input
+refreshes before rescans finish. Queries may briefly omit a partition while its cache is
+loading; they do not wait for a full directory scan. Cache-directory write events are
+ignored by live maintenance to avoid feeding persistence back into it.
 
-The `LLIX` v5 protocol uses a fixed 20-byte little-endian header, UTF-8 length-prefixed
+Startup-critical file partitions have a six-minute maximum reconciliation age; normal
+partitions use 30 minutes. Periodic deadlines start at scope configuration and remain
+independent of event-triggered and manual scans. Busy deadlines coalesce into one pending
+request; the per-partition one-minute automatic gap still applies. A shared publication
+lease gives each query one stable cross-partition read view while baseline/Delta swaps are
+brief exclusive operations. MFT/USN integration, durable Delta, a persisted SnapshotSet
+manifest, fuzzy matching, pinyin matching, and privileged services remain outside this
+baseline.
+
+The `LLIX` v6 protocol uses a fixed 20-byte little-endian header, UTF-8 length-prefixed
 strings, request IDs, editor revisions, and a 1 MiB payload ceiling. Managed owns the
 single pipe server and starts `LuvLetter.Indexer.exe` with the pipe name, parent process
-ID, and data directory. The pipe is restricted to the current user. Protocol, timeout,
+ID, and data directory. Scope configuration carries stable partition IDs, roots,
+delegated subtrees, tiers, maximum ages, automatic gaps, and global ignore policies. The
+pipe is restricted to the current user. Protocol, timeout,
 or process failures invalidate the whole session and trigger bounded background restart;
 the command and Echo paths remain available. A compact status request reports the index
 generation and an explicit `Ready`, `InitialBuild`, `Updating`, or `Failed` activity. Core maps an
@@ -308,13 +352,16 @@ once per application launch. Invalid or unreadable configuration pauses indexing
 a console diagnostic until the file is corrected and the app restarted. Commands and
 Echo remain available; an existing file is never overwritten. This prevents a malformed
 full-ignore configuration from silently restoring unrestricted search. The default values
-are a 360-second periodic refresh, a 60-second trigger cooldown, and ignored rebuild
-scopes covering temporary data, developer-generated directories, and package caches.
+are a 360-second startup-critical maximum age, a 1,800-second normal-partition maximum
+age, a 60-second automatic gap, a 60-second trigger cooldown, and ignored rebuild scopes
+covering temporary data, developer-generated directories, and package caches.
 For example, an editable configuration can use environment variables:
 
 ```json
 {
   "RefreshIntervalSeconds": 360,
+  "NormalPartitionRefreshIntervalSeconds": 1800,
+  "AutomaticRebuildGapSeconds": 60,
   "TriggerCooldownSeconds": 60,
   "IgnoreRebuildDirectories": [
     "%TEMP%",
@@ -430,24 +477,54 @@ The in-memory cooldown map records paths whose reconciliation requests were acce
 Repeated events for the same normalized path cannot request another rebuild until its
 deadline, and suppressed events do not extend that deadline. The map expires entries
 and is capped at 4096; when full it suppresses new keys until room is available. Watcher
-overflow has no trustworthy source path and uses one shared cooldown entry, so it cannot
-be attributed to an ignored directory. Such uncertainty can still queue a recovery scan.
+overflow has no trustworthy source path and uses one cooldown entry per partition, so it
+cannot be attributed to an ignored directory. Such uncertainty currently queues recovery
+across all file partitions.
 Ordinary ignore retains Delta processing and therefore cannot prevent all watcher or
 pending-buffer overflow. Recovery is logged separately from known-path file triggers.
 The watcher observes file/directory name changes; an in-place content-only write does
 not itself request a full filename-index scan.
 
-Accepted requests are coalesced, with at most one scan running and a one-minute global
-gap between automatic scans. Thus six minutes is the periodic interval, not a guarantee
-that event-driven maintenance waits six minutes. A new temporary filename can bypass a
-different filename's cooldown; noisy directory scopes belong in the ignore list.
+Accepted requests are coalesced, with at most one file scan running and a one-minute
+per-partition gap between automatic scans. Thus six or 30 minutes is a maximum
+reconciliation age, not a guarantee that event-driven maintenance waits that long. A new
+temporary filename can bypass a different filename's cooldown; noisy directory scopes
+belong in the ignore list.
 
-The built-in `index.refresh` command in `Gen` or `Cmd` queues a full scan regardless of
-rebuild-ignore and cooldown rules, including the global automatic gap. Full-ignore
-exclusions still apply. If a scan is already running, one follow-up scan is queued
-rather than cancelling or overlapping it. LLIX v5
+The built-in `index.refresh` command in `Gen` or `Cmd` requests both filesystem and
+application catalogs. Filesystem refresh fans out across enabled partitions regardless of
+rebuild-ignore, cooldown, and automatic-gap rules. Full-ignore exclusions still apply.
+If a partition scan is already running, one follow-up request is coalesced rather than
+cancelling or overlapping it. LLIX v6
 carries maintenance settings with root configuration and acknowledges `Refresh` with a
 status response. Disconnected manual requests wait for the next companion connection.
+
+### Application catalog maintenance
+
+`WindowsApplicationCatalog` loads compatible source caches before background discovery.
+Settings are at `%LocalAppData%\LuvLetter\Applications\settings.json` with an initially
+empty `PortableRoots` array. Each source uses a hashed manifest/snapshot pair and matching
+backups under `Applications\v2\partitions`.
+Settings are read once per launch; invalid application settings pause only this catalog.
+Invalid shared maintenance settings pause both file and application indexing.
+
+Source discovery covers trusted user/common Start Menu shortcuts, App Paths in both
+registry views, packaged and non-package AppsFolder entries, a curated Windows system
+catalog, and bounded portable directories. Queries read an immutable merged view. Cache
+validation checks format, size, checksum, source/entry shape, scope, and full-ignore
+provenance. Failed sources retain their own previous entries while each successful source
+publishes and persists immediately. Successful empty sources remove stale entries. Atomic
+writes preserve that source's previous valid backup, and save failure retains in-memory
+results.
+
+Every source shares the six-minute maximum age and 60-second cooldown defaults. Start Menu
+watchers coalesce changes into their owning source; other sources refresh periodically or
+on `index.refresh`. Failures retry locally after 1, 2, 4, then at most 6 minutes.
+Known full/ordinary ignores run before cooldown; full ignores also filter cached entries
+and activation targets. Watcher errors request recovery and recreate the watcher with
+backoff. Two fixed discovery STA workers and one activation STA worker bound thread count;
+adding portable roots does not add permanent threads. Shutdown cancels pending work and
+bounds the wait for in-flight discovery to two seconds.
 
 ### Index console events
 

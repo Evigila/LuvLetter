@@ -2,6 +2,7 @@
 #include "luvletter/indexing/IndexProtocol.h"
 #include "IndexMaintenance.h"
 #include "IndexRebuildPolicy.h"
+#include "IndexPartitioning.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -67,7 +68,7 @@ void TestProtocolHeaderRoundTrip() {
     const auto encoded = EncodeHeader(expected);
     FrameHeader actual{};
     Expect(encoded.size() == kHeaderSize, L"protocol header must remain exactly 20 bytes");
-    Expect(kMajorVersion == 5, L"full-ignore configuration requires LLIX protocol major version 5");
+    Expect(kMajorVersion == 6, L"partition descriptors require LLIX protocol major version 6");
     Expect(DecodeHeader(encoded, actual), L"protocol header should decode");
     Expect(actual.magic == expected.magic && actual.majorVersion == expected.majorVersion &&
         actual.type == expected.type && actual.payloadLength == expected.payloadLength &&
@@ -88,6 +89,43 @@ void TestStatusPayloadRoundTrip() {
     auto malformed = encoded;
     malformed.back() = std::byte{4};
     Expect(!DecodeStatus(malformed, actual), L"status payload should reject unknown activity values");
+}
+
+void TestIndexPartitionRoutingAndScheduling() {
+    using namespace luvletter::indexer;
+    using Clock = std::chrono::steady_clock;
+    Expect(IsValidPartitionId("filesystem:user-profile") && !IsValidPartitionId("Bad/ID"),
+        L"partition IDs must use the stable canonical grammar");
+    const std::array partitions{
+        IndexPartitionDescriptor{"filesystem:user-profile", LR"(C:\Users\Owner)", {LR"(C:\Users\Owner\Desktop)"},
+            PartitionMaintenanceTier::Normal, std::chrono::minutes(30), std::chrono::minutes(1)},
+        IndexPartitionDescriptor{"filesystem:desktop", LR"(C:\Users\Owner\Desktop)", {},
+            PartitionMaintenanceTier::StartupCritical, std::chrono::minutes(6), std::chrono::minutes(1)},
+    };
+    const auto* nested = ResolvePartitionOwner(partitions, LR"(c:\USERS\owner\desktop\note.txt)");
+    const auto* remainder = ResolvePartitionOwner(partitions, LR"(C:\Users\Owner\Documents\note.txt)");
+    Expect(nested != nullptr && nested->id == "filesystem:desktop",
+        L"the longest nested root must receive a filesystem event");
+    Expect(remainder != nullptr && remainder->id == "filesystem:user-profile",
+        L"the parent partition must retain non-delegated paths");
+    Expect(ResolvePartitionOwner(partitions, LR"(C:\Users\OwnerElse\note.txt)") == nullptr,
+        L"partition roots must match complete path components");
+    Expect(ValidatePartitionTopology(partitions),
+        L"nested partitions explicitly delegated by every ancestor must be valid");
+    auto overlapping = partitions;
+    overlapping[0].delegatedSubtrees.clear();
+    Expect(!ValidatePartitionTopology(overlapping),
+        L"a nested partition without an ancestor scan exclusion must be rejected");
+    const auto now = Clock::time_point{} + std::chrono::hours(4);
+    const PartitionSchedulingState normal{&partitions[0], now - std::chrono::hours(1),
+        now - std::chrono::minutes(10), now - std::chrono::hours(1), std::chrono::minutes(20)};
+    const PartitionSchedulingState critical{&partitions[1], now, now, now, std::chrono::minutes(20)};
+    Expect(std::isfinite(PartitionSchedulingPriority(normal, now)) &&
+        PartitionSchedulingPriority(critical, now) > PartitionSchedulingPriority(normal, now),
+        L"scheduler priority must remain finite and honor startup-critical partitions");
+    Expect(PartitionCacheName(partitions[0].id) == PartitionCacheName(partitions[0].id) &&
+        PartitionCacheName(partitions[0].id) != PartitionCacheName(partitions[1].id),
+        L"partition cache names must be stable and isolated");
 }
 
 void TestIndexRebuildPolicy() {
@@ -791,6 +829,7 @@ void TestLargePrefixTopKIsNotWindowed() {
 int wmain() {
     TestProtocolHeaderRoundTrip();
     TestStatusPayloadRoundTrip();
+    TestIndexPartitionRoutingAndScheduling();
     TestIndexRebuildPolicy();
     TestIgnoredDeveloperDirectoryNames();
     TestRebuildDecisionDiagnostics();

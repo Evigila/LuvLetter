@@ -107,7 +107,7 @@ internal static partial class Program
                 general.Select(static item => item.IconKind));
             Assert.Equal(@"C:\aaa", general[0].SecondaryText);
             Assert.Equal(@"C:\logs", general[1].SecondaryText);
-            Assert.Equal(5, fileIndex.Queries.Single().MaximumResults);
+            Assert.Equal(64, fileIndex.Queries.Single().MaximumResults);
 
             nativeShell.RaiseInputChanged("b", InputMode.Ask, revision: 2);
             Assert.True(

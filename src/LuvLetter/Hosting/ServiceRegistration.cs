@@ -11,6 +11,7 @@ using LuvLetter.Core.Application;
 using LuvLetter.Core.Plugins;
 using LuvLetter.Platform.Activation;
 using LuvLetter.Platform.Indexing;
+using LuvLetter.Platform.Applications;
 using LuvLetter.Platform.Tray;
 using LuvLetter.View.Settings;
 using WpfApplication = System.Windows.Application;
@@ -32,6 +33,8 @@ internal static class ServiceRegistration
         services.AddSingleton<CommandDispatcher>();
         services.AddSingleton<QuickActionRegistry>();
         services.AddSingleton(new InputCandidateOptions());
+        services.AddSingleton(new CandidateRankingOptions());
+        services.AddSingleton<ICandidateRankingPolicy, DefaultCandidateRankingPolicy>();
 
         services.AddSingleton<NativeShellService>();
         services.AddSingleton<INativeShell>(
@@ -43,10 +46,17 @@ internal static class ServiceRegistration
         services.AddSingleton<FileIndexCompanionClient>();
         services.AddSingleton<IFileIndexClient>(
             provider => provider.GetRequiredService<FileIndexCompanionClient>());
-        services.AddSingleton<IIndexRefreshRequester>(
-            provider => provider.GetRequiredService<FileIndexCompanionClient>());
         services.AddHostedService(
             provider => provider.GetRequiredService<FileIndexCompanionClient>());
+        services.AddSingleton<WindowsApplicationDiscovery>();
+        services.AddSingleton<WindowsApplicationCatalog>();
+        services.AddSingleton<IApplicationCatalog>(
+            provider => provider.GetRequiredService<WindowsApplicationCatalog>());
+        services.AddHostedService(
+            provider => provider.GetRequiredService<WindowsApplicationCatalog>());
+        services.AddSingleton<IApplicationLauncher>(provider => new WindowsApplicationLauncher(
+            provider.GetRequiredService<WindowsApplicationCatalog>().IsPathExcluded));
+        services.AddSingleton<IIndexRefreshRequester, ApplicationIndexRefreshRequester>();
         services.AddSingleton<WindowsFileCandidateLauncher>();
         services.AddSingleton<IFileCandidateLauncher>(
             provider => provider.GetRequiredService<WindowsFileCandidateLauncher>());

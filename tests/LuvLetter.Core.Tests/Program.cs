@@ -26,6 +26,18 @@ internal static partial class Program
         ("Index ignore default validation", TestIndexIgnoreDefaults),
         ("Legacy index ignore default migration", TestLegacyIndexIgnoreUpgrade),
         ("Customized index ignore preservation", TestCustomIndexIgnoreConfiguration),
+        ("Application name matching", TestApplicationNameMatching),
+        ("Application and file candidate ranking", TestApplicationCandidateRanking),
+        ("Application candidate merge and refresh", TestApplicationCandidateMerge),
+        ("Application candidate source isolation and modes", TestApplicationCandidateIsolation),
+        ("Application candidate priority override", TestApplicationCandidatePriorityOverride),
+        ("Application activation revision and cancellation", TestApplicationActivationRevision),
+        ("Standalone executable candidate priority", TestStandaloneExecutablePriority),
+        ("Index partition metadata", TestIndexPartitionMetadata),
+        ("Index partition ownership", TestIndexPartitionOwnership),
+        ("Index partition scheduling", TestIndexPartitionScheduling),
+        ("Index partition read views", TestIndexPartitionReadViews),
+        ("File index partition configuration", TestFileIndexPartitionConfiguration),
     ];
 
     public static async Task<int> Main()

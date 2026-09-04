@@ -16,6 +16,9 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
     private readonly IFileCandidateLauncher fileLauncher;
     private readonly CommandDispatcher commandDispatcher;
     private readonly InputCandidateOptions options;
+    private readonly IApplicationCatalog? applicationCatalog;
+    private readonly IApplicationLauncher? applicationLauncher;
+    private readonly ICandidateRankingPolicy rankingPolicy;
     private readonly Channel<InputChanged> pendingChanges;
     private readonly object stateLock = new();
     private readonly object indexActivityLock = new();
@@ -35,13 +38,19 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
     private long nextToken;
     private int started;
     private int disposed;
+    private int applicationActivationPending;
+    private string? cachedFileQuery;
+    private IReadOnlyList<FileIndexMatch> cachedFileMatches = [];
 
     public InputCandidateCoordinator(
         INativeShell nativeShell,
         IFileIndexClient fileIndexClient,
         IFileCandidateLauncher fileLauncher,
         CommandDispatcher commandDispatcher,
-        InputCandidateOptions options)
+        InputCandidateOptions options,
+        IApplicationCatalog? applicationCatalog = null,
+        IApplicationLauncher? applicationLauncher = null,
+        ICandidateRankingPolicy? rankingPolicy = null)
     {
         ArgumentNullException.ThrowIfNull(nativeShell);
         ArgumentNullException.ThrowIfNull(fileIndexClient);
@@ -55,6 +64,9 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         this.fileLauncher = fileLauncher;
         this.commandDispatcher = commandDispatcher;
         this.options = options;
+        this.applicationCatalog = applicationCatalog;
+        this.applicationLauncher = applicationLauncher;
+        this.rankingPolicy = rankingPolicy ?? new DefaultCandidateRankingPolicy();
         pendingChanges = Channel.CreateBounded<InputChanged>(
             new BoundedChannelOptions(1)
             {
@@ -79,6 +91,7 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         nativeShell.CandidateActivated += HandleCandidateActivated;
         fileIndexClient.IndexChanged += HandleIndexChanged;
         fileIndexClient.StateChanged += HandleIndexStateChanged;
+        if (applicationCatalog is not null) applicationCatalog.Changed += HandleIndexChanged;
         consumeTask = ConsumeAsync(lifetimeCancellation.Token);
         HandleIndexStateChanged(fileIndexClient.CurrentState);
         return Task.CompletedTask;
@@ -92,6 +105,7 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         }
 
         fileIndexClient.StateChanged -= HandleIndexStateChanged;
+        if (applicationCatalog is not null) applicationCatalog.Changed -= HandleIndexChanged;
         fileIndexClient.IndexChanged -= HandleIndexChanged;
         nativeShell.CandidateActivated -= HandleCandidateActivated;
         nativeShell.InputChanged -= HandleInputChanged;
@@ -143,6 +157,7 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         nativeShell.InputChanged -= HandleInputChanged;
         fileIndexClient.IndexChanged -= HandleIndexChanged;
         fileIndexClient.StateChanged -= HandleIndexStateChanged;
+        if (applicationCatalog is not null) applicationCatalog.Changed -= HandleIndexChanged;
         pendingChanges.Writer.TryComplete();
         lock (stateLock)
         {
@@ -337,8 +352,15 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
     {
         if (Volatile.Read(ref started) == 0
             || activation.Token == 0
-            || !Volatile.Read(ref activeTargets).TryGetValue(activation.Token, out var target))
+            || !Volatile.Read(ref activeTargets).TryGetValue(activation.Token, out var target)
+            || !IsLatest(target.Revision))
         {
+            return;
+        }
+
+        if (target.ApplicationId is not null)
+        {
+            _ = ActivateApplicationAsync(target, activation.Action);
             return;
         }
 
@@ -448,6 +470,19 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         var directLimit = Math.Min(
             options.FileCandidateCount,
             Math.Max(0, options.TotalCandidateCount - 1));
+        var retrievalLimit = Math.Max(directLimit, options.RetrievalCandidateCount);
+        IReadOnlyList<ApplicationMatch> applications = [];
+        if (directLimit > 0 && applicationCatalog is not null)
+        {
+            try { applications = applicationCatalog.Query(query, retrievalLimit); }
+            catch { /* A catalog failure must not prevent filesystem candidates. */ }
+        }
+        if (applications.Count > 0 && activeCandidateRevision != change.Revision)
+        {
+            // Applications can be shown immediately while the companion query runs.
+            Publish(MergeSearchCandidates(query, directLimit, applications,
+                string.Equals(cachedFileQuery, query, StringComparison.Ordinal) ? cachedFileMatches : []), change.Revision);
+        }
         IReadOnlyList<FileIndexMatch> files = [];
         if (directLimit > 0)
         {
@@ -455,7 +490,7 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
             {
                 files = await fileIndexClient.QueryAsync(
                     query,
-                    directLimit,
+                    retrievalLimit,
                     change.Revision,
                     cancellationToken).ConfigureAwait(false);
             }
@@ -469,13 +504,48 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
             }
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         if (!IsLatest(change.Revision))
         {
             return;
         }
 
+        cachedFileQuery = query;
+        cachedFileMatches = files;
+        Publish(MergeSearchCandidates(query, directLimit, applications, files), change.Revision);
+    }
+
+    private IReadOnlyList<CandidateSpec> MergeSearchCandidates(
+        string query, int directLimit, IReadOnlyList<ApplicationMatch> applications,
+        IReadOnlyList<FileIndexMatch> files)
+    {
+        var ranked = new List<(CandidateSpec Spec, double Score)>();
+        var applicationFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var match in applications.DistinctBy(match => match.Entry.Id, StringComparer.OrdinalIgnoreCase))
+        {
+            var entry = match.Entry;
+            if (string.IsNullOrWhiteSpace(entry.Id) || string.IsNullOrWhiteSpace(entry.DisplayName)) continue;
+            var identity = $"app:{entry.Id}";
+            var spec = new CandidateSpec(CandidateKind.File, CandidateIconKind.Executable,
+                entry.DisplayName, ApplicationDescription(entry), entry.LaunchTarget, null, identity, entry.Id);
+            ranked.Add((spec, rankingPolicy.Score(new CandidateRankingContext(
+                identity, query, SearchCandidateSource.Application, match.MatchScore))));
+
+            // A shortcut file is the exact same launch entry. Bare executable
+            // equivalents are collapsed only when arguments/search paths cannot differ.
+            if (entry.LaunchKind == ApplicationLaunchKind.Shortcut)
+                applicationFiles.Add(entry.LaunchTarget);
+            if ((entry.LaunchKind is ApplicationLaunchKind.Executable or ApplicationLaunchKind.RegisteredExecutable)
+                && string.IsNullOrEmpty(entry.Arguments) && string.IsNullOrEmpty(entry.SearchPath)
+                && !string.IsNullOrEmpty(entry.ExecutablePath)
+                && (string.IsNullOrEmpty(entry.WorkingDirectory)
+                    || string.Equals(Path.TrimEndingDirectorySeparator(entry.WorkingDirectory),
+                        Path.GetDirectoryName(entry.ExecutablePath), StringComparison.OrdinalIgnoreCase)))
+                applicationFiles.Add(entry.ExecutablePath);
+        }
+
         var candidates = new List<CandidateSpec>(options.TotalCandidateCount);
-        foreach (var file in files.Take(directLimit))
+        foreach (var file in files)
         {
             if (string.IsNullOrWhiteSpace(file.DisplayName)
                 || string.IsNullOrWhiteSpace(file.FullPath)
@@ -484,19 +554,28 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
                 continue;
             }
 
-            candidates.Add(new CandidateSpec(
+            if (applicationFiles.Contains(file.FullPath)) continue;
+            var identity = $"fs:{file.StableId:X16}:{file.FullPath}";
+            var isExecutable = file.EntryKind == FileSystemEntryKind.File
+                && Path.GetExtension(file.FullPath).Equals(".exe", StringComparison.OrdinalIgnoreCase);
+            var spec = new CandidateSpec(
                 CandidateKind.File,
                 CandidateIconClassifier.Classify(file.EntryKind, file.FullPath),
                 file.DisplayName,
-                ParentPath(file.FullPath),
+                isExecutable ? $"应用程序 · {ParentPath(file.FullPath)}" : ParentPath(file.FullPath),
                 file.FullPath,
                 file.EntryKind,
-                $"fs:{file.StableId:X16}:{file.FullPath}"));
-            if (candidates.Count == directLimit)
-            {
-                break;
-            }
+                identity);
+            ranked.Add((spec, rankingPolicy.Score(new CandidateRankingContext(
+                identity, query, isExecutable ? SearchCandidateSource.Application
+                    : file.EntryKind == FileSystemEntryKind.Directory ? SearchCandidateSource.Directory : SearchCandidateSource.File,
+                DefaultCandidateRankingPolicy.FileMatchScore(file, query)))));
         }
+
+        candidates.AddRange(ranked.OrderByDescending(item => double.IsFinite(item.Score)
+                ? item.Score : double.MinValue)
+            .Select(item => item.Spec).DistinctBy(spec => spec.Identity, StringComparer.OrdinalIgnoreCase)
+            .Take(directLimit));
 
         var commandCapacity = directLimit - candidates.Count;
         if (commandCapacity > 0)
@@ -516,8 +595,15 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
                 $"global:{query}"));
         }
 
-        Publish(candidates, change.Revision);
+        return candidates;
     }
+
+    private static string ApplicationDescription(ApplicationEntry entry) =>
+        entry.LaunchKind == ApplicationLaunchKind.Packaged ? "应用程序 · Windows 应用"
+            : entry.LaunchKind == ApplicationLaunchKind.Shortcut
+                ? string.IsNullOrWhiteSpace(entry.Arguments) ? $"应用程序 · {entry.LaunchTarget}"
+                    : $"应用程序 · {entry.Arguments} · {entry.LaunchTarget}"
+            : $"应用程序 · {entry.ExecutablePath ?? entry.LaunchTarget}";
 
     private IReadOnlyList<CandidateSpec> BuildCommandCandidates(string input, int limit)
     {
@@ -573,7 +659,7 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
                 spec.IconKind,
                 spec.PrimaryText,
                 spec.SecondaryText);
-            targets.Add(token, new CandidateTarget(spec.Kind, spec.Value, spec.EntryKind));
+            targets.Add(token, new CandidateTarget(spec.Kind, spec.Value, spec.EntryKind, spec.ApplicationId, revision));
             identityTokens.Add(spec.Identity, token);
         }
 
@@ -643,6 +729,34 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         {
             ReportStatus($"Cannot activate indexed item: {exception.Message}");
         }
+    }
+
+    private async Task ActivateApplicationAsync(CandidateTarget target, CandidateAction action)
+    {
+        if (Interlocked.CompareExchange(ref applicationActivationPending, 1, 0) != 0) return;
+        try
+        {
+            if (applicationCatalog is null || applicationLauncher is null || target.ApplicationId is null
+                || !applicationCatalog.TryGet(target.ApplicationId, out var entry) || entry is null)
+            {
+                ReportStatus("应用程序已不可用，请刷新应用索引。");
+                return;
+            }
+            var cancellationToken = lifetimeCancellation?.Token ?? CancellationToken.None;
+            cancellationToken.ThrowIfCancellationRequested();
+            var result = action == CandidateAction.Reveal
+                ? await applicationLauncher.RevealAsync(entry, cancellationToken).ConfigureAwait(false)
+                : await applicationLauncher.OpenAsync(entry, cancellationToken).ConfigureAwait(false);
+            if (!IsLatest(target.Revision)) return;
+            if (result.Succeeded) nativeShell.HideCommandInput();
+            else ReportStatus(result.Message ?? (result.Cancelled ? "已取消打开应用程序。" : "无法打开应用程序。"));
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception exception)
+        {
+            if (IsLatest(target.Revision)) ReportStatus($"无法打开应用程序：{exception.Message}");
+        }
+        finally { Volatile.Write(ref applicationActivationPending, 0); }
     }
 
     private void ActivateCommand(string commandText)
@@ -727,10 +841,13 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         string SecondaryText,
         string Value,
         FileSystemEntryKind? EntryKind,
-        string Identity);
+        string Identity,
+        string? ApplicationId = null);
 
     private sealed record CandidateTarget(
         CandidateKind Kind,
         string Value,
-        FileSystemEntryKind? EntryKind);
+        FileSystemEntryKind? EntryKind,
+        string? ApplicationId,
+        ulong Revision);
 }

@@ -264,7 +264,7 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IIndexRefresh
                 pipe,
                 FileIndexMessageType.ConfigureRoots,
                 NextRequestId(),
-                FileIndexProtocol.ConfigureRootsPayload(options.NormalizedRoots(), options.Maintenance),
+                FileIndexProtocol.ConfigureRootsPayload(options.NormalizedPartitions(), options.Maintenance),
                 timeout.Token).ConfigureAwait(false);
 
             var session = new Session(pipe, process, options.QueryTimeout);

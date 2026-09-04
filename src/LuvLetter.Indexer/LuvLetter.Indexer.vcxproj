@@ -94,6 +94,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="IndexMaintenance.h" />
+    <ClInclude Include="IndexPartitioning.h" />
+    <ClInclude Include="PartitionedIndexStore.h" />
     <ClInclude Include="IndexRebuildPolicy.h" />
   </ItemGroup>
   <ItemGroup>

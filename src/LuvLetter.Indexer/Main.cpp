@@ -1,7 +1,9 @@
 #include "luvletter/indexing/FileIndex.h"
 #include "luvletter/indexing/IndexProtocol.h"
 #include "IndexMaintenance.h"
+#include "IndexPartitioning.h"
 #include "IndexRebuildPolicy.h"
+#include "PartitionedIndexStore.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -28,42 +30,14 @@
 
 namespace {
 
-using luvletter::indexing::IndexBuilder;
-using luvletter::indexing::IndexSnapshot;
 using luvletter::indexing::Utf8ToWide;
 using luvletter::indexing::WideToUtf8;
 namespace protocol = luvletter::indexing::protocol;
 
-constexpr auto kMinimumRebuildInterval = std::chrono::minutes(1);
 constexpr std::uint32_t kMaximumQueryResults = 256;
-
-enum RebuildCause : std::uint32_t {
-    Startup = 1, FileChange = 2, Periodic = 4, Forced = 8, WatcherRecovery = 16, Retry = 32,
-};
-
-std::string DescribeCauses(const std::uint32_t causes) {
-    std::string result;
-    for (const auto& [flag, name] : {
-            std::pair{Startup, "startup"}, {FileChange, "file-change"},
-            {Periodic, "periodic"}, {Forced, "force"}, {WatcherRecovery, "watcher-recovery"}, {Retry, "retry"}}) {
-        if ((causes & flag) != 0) {
-            if (!result.empty()) result += ',';
-            result += name;
-        }
-    }
-    return result;
-}
 
 void LogIndex(const std::string_view event, const std::string_view message) {
     std::osyncstream(std::cout) << "[Index][" << event << "] " << message << std::endl;
-}
-
-std::string LogPath(const std::filesystem::path& path) {
-    auto text = WideToUtf8(path.native());
-    for (auto& character : text) {
-        if (static_cast<unsigned char>(character) < 32) character = '?';
-    }
-    return text;
 }
 
 class UniqueHandle final {
@@ -229,444 +203,6 @@ bool Transfer(
     return true;
 }
 
-class IndexStore final {
-public:
-    explicit IndexStore(std::filesystem::path snapshotPath)
-        : snapshotPath_(std::move(snapshotPath)) {
-        snapshot_ = std::make_shared<const IndexSnapshot>();
-        worker_ = std::thread([this] { WorkerMain(); });
-    }
-
-    ~IndexStore() {
-        changeMonitor_.Stop();
-        {
-            std::lock_guard lock(configurationMutex_);
-            stopping_ = true;
-            cancelBuild_.store(true, std::memory_order_relaxed);
-        }
-        configurationChanged_.notify_all();
-        if (worker_.joinable()) {
-            worker_.join();
-        }
-    }
-
-    IndexStore(const IndexStore&) = delete;
-    IndexStore& operator=(const IndexStore&) = delete;
-
-    void Configure(
-        std::vector<std::filesystem::path> roots,
-        const std::chrono::seconds refreshInterval,
-        const std::chrono::seconds triggerCooldown,
-        const std::vector<std::filesystem::path>& ignoredDirectories,
-        const std::vector<std::wstring>& ignoredDirectoryNames,
-        const std::vector<std::filesystem::path>& fullIgnorePaths) {
-        changeMonitor_.Stop();
-        const auto watcherRoots = roots;
-        const auto exclusions = std::make_shared<const luvletter::indexing::PathExclusions>(fullIgnorePaths);
-        {
-            std::lock_guard lock(configurationMutex_);
-            std::unique_lock viewLock(viewMutex_);
-            delta_.Clear();
-            exclusions_ = exclusions;
-            std::shared_ptr<const IndexSnapshot> compatibleSnapshot;
-            {
-                std::shared_lock snapshotLock(snapshotMutex_);
-                if (snapshot_->MatchesRoots(roots, exclusions->Paths())) {
-                    compatibleSnapshot = snapshot_;
-                }
-            }
-            if (!compatibleSnapshot && cachedSnapshot_ && cachedSnapshot_->MatchesRoots(roots, exclusions->Paths())) {
-                compatibleSnapshot = cachedSnapshot_;
-            }
-            const bool hasCompatibleSnapshot = compatibleSnapshot != nullptr;
-            hasUsableSnapshot_ = hasCompatibleSnapshot;
-            if (!compatibleSnapshot) {
-                compatibleSnapshot = std::make_shared<const IndexSnapshot>();
-            }
-            {
-                std::unique_lock snapshotLock(snapshotMutex_);
-                snapshot_ = std::move(compatibleSnapshot);
-            }
-
-            const std::uint64_t currentStatus = status_.load(std::memory_order_relaxed);
-            const std::uint64_t generation = hasCompatibleSnapshot
-                ? (std::max)(1ULL, currentStatus >> kActivityBits)
-                : currentStatus >> kActivityBits;
-            const auto activity = hasCompatibleSnapshot
-                ? protocol::IndexActivity::Updating
-                : protocol::IndexActivity::InitialBuild;
-            status_.store(PackStatus(generation, activity), std::memory_order_release);
-            roots_ = std::move(roots);
-            refreshInterval_ = refreshInterval;
-            nextRefresh_ = std::chrono::steady_clock::now() + refreshInterval_;
-            rebuildPolicy_.Configure(ignoredDirectories, triggerCooldown, ignoredDirectoryNames);
-            hasConfiguration_ = true;
-            ++configurationGeneration_;
-            rebuildRequested_ = true;
-            pendingCauses_ = Startup;
-            forcedRefreshRequested_ = false;
-            nextMaintenanceAllowed_ = (std::chrono::steady_clock::time_point::min)();
-            cancelBuild_.store(true, std::memory_order_relaxed);
-        }
-        try {
-            changeMonitor_.Start(watcherRoots, [this](
-                std::vector<luvletter::indexer::FileSystemChange> changes,
-                const bool uncertain) {
-                ApplyFileSystemChanges(std::move(changes), uncertain);
-            }, [exclusions](const auto& path) { return exclusions->Contains(path); });
-        } catch (...) {
-            // Full reconciliation remains available when change monitoring cannot start.
-            LogIndex("watcher-recovery", "Directory monitoring unavailable | fallback=periodic-scan");
-        }
-        LogIndex("startup", "Startup index rebuild queued | cache=load-first | full_ignore_paths=" +
-            std::to_string(exclusions->Paths().size()));
-        configurationChanged_.notify_all();
-    }
-
-    void RequestRefresh() {
-        {
-            std::lock_guard lock(configurationMutex_);
-            if (stopping_ || !hasConfiguration_) return;
-            rebuildRequested_ = true;
-            forcedRefreshRequested_ = true;
-            pendingCauses_ |= Forced;
-        }
-        LogIndex("force", "Force rebuild queued | state=accepted | cooldown=bypassed");
-        configurationChanged_.notify_all();
-    }
-
-    [[nodiscard]] std::vector<luvletter::indexing::SearchResult> Query(
-        const std::wstring_view query,
-        const std::size_t maximumResults) const {
-        std::shared_lock viewLock(viewMutex_);
-        std::shared_ptr<const IndexSnapshot> snapshot;
-        {
-            std::shared_lock lock(snapshotMutex_);
-            snapshot = snapshot_;
-        }
-        return delta_.Query(query, *snapshot, maximumResults);
-    }
-
-    [[nodiscard]] protocol::IndexStatus Status() const noexcept {
-        const std::uint64_t state = status_.load(std::memory_order_acquire);
-        return protocol::IndexStatus{
-            state >> kActivityBits,
-            static_cast<protocol::IndexActivity>(state & kActivityMask)};
-    }
-
-private:
-    static constexpr unsigned kActivityBits = 2;
-    static constexpr std::uint64_t kActivityMask = (1ULL << kActivityBits) - 1ULL;
-
-    [[nodiscard]] static constexpr std::uint64_t PackStatus(
-        const std::uint64_t generation,
-        const protocol::IndexActivity activity) noexcept {
-        return (generation << kActivityBits) | static_cast<std::uint64_t>(activity);
-    }
-
-    void SetActivity(const protocol::IndexActivity activity) noexcept {
-        std::uint64_t current = status_.load(std::memory_order_acquire);
-        while (!status_.compare_exchange_weak(
-            current,
-            (current & ~kActivityMask) | static_cast<std::uint64_t>(activity),
-            std::memory_order_release,
-            std::memory_order_acquire)) {
-        }
-    }
-
-    void ApplyFileSystemChanges(
-        std::vector<luvletter::indexer::FileSystemChange> changes,
-        const bool uncertain) {
-        // Snapshot writes must not feed changes back into their own index.
-        const auto cacheDirectory = snapshotPath_.parent_path();
-        std::erase_if(changes, [&cacheDirectory](const auto& change) {
-            return CompareStringOrdinal(
-                change.path.parent_path().c_str(), -1,
-                cacheDirectory.c_str(), -1, TRUE) == CSTR_EQUAL;
-        });
-        bool deltaLimitReached = false;
-        std::vector<std::filesystem::path> rebuildCauses;
-        std::size_t excludedCount = 0;
-        {
-            std::shared_lock viewLock(viewMutex_);
-            excludedCount = std::erase_if(changes, [this](const auto& change) {
-                return exclusions_->Contains(change.path);
-            });
-            deltaLimitReached = delta_.Apply(changes, &rebuildCauses);
-        }
-        if (excludedCount != 0) {
-            LogIndex("full-ignore", "File changes excluded | count=" + std::to_string(excludedCount));
-        }
-        if (!changes.empty()) {
-            status_.fetch_add(1ULL << kActivityBits, std::memory_order_acq_rel);
-        }
-        if (!uncertain && !deltaLimitReached) {
-            return;
-        }
-
-        const auto now = std::chrono::steady_clock::now();
-        using luvletter::indexer::RebuildDecision;
-        std::size_t acceptedCount = 0;
-        std::size_t ignoredCount = 0;
-        std::size_t cooldownCount = 0;
-        std::size_t capacityCount = 0;
-        std::size_t invalidCount = 0;
-        std::chrono::seconds remainingCooldown{0};
-        std::filesystem::path acceptedCause;
-        std::filesystem::path refusedCause;
-        for (const auto& cause : rebuildCauses) {
-            const auto evaluation = rebuildPolicy_.Evaluate(cause, now);
-            switch (evaluation.decision) {
-            case RebuildDecision::Accepted:
-                ++acceptedCount;
-                if (acceptedCause.empty()) acceptedCause = cause;
-                break;
-            case RebuildDecision::Ignored: ++ignoredCount; break;
-            case RebuildDecision::Cooldown:
-                ++cooldownCount;
-                remainingCooldown = (std::max)(remainingCooldown, evaluation.remainingCooldownSeconds);
-                if (refusedCause.empty()) refusedCause = cause;
-                break;
-            case RebuildDecision::Capacity: ++capacityCount; break;
-            case RebuildDecision::InvalidPath: ++invalidCount; break;
-            }
-        }
-        if (ignoredCount != 0) {
-            LogIndex("ignored", "File changed but rebuild ignored | count=" + std::to_string(ignoredCount));
-        }
-        if (cooldownCount != 0) {
-            LogIndex("cooldown-refused", "File changed but cooldown refused | count=" + std::to_string(cooldownCount) +
-                " | remaining_seconds=" + std::to_string(remainingCooldown.count()) + " | sample=" + LogPath(refusedCause));
-        }
-        if (capacityCount != 0) {
-            LogIndex("capacity-refused", "Rebuild request refused | reason=cooldown-map-capacity | count=" + std::to_string(capacityCount));
-        }
-        if (invalidCount != 0) {
-            LogIndex("invalid-path", "Rebuild request refused | reason=invalid-path | count=" + std::to_string(invalidCount));
-        }
-        bool recoverWatcher = false;
-        if (uncertain) {
-            const auto evaluation = rebuildPolicy_.EvaluateUnknown(now);
-            recoverWatcher = evaluation.decision == RebuildDecision::Accepted;
-            LogIndex("watcher-recovery", std::string("Directory monitoring uncertain | result=") +
-                (recoverWatcher ? "recovery-queued" : evaluation.decision == RebuildDecision::Cooldown ? "cooldown-refused" : "capacity-refused") +
-                " | remaining_seconds=" + std::to_string(evaluation.remainingCooldownSeconds.count()));
-        }
-        if (acceptedCount == 0 && !recoverWatcher) return;
-
-        {
-            std::lock_guard lock(configurationMutex_);
-            if (stopping_ || !hasConfiguration_) {
-                return;
-            }
-            // Coalesce watcher recovery and directory churn without cancelling a scan.
-            // Only a real root reconfiguration invalidates the in-flight build.
-            if (acceptedCount != 0) {
-                const auto wait = nextMaintenanceAllowed_ > now
-                    ? std::chrono::ceil<std::chrono::seconds>(nextMaintenanceAllowed_ - now).count() : 0;
-                LogIndex("file-change", std::string("File changed triggered | result=") +
-                    (rebuildRequested_ ? "coalesced" : "queued") +
-                    " | active_scan=" + (scanRunning_ ? "true" : "false") +
-                    " | minimum_wait_seconds=" + std::to_string(wait) +
-                    " | count=" + std::to_string(acceptedCount) + " | sample=" + LogPath(acceptedCause));
-                pendingCauses_ |= FileChange;
-            }
-            if (recoverWatcher) pendingCauses_ |= WatcherRecovery;
-            rebuildRequested_ = true;
-        }
-        configurationChanged_.notify_all();
-    }
-
-    void WorkerMain() {
-        const bool backgroundMode = SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) != FALSE;
-        if (!backgroundMode) {
-            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
-        }
-        std::unique_lock lock(configurationMutex_);
-        bool cacheLoadAttempted = false;
-        while (!stopping_) {
-            configurationChanged_.wait(lock, [this] {
-                return stopping_ || hasConfiguration_;
-            });
-            if (stopping_) {
-                break;
-            }
-
-            const auto roots = roots_;
-            const auto exclusions = exclusions_;
-            const auto generation = configurationGeneration_;
-            if (!cacheLoadAttempted) {
-                cacheLoadAttempted = true;
-                lock.unlock();
-                // Keep cache I/O and validation off the pipe/handshake thread.
-                const auto loadCache = [](const std::filesystem::path& path) {
-                    try {
-                        return IndexSnapshot::Load(path);
-                    } catch (...) {
-                        LogIndex("cache", "Cache load failed | result=trying-fallback");
-                        return std::shared_ptr<const IndexSnapshot>{};
-                    }
-                };
-                auto cached = loadCache(snapshotPath_);
-                if (!cached || !cached->MatchesRoots(roots, exclusions->Paths())) {
-                    LogIndex("cache", "Primary cache missing, invalid, or scope changed | result=trying-backup");
-                    auto backupPath = snapshotPath_;
-                    backupPath += L".bak";
-                    cached = loadCache(backupPath);
-                }
-                lock.lock();
-                cachedSnapshot_ = std::move(cached);
-                if (stopping_) break;
-                if (cachedSnapshot_ && cachedSnapshot_->MatchesRoots(roots_, exclusions_->Paths())) {
-                    std::unique_lock viewLock(viewMutex_);
-                    std::unique_lock snapshotLock(snapshotMutex_);
-                    snapshot_ = cachedSnapshot_;
-                    hasUsableSnapshot_ = true;
-                    status_.fetch_add(1ULL << kActivityBits, std::memory_order_acq_rel);
-                    SetActivity(protocol::IndexActivity::Ready);
-                    LogIndex("cache", "Cached snapshot available | result=published");
-                } else {
-                    LogIndex("cache", "No compatible cache | result=awaiting-initial-scan");
-                }
-                continue;
-            }
-
-            // Keep periodic deadlines independent of file-triggered and manual scans.
-            const auto now = std::chrono::steady_clock::now();
-            if (now >= nextRefresh_) {
-                const auto elapsedIntervals = (now - nextRefresh_) / refreshInterval_ + 1;
-                nextRefresh_ += refreshInterval_ * elapsedIntervals;
-                LogIndex("periodic", "Automatic index rebuild | result=queued | interval_seconds=" +
-                    std::to_string(refreshInterval_.count()) + " | coalesced_ticks=" + std::to_string(elapsedIntervals));
-                rebuildRequested_ = true;
-                pendingCauses_ |= Periodic;
-            }
-            const bool requested = rebuildRequested_;
-            const bool forced = forcedRefreshRequested_;
-            const auto deadline = forced ? (std::chrono::steady_clock::time_point::min)()
-                : requested ? nextMaintenanceAllowed_ : nextRefresh_;
-            if (now < deadline) {
-                configurationChanged_.wait_until(lock, (std::min)(deadline, nextRefresh_), [this, generation, requested, forced] {
-                    return stopping_ || configurationGeneration_ != generation ||
-                        rebuildRequested_ != requested || forcedRefreshRequested_ != forced;
-                });
-                continue;
-            }
-            rebuildRequested_ = false;
-            forcedRefreshRequested_ = false;
-            const auto causes = std::exchange(pendingCauses_, 0U);
-            scanRunning_ = true;
-            const auto deltaRevision = delta_.CaptureRevision();
-            cancelBuild_.store(false, std::memory_order_relaxed);
-            SetActivity(hasUsableSnapshot_
-                ? protocol::IndexActivity::Updating
-                : protocol::IndexActivity::InitialBuild);
-            lock.unlock();
-
-            const auto scanStarted = std::chrono::steady_clock::now();
-            LogIndex("rebuild", "Index rebuild started | causes=" + DescribeCauses(causes));
-            std::shared_ptr<const IndexSnapshot> rebuilt;
-            try {
-                rebuilt = IndexBuilder::Build(roots, &cancelBuild_, exclusions->Paths());
-            } catch (...) {
-                LogIndex("rebuild", "Index rebuild exception | result=retaining-previous-snapshot");
-            }
-
-            lock.lock();
-            scanRunning_ = false;
-            if (stopping_) {
-                LogIndex("rebuild", "Index rebuild cancelled | reason=shutdown");
-                break;
-            }
-            if (generation != configurationGeneration_) {
-                LogIndex("rebuild", "Index rebuild cancelled | reason=scope-reconfigured");
-                continue;
-            }
-            nextMaintenanceAllowed_ = std::chrono::steady_clock::now() + kMinimumRebuildInterval;
-            if (rebuilt) {
-                hasUsableSnapshot_ = true;
-                {
-                    std::unique_lock viewLock(viewMutex_);
-                    {
-                        std::unique_lock snapshotLock(snapshotMutex_);
-                        snapshot_ = rebuilt;
-                    }
-                    delta_.PruneThrough(deltaRevision);
-                }
-                std::uint64_t currentStatus = status_.load(std::memory_order_acquire);
-                while (!status_.compare_exchange_weak(
-                    currentStatus,
-                    PackStatus(
-                        (currentStatus >> kActivityBits) + 1U,
-                        protocol::IndexActivity::Ready),
-                    std::memory_order_release,
-                    std::memory_order_acquire)) {
-                }
-                const auto previousCache = cachedSnapshot_;
-                lock.unlock();
-                bool saved = false;
-                try {
-                    auto backupPath = snapshotPath_;
-                    backupPath += L".bak";
-                    // Keep the preceding valid snapshot if the primary is later damaged.
-                    const auto backup = previousCache && previousCache->MatchesRoots(roots, exclusions->Paths())
-                        ? previousCache : rebuilt;
-                    if (backup->Save(backupPath)) {
-                        saved = rebuilt->Save(snapshotPath_);
-                    }
-                } catch (...) {
-                    // Failed persistence must not discard the last usable cache.
-                }
-                if (!saved) LogIndex("cache", "Cache save failed | result=previous-cache-retained");
-                LogIndex("rebuild", "Index rebuild completed | causes=" + DescribeCauses(causes) +
-                    " | duration_seconds=" + std::to_string(std::chrono::duration_cast<std::chrono::seconds>(
-                        std::chrono::steady_clock::now() - scanStarted).count()) +
-                    " | cache=" + (saved ? "saved" : "not-saved"));
-                lock.lock();
-                if (saved) cachedSnapshot_ = rebuilt;
-            } else {
-                // Avoid a tight retry loop; queries keep using the previous snapshot.
-                rebuildRequested_ = true;
-                pendingCauses_ |= Retry;
-                SetActivity(protocol::IndexActivity::Failed);
-                LogIndex("rebuild", "Index rebuild failed | result=previous-snapshot-retained | retry_after_seconds=60");
-            }
-        }
-        if (backgroundMode) {
-            SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END);
-        }
-    }
-
-    const std::filesystem::path snapshotPath_;
-    mutable std::shared_mutex viewMutex_;
-    mutable std::shared_mutex snapshotMutex_;
-    std::shared_ptr<const IndexSnapshot> snapshot_;
-    std::shared_ptr<const IndexSnapshot> cachedSnapshot_;
-    luvletter::indexer::LiveIndexDelta delta_;
-    luvletter::indexer::IndexRebuildPolicy rebuildPolicy_;
-    luvletter::indexer::DirectoryChangeMonitor changeMonitor_;
-    std::shared_ptr<const luvletter::indexing::PathExclusions> exclusions_ =
-        std::make_shared<const luvletter::indexing::PathExclusions>();
-
-    std::mutex configurationMutex_;
-    std::condition_variable configurationChanged_;
-    std::vector<std::filesystem::path> roots_;
-    std::uint64_t configurationGeneration_ = 0;
-    std::atomic_uint64_t status_ = 0;
-    std::atomic_bool cancelBuild_ = false;
-    bool hasConfiguration_ = false;
-    bool hasUsableSnapshot_ = false;
-    bool rebuildRequested_ = false;
-    bool forcedRefreshRequested_ = false;
-    bool scanRunning_ = false;
-    std::uint32_t pendingCauses_ = 0;
-    std::chrono::seconds refreshInterval_{360};
-    std::chrono::steady_clock::time_point nextMaintenanceAllowed_{};
-    std::chrono::steady_clock::time_point nextRefresh_{};
-    bool stopping_ = false;
-    std::thread worker_;
-};
-
 bool SendFrame(
     const HANDLE pipe,
     const HANDLE parentProcess,
@@ -702,31 +238,50 @@ bool SendError(
     return SendFrame(pipe, parentProcess, protocol::MessageType::Error, requestId, payload);
 }
 
-bool ConfigureRoots(IndexStore& store, const std::span<const std::byte> payload) {
+bool ConfigureRoots(luvletter::indexer::PartitionedIndexStore& store, const std::span<const std::byte> payload) {
     std::size_t cursor = 0;
     std::uint32_t count = 0;
     if (!protocol::ReadU32(payload, cursor, count) || count > 1024) {
         return false;
     }
 
-    std::vector<std::filesystem::path> roots;
-    roots.reserve(count);
+    std::vector<luvletter::indexer::IndexPartitionDescriptor> partitions;
+    partitions.reserve(count);
     for (std::uint32_t index = 0; index < count; ++index) {
-        std::string encoded;
-        if (!protocol::ReadUtf8(payload, cursor, encoded)) {
-            return false;
+        std::string id;
+        std::string encodedRoot;
+        std::uint32_t tier = 0;
+        std::uint32_t partitionRefresh = 0;
+        std::uint32_t automaticGap = 0;
+        std::uint32_t delegatedCount = 0;
+        if (!protocol::ReadUtf8(payload, cursor, id) || !luvletter::indexer::IsValidPartitionId(id)
+            || !protocol::ReadUtf8(payload, cursor, encodedRoot)
+            || !protocol::ReadU32(payload, cursor, tier) || tier > 1
+            || !protocol::ReadU32(payload, cursor, partitionRefresh)
+            || partitionRefresh < 60 || partitionRefresh > 86400
+            || !protocol::ReadU32(payload, cursor, automaticGap)
+            || automaticGap < 1 || automaticGap > 3600
+            || !protocol::ReadU32(payload, cursor, delegatedCount) || delegatedCount > 1024) return false;
+        const std::filesystem::path root(Utf8ToWide(encodedRoot));
+        if (root.empty() || !root.is_absolute()) return false;
+        std::vector<std::filesystem::path> delegatedSubtrees;
+        delegatedSubtrees.reserve(delegatedCount);
+        for (std::uint32_t delegated = 0; delegated < delegatedCount; ++delegated) {
+            std::string encoded;
+            if (!protocol::ReadUtf8(payload, cursor, encoded)) return false;
+            const std::filesystem::path path(Utf8ToWide(encoded));
+            if (path.empty() || !path.is_absolute()
+                || !luvletter::indexer::PartitionContainsPath(root, path)) return false;
+            delegatedSubtrees.push_back(path);
         }
-        auto decoded = Utf8ToWide(encoded);
-        if (decoded.empty() && !encoded.empty()) {
-            return false;
-        }
-        roots.emplace_back(std::move(decoded));
+        partitions.push_back(luvletter::indexer::IndexPartitionDescriptor{
+            std::move(id), root, std::move(delegatedSubtrees),
+            static_cast<luvletter::indexer::PartitionMaintenanceTier>(tier),
+            std::chrono::seconds(partitionRefresh), std::chrono::seconds(automaticGap)});
     }
-    std::uint32_t refreshSeconds = 0;
     std::uint32_t cooldownSeconds = 0;
     std::uint32_t ignoredCount = 0;
-    if (!protocol::ReadU32(payload, cursor, refreshSeconds) || refreshSeconds < 60 || refreshSeconds > 86400 ||
-        !protocol::ReadU32(payload, cursor, cooldownSeconds) || cooldownSeconds < 1 || cooldownSeconds > 3600 ||
+    if (count == 0 || !protocol::ReadU32(payload, cursor, cooldownSeconds) || cooldownSeconds < 1 || cooldownSeconds > 3600 ||
         !protocol::ReadU32(payload, cursor, ignoredCount) || ignoredCount > 1024) {
         return false;
     }
@@ -767,13 +322,12 @@ bool ConfigureRoots(IndexStore& store, const std::span<const std::byte> payload)
     if (cursor != payload.size()) {
         return false;
     }
-    store.Configure(std::move(roots), std::chrono::seconds(refreshSeconds),
-        std::chrono::seconds(cooldownSeconds), ignoredDirectories, ignoredDirectoryNames, fullIgnorePaths);
-    return true;
+    return store.Configure(std::move(partitions), std::chrono::seconds(cooldownSeconds),
+        ignoredDirectories, ignoredDirectoryNames, fullIgnorePaths);
 }
 
 bool HandleQuery(
-    IndexStore& store,
+    luvletter::indexer::PartitionedIndexStore& store,
     const HANDLE pipe,
     const HANDLE parentProcess,
     const std::uint64_t requestId,
@@ -831,7 +385,8 @@ int Run(const Options& options) {
         return 3;
     }
 
-    IndexStore store(options.dataDirectory / L"file-index-v3.bin");
+    luvletter::indexer::PartitionedIndexStore store(options.dataDirectory,
+        [](const std::string_view event, const std::string_view message) { LogIndex(event, message); });
     bool handshakeComplete = false;
     while (ParentIsAlive(parentProcess.Get())) {
         std::vector<std::byte> headerBytes(protocol::kHeaderSize);

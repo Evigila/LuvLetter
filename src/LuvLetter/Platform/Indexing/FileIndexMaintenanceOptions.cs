@@ -7,6 +7,10 @@ internal sealed class FileIndexMaintenanceOptions
 {
     public int RefreshIntervalSeconds { get; init; } = 360;
 
+    public int NormalPartitionRefreshIntervalSeconds { get; init; } = 1800;
+
+    public int AutomaticRebuildGapSeconds { get; init; } = 60;
+
     public int TriggerCooldownSeconds { get; init; } = 60;
 
     public string[] FullIgnorePaths { get; init; } = [];
@@ -100,6 +104,8 @@ internal sealed class FileIndexMaintenanceOptions
     internal void Validate()
     {
         if (RefreshIntervalSeconds is < 60 or > 86400
+            || NormalPartitionRefreshIntervalSeconds is < 60 or > 86400
+            || AutomaticRebuildGapSeconds is < 1 or > 3600
             || TriggerCooldownSeconds is < 1 or > 3600)
         {
             throw new InvalidDataException("Index refresh must be 60-86400 seconds and trigger cooldown 1-3600 seconds.");
@@ -176,6 +182,8 @@ internal sealed class FileIndexMaintenanceOptions
         var upgraded = new FileIndexMaintenanceOptions
         {
             RefreshIntervalSeconds = RefreshIntervalSeconds,
+            NormalPartitionRefreshIntervalSeconds = NormalPartitionRefreshIntervalSeconds,
+            AutomaticRebuildGapSeconds = AutomaticRebuildGapSeconds,
             TriggerCooldownSeconds = TriggerCooldownSeconds,
             FullIgnorePaths = FullIgnorePaths,
             IsAvailable = IsAvailable,

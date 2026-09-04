@@ -1,6 +1,6 @@
-using System.Diagnostics;
 using System.IO;
 using LuvLetter.Core.Application;
+using LuvLetter.Platform.Applications;
 
 namespace LuvLetter.Platform.Indexing;
 
@@ -14,11 +14,8 @@ internal sealed class WindowsFileCandidateLauncher : IFileCandidateLauncher
             return false;
         }
 
-        using var process = Process.Start(new ProcessStartInfo(fullPath)
-        {
-            UseShellExecute = true,
-        });
-        return process is not null;
+        return RequireSuccess(WindowsShell.ActivateAsync(
+            () => WindowsShell.Execute(fullPath), CancellationToken.None).GetAwaiter().GetResult());
     }
 
     public bool Reveal(string fullPath, FileSystemEntryKind entryKind)
@@ -35,14 +32,12 @@ internal sealed class WindowsFileCandidateLauncher : IFileCandidateLauncher
             return Open(fullPath, entryKind);
         }
 
-        var startInfo = new ProcessStartInfo("explorer.exe")
-        {
-            UseShellExecute = true,
-            Arguments = $"/select,\"{fullPath}\"",
-        };
-        using var process = Process.Start(startInfo);
-        return process is not null;
+        return RequireSuccess(WindowsShell.ActivateAsync(
+            () => WindowsShell.Reveal(fullPath), CancellationToken.None).GetAwaiter().GetResult());
     }
+
+    private static bool RequireSuccess(ApplicationLaunchResult result) => result.Succeeded
+        ? true : throw new InvalidOperationException(result.Message);
 
     private static bool Exists(string fullPath, FileSystemEntryKind entryKind) => entryKind switch
     {

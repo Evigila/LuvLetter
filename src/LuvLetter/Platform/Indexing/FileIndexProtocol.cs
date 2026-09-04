@@ -40,25 +40,30 @@ internal enum FileIndexActivity : byte
 internal static class FileIndexProtocol
 {
     internal const uint Magic = 0x58494C4C;
-    internal const ushort MajorVersion = 5;
+    internal const ushort MajorVersion = 6;
     internal const int HeaderSize = 20;
     internal const int MaximumPayloadLength = 1024 * 1024;
 
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
     internal static byte[] ConfigureRootsPayload(
-        IReadOnlyList<string> roots,
+        IReadOnlyList<FileIndexPartitionDescriptor> partitions,
         FileIndexMaintenanceOptions maintenance)
     {
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream, StrictUtf8, leaveOpen: true);
-        writer.Write(checked((uint)roots.Count));
-        foreach (var root in roots)
+        writer.Write(checked((uint)partitions.Count));
+        foreach (var partition in partitions)
         {
-            WriteString(writer, root);
+            WriteString(writer, partition.Id);
+            WriteString(writer, partition.Root);
+            writer.Write((uint)partition.Tier);
+            writer.Write(checked((uint)partition.RefreshAgeSeconds));
+            writer.Write(checked((uint)partition.AutomaticGapSeconds));
+            writer.Write(checked((uint)partition.DelegatedSubtrees.Length));
+            foreach (var delegated in partition.DelegatedSubtrees) WriteString(writer, delegated);
         }
 
-        writer.Write(checked((uint)maintenance.RefreshIntervalSeconds));
         writer.Write(checked((uint)maintenance.TriggerCooldownSeconds));
         var ignored = maintenance.NormalizedIgnoreDirectories();
         writer.Write(checked((uint)ignored.Length));

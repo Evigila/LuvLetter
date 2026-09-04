@@ -13,6 +13,9 @@ public sealed class InputCandidateOptions
 
     public int TotalCandidateCount { get; init; } = DefaultTotalCandidateCount;
 
+    // Retrieve before ranking/truncating so one source cannot reserve every slot.
+    public int RetrievalCandidateCount { get; init; } = 64;
+
     public string CommandDescription { get; init; } = "Command";
 
     public string GlobalSearchLabel { get; init; } = "Global Search";
@@ -25,6 +28,8 @@ public sealed class InputCandidateOptions
     {
         ArgumentOutOfRangeException.ThrowIfNegative(FileCandidateCount);
         ArgumentOutOfRangeException.ThrowIfLessThan(TotalCandidateCount, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(RetrievalCandidateCount, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(RetrievalCandidateCount, 256);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(
             FileCandidateCount,
             MaximumCandidateCount);
