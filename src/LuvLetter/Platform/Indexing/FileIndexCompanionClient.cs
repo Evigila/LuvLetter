@@ -44,8 +44,13 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IIndexRefresh
     public void RequestRefresh()
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+        if (!options.Maintenance.IsAvailable)
+        {
+            Console.WriteLine("[Index][configuration-error] Force refresh unavailable | state=configuration-invalid");
+            return;
+        }
         Interlocked.Exchange(ref refreshRequested, 1);
-        Console.WriteLine("Index refresh requested; waiting for the companion.");
+        Console.WriteLine("[Index][force] Force rebuild queued | state=awaiting-companion");
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -55,6 +60,11 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IIndexRefresh
         if (Interlocked.Exchange(ref started, 1) != 0)
         {
             throw new InvalidOperationException("The file-index companion has already started.");
+        }
+
+        if (!options.Maintenance.IsAvailable)
+        {
+            return Task.CompletedTask;
         }
 
         lifetimeCancellation = new CancellationTokenSource();
@@ -208,6 +218,8 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IIndexRefresh
                 WorkingDirectory = AppContext.BaseDirectory,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                StandardOutputEncoding = System.Text.Encoding.UTF8,
+                StandardErrorEncoding = System.Text.Encoding.UTF8,
             };
             startInfo.ArgumentList.Add("--pipe");
             startInfo.ArgumentList.Add(pipeName);

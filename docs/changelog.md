@@ -8,6 +8,13 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 
 ### Added
 
+- Added `FullIgnorePaths` for exact file and directory-subtree exclusions from both
+  live updates and complete scans. Scope-compatible caches include these exclusions;
+  forced refreshes preserve them.
+- Added distinct console events for file-triggered, periodic, cooldown-refused, and forced
+  rebuild requests, with queue/coalescing and scan lifecycle diagnostics. The debug
+  launcher uses gray, green, red, and green respectively; all other output defaults to
+  gray, independently of stdout/stderr.
 - Added root-level `start.bat` and `scripts/start.ps1` for one-click build and launch on
   Windows, with automatic Visual Studio MSBuild discovery, Debug/Release selection,
   required-output checks, and a persistent debug console with process stop controls and
@@ -70,6 +77,13 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 
 ### Changed
 
+- Kept six-minute periodic deadlines independent of file changes and manual refreshes.
+  Busy ticks merge into one request, with the existing automatic minimum gap preserved.
+- Upgraded LLIX to v5 to carry full-ignore paths; snapshot schema v3 and Native ABI v7
+  remain unchanged. An empty exclusion list retains previous v3 cache compatibility.
+- Invalid maintenance configuration now pauses indexing until corrected and restarted,
+  preventing fallback defaults from exposing full-ignored results. Other application
+  functions remain available, and user configuration files are never overwritten.
 - Coalesced watcher-triggered full index rebuilds with a one-minute minimum interval
   after each scan. Directory churn no longer cancels active scans; ordinary incremental
   updates remain enabled. The periodic reconciliation now defaults to six minutes.

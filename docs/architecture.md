@@ -279,11 +279,12 @@ Publishing a compatible cache increments the generation so unchanged input refre
 before the startup rescan finishes. Queries may briefly have no file results while the
 cache itself is loading; they do not wait for a full directory scan. Cache-directory
 write events are ignored by live maintenance to avoid feeding persistence back into it.
-A complete background rescan runs six minutes after the previous successful scan and
-save attempt finish; MFT/USN integration, fuzzy matching, pinyin matching,
+A periodic reconciliation becomes due every six minutes from scope configuration,
+independent of file-triggered and manual scans. Busy deadlines coalesce into one pending
+scan; the automatic minimum gap still applies. MFT/USN integration, fuzzy matching, pinyin matching,
 and privileged services remain outside this phase.
 
-The `LLIX` v4 protocol uses a fixed 20-byte little-endian header, UTF-8 length-prefixed
+The `LLIX` v5 protocol uses a fixed 20-byte little-endian header, UTF-8 length-prefixed
 strings, request IDs, editor revisions, and a 1 MiB payload ceiling. Managed owns the
 single pipe server and starts `LuvLetter.Indexer.exe` with the pipe name, parent process
 ID, and data directory. The pipe is restricted to the current user. Protocol, timeout,
@@ -303,8 +304,10 @@ Delta publication, or a companion restart.
 ### Maintenance policy
 
 `%LocalAppData%\LuvLetter\Index\maintenance.json` is created on first startup and read
-once per application launch. Invalid or unreadable configuration falls back to defaults
-with a console diagnostic; an existing file is never overwritten. The default values
+once per application launch. Invalid or unreadable configuration pauses indexing with
+a console diagnostic until the file is corrected and the app restarted. Commands and
+Echo remain available; an existing file is never overwritten. This prevents a malformed
+full-ignore configuration from silently restoring unrestricted search. The default values
 are a 360-second periodic refresh, a 60-second trigger cooldown, and ignored rebuild
 scopes covering temporary data, developer-generated directories, and package caches.
 For example, an editable configuration can use environment variables:
@@ -316,6 +319,10 @@ For example, an editable configuration can use environment variables:
   "IgnoreRebuildDirectories": [
     "%TEMP%",
     "%LOCALAPPDATA%\\LuvLetter\\Index"
+  ],
+  "FullIgnorePaths": [
+    "%USERPROFILE%\\Private\\example.txt",
+    "%USERPROFILE%\\Private\\ExcludedFolder"
   ]
 }
 ```
@@ -358,13 +365,33 @@ or `.gitignore`, and `bin` does not match `binoculars` or a `.bin` extension. Ge
 source/workspace roots such as `src`, `source`, `repos`, and `projects` are not defaults.
 All three lists retain live updates, periodic scanning, and search coverage.
 
-Older JSON files that omit either new field receive its defaults in memory without
+Older JSON files that omit a setting receive its defaults in memory without
 rewriting the file or changing existing lists. Providing a list replaces that field's
-defaults; an explicit `[]` disables it. The example above intentionally omits the two
-new fields and therefore uses their defaults. Restart the app after editing. The two
+defaults; an explicit `[]` disables it. The example above omits the directory-name and
+package-cache fields and therefore uses their defaults. Restart the app after editing. The two
 absolute-path lists together allow at most 1024 entries; the name list allows 128 single
 components of at most 255 characters, with no wildcards, separators, or trailing dots
 or spaces.
+
+`FullIgnorePaths` is a separate list, empty by default, of at most 1024 absolute file or
+directory paths after environment expansion. Entries are exact paths, not wildcard
+patterns. A directory entry also excludes its descendants; matching is case-insensitive
+and respects path boundaries. Full ignore takes precedence over all rebuild-trigger
+settings and remains effective during startup, periodic, and forced scans.
+
+| Policy | Change-triggered rebuild | Incremental and full-scan coverage | Search results |
+| --- | --- | --- | --- |
+| Rebuild ignore | Suppressed for known paths | Retained | Retained |
+| Full ignore | Suppressed for known paths | Excluded | Excluded |
+
+Full-ignore entries are filtered before directory traversal and before watcher events
+enter the Delta. Fully excluded roots do not open directory watches. Root provenance
+also fingerprints the normalized exclusions, so an older cache containing newly excluded
+paths cannot be published, including through backup fallback. Changing exclusions can
+therefore require an initial scan before results appear. Snapshot schema v3 is retained;
+an empty full-ignore list preserves compatibility with previous v3 root fingerprints.
+These are path-scope rules, not file-identity rules across junction aliases, and they do
+not erase already-existing cache files from disk.
 
 The in-memory cooldown map records paths whose reconciliation requests were accepted.
 Repeated events for the same normalized path cannot request another rebuild until its
@@ -379,10 +406,36 @@ that event-driven maintenance waits six minutes. A new temporary filename can by
 different filename's cooldown; noisy directory scopes belong in the ignore list.
 
 The built-in `index.refresh` command in `Gen` or `Cmd` queues a full scan regardless of
-ignore and cooldown rules, including the global automatic gap. If a scan is already
-running, one follow-up scan is queued rather than cancelling or overlapping it. LLIX v4
+rebuild-ignore and cooldown rules, including the global automatic gap. Full-ignore
+exclusions still apply. If a scan is already running, one follow-up scan is queued
+rather than cancelling or overlapping it. LLIX v5
 carries maintenance settings with root configuration and acknowledges `Refresh` with a
 status response. Disconnected manual requests wait for the next companion connection.
+
+### Index console events
+
+The debug launcher colors stable `[Index][event]` tags, independently of whether a line
+arrives on stdout or stderr. Native log lines are synchronized, redirected text uses
+UTF-8, and persisted logs contain plain text. Untagged diagnostics also default to gray.
+
+| Event | Message | Console color |
+| --- | --- | --- |
+| `file-change` | `File changed triggered` | Gray |
+| `periodic` | `Automatic index rebuild` | Green |
+| `cooldown-refused` | `File changed but cooldown refused` | Red |
+| `force` | `Force rebuild queued` | Green |
+| Other events | Startup, ignored changes, watcher recovery, cache operations, rebuild lifecycle, configuration errors | Gray |
+
+The four primary messages describe causes and admission decisions, not the complete
+lifecycle. Queued and coalesced requests are distinguished; file-trigger logs include a
+sample path, event count, active-scan flag, and minimum wait. Cooldown refusals include
+remaining seconds without extending the deadline. Capacity refusal is reported separately
+from cooldown. Force requests distinguish waiting for the companion from acceptance.
+Start, completion, cancellation, and failure/retry messages carry the actual scan state;
+a scan can combine several causes. Ordinary changes handled entirely by the Delta do
+not claim to rebuild the index. Ignored paths are not logged individually on every write.
+Watcher overflow cannot identify its source path and is reported as recovery, not as a
+known file change; it can still request reconciliation even when exclusions are present.
 
 ## Build and tests
 

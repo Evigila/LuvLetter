@@ -409,7 +409,8 @@ DirectoryChangeMonitor::~DirectoryChangeMonitor() {
 
 void DirectoryChangeMonitor::Start(
     const std::span<const std::filesystem::path> roots,
-    Callback callback) {
+    Callback callback,
+    std::function<bool(const std::filesystem::path&)> excludePath) {
     if (publisher_.joinable() && publisher_.get_id() == std::this_thread::get_id()) {
         return;
     }
@@ -420,6 +421,7 @@ void DirectoryChangeMonitor::Start(
     }
 
     ResetEvent(stopEvent_);
+    excludePath_ = std::move(excludePath);
     stopping_.store(false, std::memory_order_release);
     {
         std::lock_guard lock(pendingMutex_);
@@ -439,6 +441,7 @@ void DirectoryChangeMonitor::Start(
     try {
         watches_.reserve(roots.size());
         for (const auto& root : roots) {
+            if (excludePath_ && excludePath_(root)) continue;
             auto watch = std::make_unique<Watch>();
             watch->root = NormalizePath(root);
             watch->directory = OpenDirectoryWatch(watch->root);
@@ -493,6 +496,7 @@ void DirectoryChangeMonitor::StopCore() noexcept {
         pending_.clear();
         pendingUncertain_ = false;
         callback_ = {};
+        excludePath_ = {};
     }
 }
 
@@ -655,8 +659,10 @@ void DirectoryChangeMonitor::WatchMain(Watch& watch) {
                     break;
                 }
                 if (malformed) break;
-                changes.push_back(FileSystemChange{
-                    (watch.root / relative).lexically_normal(), action});
+                auto changedPath = (watch.root / relative).lexically_normal();
+                if (!excludePath_ || !excludePath_(changedPath)) {
+                    changes.push_back(FileSystemChange{std::move(changedPath), action});
+                }
             }
 
             if (notification->NextEntryOffset == 0) {

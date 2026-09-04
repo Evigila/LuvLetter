@@ -86,7 +86,8 @@ public:
     DirectoryChangeMonitor(const DirectoryChangeMonitor&) = delete;
     DirectoryChangeMonitor& operator=(const DirectoryChangeMonitor&) = delete;
 
-    void Start(std::span<const std::filesystem::path> roots, Callback callback);
+    void Start(std::span<const std::filesystem::path> roots, Callback callback,
+        std::function<bool(const std::filesystem::path&)> excludePath = {});
     void Stop() noexcept;
 
 private:
@@ -108,6 +109,7 @@ private:
     std::vector<FileSystemChange> pending_;
     bool pendingUncertain_ = false;
     Callback callback_;
+    std::function<bool(const std::filesystem::path&)> excludePath_;
 };
 
 } // namespace luvletter::indexer

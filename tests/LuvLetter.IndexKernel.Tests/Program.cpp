@@ -67,7 +67,7 @@ void TestProtocolHeaderRoundTrip() {
     const auto encoded = EncodeHeader(expected);
     FrameHeader actual{};
     Expect(encoded.size() == kHeaderSize, L"protocol header must remain exactly 20 bytes");
-    Expect(kMajorVersion == 4, L"failure-aware status requires LLIX protocol major version 4");
+    Expect(kMajorVersion == 5, L"full-ignore configuration requires LLIX protocol major version 5");
     Expect(DecodeHeader(encoded, actual), L"protocol header should decode");
     Expect(actual.magic == expected.magic && actual.majorVersion == expected.majorVersion &&
         actual.type == expected.type && actual.payloadLength == expected.payloadLength &&
@@ -167,6 +167,45 @@ void TestIgnoredDeveloperDirectoryNames() {
     Expect(!IndexRebuildPolicy::IsValidIgnoredDirectoryName(std::wstring(256, L'a')) &&
         IndexRebuildPolicy::IsValidIgnoredDirectoryName(L".git"),
         L"directory name rules must enforce component length while permitting dot directories");
+}
+
+void TestRebuildDecisionDiagnostics() {
+    using luvletter::indexer::IndexRebuildPolicy;
+    using luvletter::indexer::RebuildDecision;
+    using std::chrono::seconds;
+    const std::filesystem::path root = LR"(C:\LuvLetter.Policy.Tests)";
+    const auto now = IndexRebuildPolicy::Clock::time_point{};
+    IndexRebuildPolicy policy;
+    policy.Configure({root / L"ignored"}, seconds(60));
+    Expect(policy.Evaluate({}, now).decision == RebuildDecision::InvalidPath &&
+        policy.Evaluate(root / L"ignored" / L"file.tmp", now).decision == RebuildDecision::Ignored,
+        L"invalid paths and ignored scopes must have distinct diagnostic decisions");
+    const auto first = root / L"first.txt";
+    Expect(policy.Evaluate(first, now).decision == RebuildDecision::Accepted,
+        L"a fresh path should report acceptance");
+    const auto refused = policy.Evaluate(first, now + std::chrono::milliseconds(59500));
+    Expect(refused.decision == RebuildDecision::Cooldown && refused.remainingCooldownSeconds == seconds(1),
+        L"a partially remaining cooldown second must round up for diagnostic output");
+    Expect(policy.Evaluate(first, now + seconds(60)).decision == RebuildDecision::Accepted,
+        L"a diagnostic refusal must not extend the accepted event's deadline");
+
+    policy.Configure({}, seconds(60));
+    bool filled = true;
+    for (int index = 0; index < 4096; ++index) {
+        filled &= policy.Evaluate(root / std::to_wstring(index), now).decision == RebuildDecision::Accepted;
+    }
+    const auto capacity = policy.Evaluate(first, now);
+    Expect(filled && capacity.decision == RebuildDecision::Capacity &&
+        capacity.remainingCooldownSeconds == seconds(0),
+        L"a full bounded map must report capacity separately from a path cooldown");
+    Expect(policy.Evaluate(root / L"0", now + seconds(1)).decision == RebuildDecision::Cooldown,
+        L"an existing path must retain its cooldown diagnosis even when the map is full");
+    Expect(policy.EvaluateUnknown(now).decision == RebuildDecision::Capacity &&
+        policy.EvaluateUnknown(now + seconds(60)).decision == RebuildDecision::Accepted,
+        L"unattributed recovery must report capacity and recover after entries expire");
+    const auto unknown = policy.EvaluateUnknown(now + seconds(61));
+    Expect(unknown.decision == RebuildDecision::Cooldown && unknown.remainingCooldownSeconds == seconds(59),
+        L"unattributed recovery must expose its own remaining cooldown");
 }
 
 void TestIndexBuildQueryAndPersistence() {
@@ -271,6 +310,119 @@ void TestIndexBuildQueryAndPersistence() {
         Expect(luvletter::indexing::IndexSnapshot::Load(snapshotPath) == nullptr,
             L"snapshot payload checksum mismatch must be rejected");
     }
+}
+
+void TestFullIgnorePathMatching() {
+    using luvletter::indexing::PathExclusions;
+    const std::array paths{
+        std::filesystem::path(LR"(C:\LuvLetter.Exclusions\Private\)"),
+        std::filesystem::path(LR"(C:\LuvLetter.Exclusions\secret.txt)"),
+        std::filesystem::path(LR"(\\server\share\hidden)")};
+    const PathExclusions exclusions(paths);
+    Expect(exclusions.Contains(LR"(c:\luvletter.exclusions\PRIVATE)"),
+        L"full ignore must cover an exact directory case-insensitively");
+    Expect(exclusions.Contains(LR"(C:/LuvLetter.Exclusions/Private/nested/../child.txt)"),
+        L"full ignore must normalize separators and dot segments for descendants");
+    Expect(exclusions.Contains(LR"(C:\LuvLetter.Exclusions\SECRET.TXT)"),
+        L"full ignore must cover an exact file without requiring it to exist");
+    Expect(!exclusions.Contains(LR"(C:\LuvLetter.Exclusions\secret.txt.backup)") &&
+        !exclusions.Contains(LR"(C:\LuvLetter.Exclusions\Private-sibling\child.txt)"),
+        L"full ignore must require path boundaries instead of filename prefixes");
+    Expect(!exclusions.Contains(LR"(C:\LuvLetter.Exclusions\Private\..\visible.txt)"),
+        L"lexical traversal outside an excluded scope must remain visible");
+    Expect(exclusions.Contains(LR"(\\?\C:\LuvLetter.Exclusions\Private\child.txt)") &&
+        exclusions.Contains(LR"(\\?\UNC\SERVER\SHARE\hidden\child.txt)"),
+        L"extended drive and UNC paths must match conventional exclusion paths");
+    Expect(!exclusions.Contains(LR"(\\server\share-other\hidden\child.txt)"),
+        L"UNC exclusions must preserve the share boundary");
+
+    const std::array extendedPaths{
+        std::filesystem::path(LR"(\\?\C:\LuvLetter.Exclusions\Private\)"),
+        std::filesystem::path(LR"(\\?\UNC\server\share\hidden\)")};
+    const PathExclusions extended(extendedPaths);
+    Expect(extended.Contains(LR"(C:\LuvLetter.Exclusions\Private\child.txt)") &&
+        extended.Contains(LR"(\\server\share\hidden\child.txt)"),
+        L"extended exclusion paths must also match conventional event paths");
+
+    const std::array driveRoot{std::filesystem::path(LR"(C:\)")};
+    const PathExclusions wholeDrive(driveRoot);
+    Expect(wholeDrive.Contains(LR"(C:\nested\file.txt)") &&
+        !wholeDrive.Contains(LR"(D:\nested\file.txt)"),
+        L"excluding a drive root must cover only that drive");
+    Expect(!PathExclusions{}.Contains(paths[0]), L"an empty full-ignore list must exclude nothing");
+
+    const std::array legacyRoots{std::filesystem::path(LR"(C:\LuvLetter.Scope.Tests)")};
+    const luvletter::indexing::IndexSnapshot legacy({}, {}, {}, 0x5909BDEE8FABD043ULL);
+    Expect(legacy.MatchesRoots(legacyRoots),
+        L"empty full ignores must preserve the existing v3 roots-only fingerprint");
+}
+
+void TestFullIgnoreBuildAndSnapshotScope() {
+    using luvletter::indexing::IndexBuilder;
+    using luvletter::indexing::IndexSnapshot;
+    TemporaryDirectory temporary;
+    const auto privateDirectory = temporary.Path() / L"private";
+    const auto siblingDirectory = temporary.Path() / L"private-sibling";
+    const auto excludedFile = temporary.Path() / L"secret.txt";
+    std::filesystem::create_directories(privateDirectory / L"nested");
+    std::filesystem::create_directories(siblingDirectory);
+    Expect(CreateEmptyFile(privateDirectory / L"nested" / L"private-child.txt"),
+        L"excluded descendant fixture should be created");
+    Expect(CreateEmptyFile(siblingDirectory / L"public.txt"),
+        L"visible sibling fixture should be created");
+    Expect(CreateEmptyFile(excludedFile), L"exact excluded file fixture should be created");
+    Expect(CreateEmptyFile(temporary.Path() / L"secret.txt.backup"),
+        L"excluded filename prefix sibling fixture should be created");
+
+    // An explicitly configured nested root must not bypass its full ignore.
+    const std::array roots{temporary.Path(), privateDirectory};
+    const std::array exclusions{privateDirectory, excludedFile};
+    const auto unfiltered = IndexBuilder::Build(roots);
+    const auto snapshot = IndexBuilder::Build(roots, nullptr, exclusions);
+    Expect(unfiltered != nullptr && snapshot != nullptr,
+        L"both unfiltered and full-ignore index scopes should build");
+    if (!unfiltered || !snapshot) {
+        return;
+    }
+    Expect(snapshot->FileCount() == 2 && snapshot->EntityCount() == 3 && snapshot->DirectoryCount() == 2,
+        L"full ignore must omit excluded directory records and every descendant entity");
+    Expect(snapshot->Query(L"private-child", 5).empty() && snapshot->Query(L"nested", 5).empty(),
+        L"excluded descendants must never enter a searchable snapshot");
+    const auto privateMatches = snapshot->Query(L"private", 5);
+    Expect(privateMatches.size() == 1 && privateMatches[0].fullPath == siblingDirectory.native(),
+        L"an excluded directory must disappear while its filename-prefix sibling stays searchable");
+    const auto secretMatches = snapshot->Query(L"secret.txt", 5);
+    Expect(secretMatches.size() == 1 && secretMatches[0].displayName == L"secret.txt.backup",
+        L"excluding an exact file must retain longer filename-prefix matches");
+    Expect(unfiltered->MatchesRoots(roots) && !unfiltered->MatchesRoots(roots, exclusions),
+        L"an existing unfiltered cache must be rejected when full ignores are configured");
+    Expect(snapshot->MatchesRoots(roots, exclusions) && !snapshot->MatchesRoots(roots),
+        L"a filtered cache must match only the exclusion scope that produced it");
+    const std::array differentExclusions{privateDirectory};
+    Expect(!snapshot->MatchesRoots(roots, differentExclusions),
+        L"removing even one full ignore must invalidate the prior cache scope");
+
+    const std::array equivalentExclusions{
+        std::filesystem::path(L"\\\\?\\" + excludedFile.native()),
+        temporary.Path() / L"PRIVATE" / L".",
+        privateDirectory / L""};
+    Expect(snapshot->MatchesRoots(roots, equivalentExclusions),
+        L"cache scope must normalize exclusion ordering, duplicates, case, and extended prefixes");
+
+    const auto snapshotPath = temporary.Path() / L"filtered-cache.bin";
+    Expect(snapshot->Save(snapshotPath), L"filtered snapshot should save");
+    const auto restored = IndexSnapshot::Load(snapshotPath);
+    Expect(restored != nullptr && restored->MatchesRoots(roots, exclusions) &&
+        !restored->MatchesRoots(roots) && restored->Query(L"private-child", 5).empty(),
+        L"persisted snapshots must retain their exclusion-aware scope and filtered contents");
+
+    const auto unavailableRoot = temporary.Path() / L"not-created";
+    const std::array unavailableRoots{unavailableRoot, unavailableRoot / L"nested"};
+    const std::array excludedRoots{unavailableRoot};
+    const auto empty = IndexBuilder::Build(unavailableRoots, nullptr, excludedRoots);
+    Expect(empty != nullptr && empty->EntityCount() == 0 && empty->DirectoryCount() == 0 &&
+        empty->MatchesRoots(unavailableRoots, excludedRoots),
+        L"fully excluded roots must produce a valid empty scope even when those roots do not exist");
 }
 
 void TestLiveDeltaOrderingAndDirectoryTombstones() {
@@ -608,7 +760,10 @@ int wmain() {
     TestStatusPayloadRoundTrip();
     TestIndexRebuildPolicy();
     TestIgnoredDeveloperDirectoryNames();
+    TestRebuildDecisionDiagnostics();
     TestIndexBuildQueryAndPersistence();
+    TestFullIgnorePathMatching();
+    TestFullIgnoreBuildAndSnapshotScope();
     TestLiveDeltaOrderingAndDirectoryTombstones();
     TestDeltaFilteredBaseQueryFillsTopK();
     TestLiveDeltaRevisionPruning();

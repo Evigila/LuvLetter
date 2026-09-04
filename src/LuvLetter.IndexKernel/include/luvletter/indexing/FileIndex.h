@@ -44,6 +44,18 @@ using SearchResultFilter = std::function<bool(const SearchResult&)>;
     const SearchResult& right,
     std::wstring_view query) noexcept;
 
+// Matches exact paths and directory descendants without accessing the filesystem.
+class PathExclusions final {
+public:
+    explicit PathExclusions(std::span<const std::filesystem::path> paths = {});
+
+    [[nodiscard]] bool Contains(const std::filesystem::path& path) const;
+    [[nodiscard]] std::span<const std::filesystem::path> Paths() const noexcept { return paths_; }
+
+private:
+    std::vector<std::filesystem::path> paths_;
+};
+
 class IndexSnapshot final {
 public:
     struct DirectoryRecord final {
@@ -81,7 +93,9 @@ public:
     [[nodiscard]] bool Save(const std::filesystem::path& filePath) const;
     [[nodiscard]] static std::shared_ptr<const IndexSnapshot> Load(const std::filesystem::path& filePath);
 
-    [[nodiscard]] bool MatchesRoots(std::span<const std::filesystem::path> roots) const;
+    [[nodiscard]] bool MatchesRoots(
+        std::span<const std::filesystem::path> roots,
+        std::span<const std::filesystem::path> fullIgnorePaths = {}) const;
 
     [[nodiscard]] std::size_t EntityCount() const noexcept { return entities_.size(); }
     [[nodiscard]] std::size_t FileCount() const noexcept;
@@ -102,7 +116,8 @@ class IndexBuilder final {
 public:
     [[nodiscard]] static std::shared_ptr<const IndexSnapshot> Build(
         std::span<const std::filesystem::path> roots,
-        const std::atomic_bool* cancellation = nullptr);
+        const std::atomic_bool* cancellation = nullptr,
+        std::span<const std::filesystem::path> fullIgnorePaths = {});
 };
 
 [[nodiscard]] std::wstring Utf8ToWide(std::string_view text);

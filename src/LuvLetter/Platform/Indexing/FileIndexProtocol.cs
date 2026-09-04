@@ -40,7 +40,7 @@ internal enum FileIndexActivity : byte
 internal static class FileIndexProtocol
 {
     internal const uint Magic = 0x58494C4C;
-    internal const ushort MajorVersion = 4;
+    internal const ushort MajorVersion = 5;
     internal const int HeaderSize = 20;
     internal const int MaximumPayloadLength = 1024 * 1024;
 
@@ -72,6 +72,13 @@ internal static class FileIndexProtocol
         foreach (var name in ignoredNames)
         {
             WriteString(writer, name);
+        }
+
+        var fullIgnorePaths = maintenance.NormalizedFullIgnorePaths();
+        writer.Write(checked((uint)fullIgnorePaths.Length));
+        foreach (var path in fullIgnorePaths)
+        {
+            WriteString(writer, path);
         }
 
         return FinishPayload(stream);

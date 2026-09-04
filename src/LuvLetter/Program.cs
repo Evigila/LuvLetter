@@ -10,6 +10,12 @@ internal static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        // Match the companion's UTF-8 logs and the debug launcher's log readers.
+        if (Console.IsOutputRedirected || Console.IsErrorRedirected)
+        {
+            Console.OutputEncoding = new System.Text.UTF8Encoding(false);
+        }
+
         using var mutex = new Mutex(true, "app.LuvLetter.ArkheideSystem", out var isNewInstance);
         if (!isNewInstance)
         {

@@ -17,6 +17,19 @@
 
 namespace luvletter::indexer {
 
+enum class RebuildDecision {
+    Accepted,
+    Ignored,
+    Cooldown,
+    Capacity,
+    InvalidPath,
+};
+
+struct RebuildEvaluation {
+    RebuildDecision decision;
+    std::chrono::seconds remainingCooldownSeconds{0};
+};
+
 // Controls change-triggered rebuild requests only. Callers still apply live
 // changes and perform scheduled or explicitly requested scans independently.
 class IndexRebuildPolicy final {
@@ -63,19 +76,19 @@ public:
         nextExpiration_ = (Clock::time_point::max)();
     }
 
-    [[nodiscard]] bool Accept(
+    [[nodiscard]] RebuildEvaluation Evaluate(
         const std::filesystem::path& path,
         const Clock::time_point now) {
         auto key = NormalizeKey(path);
         if (key.empty()) {
-            return false;
+            return {RebuildDecision::InvalidPath};
         }
         std::lock_guard lock(mutex_);
         for (const auto& directory : ignoredDirectories_) {
             if (key == directory ||
                 (key.size() > directory.size() && key.starts_with(directory) &&
                     (directory.back() == L'\\' || key[directory.size()] == L'\\'))) {
-                return false;
+                return {RebuildDecision::Ignored};
             }
         }
         if (!ignoredDirectoryNames_.empty()) {
@@ -85,18 +98,28 @@ public:
             for (const auto& component : relativePath) {
                 if (std::find(ignoredDirectoryNames_.begin(), ignoredDirectoryNames_.end(),
                         component.native()) != ignoredDirectoryNames_.end()) {
-                    return false;
+                    return {RebuildDecision::Ignored};
                 }
             }
         }
-        return AcceptKey(std::move(key), now);
+        return EvaluateKey(std::move(key), now);
     }
 
     // A watcher overflow has no trustworthy file path. It shares one bounded
     // cooldown entry and cannot be matched to an ignored directory scope.
-    [[nodiscard]] bool AcceptUnknown(const Clock::time_point now) {
+    [[nodiscard]] RebuildEvaluation EvaluateUnknown(const Clock::time_point now) {
         std::lock_guard lock(mutex_);
-        return AcceptKey({}, now);
+        return EvaluateKey({}, now);
+    }
+
+    [[nodiscard]] bool Accept(
+        const std::filesystem::path& path,
+        const Clock::time_point now) {
+        return Evaluate(path, now).decision == RebuildDecision::Accepted;
+    }
+
+    [[nodiscard]] bool AcceptUnknown(const Clock::time_point now) {
+        return EvaluateUnknown(now).decision == RebuildDecision::Accepted;
     }
 
 private:
@@ -149,9 +172,9 @@ private:
         return folded;
     }
 
-    [[nodiscard]] bool AcceptKey(std::wstring key, const Clock::time_point now) {
+    [[nodiscard]] RebuildEvaluation EvaluateKey(std::wstring key, const Clock::time_point now) {
         if (cooldown_ == std::chrono::seconds::zero()) {
-            return true;
+            return {RebuildDecision::Accepted};
         }
         if (now >= nextExpiration_) {
             nextExpiration_ = (Clock::time_point::max)();
@@ -163,15 +186,19 @@ private:
                 return false;
             });
         }
-        if (cooldowns_.contains(key) || cooldowns_.size() >= kMaximumCooldownEntries) {
+        if (const auto existing = cooldowns_.find(key); existing != cooldowns_.end()) {
             // Suppression never extends a deadline or evicts an active entry;
             // otherwise a burst of new paths could bypass the cooldown.
-            return false;
+            return {RebuildDecision::Cooldown,
+                std::chrono::ceil<std::chrono::seconds>(existing->second - now)};
+        }
+        if (cooldowns_.size() >= kMaximumCooldownEntries) {
+            return {RebuildDecision::Capacity};
         }
         const auto expires = now + cooldown_;
         cooldowns_.emplace(std::move(key), expires);
         nextExpiration_ = (std::min)(nextExpiration_, expires);
-        return true;
+        return {RebuildDecision::Accepted};
     }
 
     std::mutex mutex_;

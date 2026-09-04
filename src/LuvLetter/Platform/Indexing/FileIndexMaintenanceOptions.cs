@@ -9,6 +9,10 @@ internal sealed class FileIndexMaintenanceOptions
 
     public int TriggerCooldownSeconds { get; init; } = 60;
 
+    public string[] FullIgnorePaths { get; init; } = [];
+
+    internal bool IsAvailable { get; init; } = true;
+
     public string[] IgnoreRebuildDirectories { get; init; } =
     [
         Path.GetTempPath(),
@@ -53,6 +57,65 @@ internal sealed class FileIndexMaintenanceOptions
         .Distinct(StringComparer.OrdinalIgnoreCase)
         .ToArray();
 
+    internal string[] NormalizedFullIgnorePaths() => FullIgnorePaths
+        .Select(Environment.ExpandEnvironmentVariables)
+        .Select(NormalizeScopePath)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+
+    internal static string NormalizeScopePath(string path) =>
+        Path.TrimEndingDirectorySeparator(Path.GetFullPath(RemoveExtendedPathPrefix(path)));
+
+    private static string RemoveExtendedPathPrefix(string path)
+    {
+        path = path.Replace('/', '\\');
+        if (path.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+        {
+            return string.Concat(@"\\", path.AsSpan(8));
+        }
+        if (path.StartsWith(@"\\?\", StringComparison.Ordinal)
+            && path.Length >= 7 && path[5] == ':' && path[6] == '\\')
+        {
+            return path[4..];
+        }
+        return path;
+    }
+
+    private static bool IsValidFullIgnorePath(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return false;
+        }
+        path = RemoveExtendedPathPrefix(Environment.ExpandEnvironmentVariables(path));
+        var isDrive = path.Length >= 3 && char.IsAsciiLetter(path[0]) && path[1] == ':' && path[2] == '\\';
+        var isUnc = path.StartsWith(@"\\", StringComparison.Ordinal);
+        if ((!isDrive && !isUnc) || !Path.IsPathFullyQualified(path))
+        {
+            return false;
+        }
+        var components = path[(isDrive ? 3 : 2)..].Split('\\', StringSplitOptions.RemoveEmptyEntries);
+        if (isUnc && components.Length < 2)
+        {
+            return false;
+        }
+        for (var index = 0; index < components.Length; index++)
+        {
+            var component = components[index];
+            if (component is "." or "..")
+            {
+                if (isUnc && index < 2) return false;
+                continue;
+            }
+            if (component.Length > 255 || component.EndsWith('.') || component.EndsWith(' ')
+                || component.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     internal void Validate()
     {
         if (RefreshIntervalSeconds is < 60 or > 86400
@@ -79,6 +142,12 @@ internal sealed class FileIndexMaintenanceOptions
         }
 
         _ = NormalizedIgnoreDirectories();
+        if (FullIgnorePaths is null || FullIgnorePaths.Length > 1024
+            || FullIgnorePaths.Any(path => !IsValidFullIgnorePath(path)))
+        {
+            throw new InvalidDataException("Full ignore entries must be exact absolute drive or UNC paths without wildcards or invalid components (at most 1024).");
+        }
+        _ = NormalizedFullIgnorePaths();
     }
 
     internal static FileIndexMaintenanceOptions LoadDefault()
@@ -107,8 +176,9 @@ internal sealed class FileIndexMaintenanceOptions
         catch (Exception exception) when (exception is IOException or InvalidDataException or UnauthorizedAccessException
             or JsonException or ArgumentException or NotSupportedException)
         {
-            Console.Error.WriteLine($"Index maintenance configuration unavailable; using defaults: {exception.Message}");
-            return new FileIndexMaintenanceOptions();
+            // Falling back to an unrestricted scope could expose full-ignored entries.
+            Console.Error.WriteLine($"[Index][configuration-error] Indexing paused until maintenance configuration is fixed: {exception.Message}");
+            return new FileIndexMaintenanceOptions { IsAvailable = false };
         }
     }
 }

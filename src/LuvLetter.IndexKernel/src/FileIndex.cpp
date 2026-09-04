@@ -211,6 +211,18 @@ std::filesystem::path NormalizePath(const std::filesystem::path& path) {
     return std::filesystem::path(std::move(text));
 }
 
+std::filesystem::path NormalizeExclusionPath(const std::filesystem::path& path) {
+    std::wstring text = path.native();
+    std::replace(text.begin(), text.end(), L'/', L'\\');
+    if (StartsWithOrdinalIgnoreCase(text, L"\\\\?\\UNC\\")) {
+        text = L"\\\\" + text.substr(8);
+    } else if (text.starts_with(L"\\\\?\\") && text.size() >= 7 &&
+            text[5] == L':' && text[6] == L'\\') {
+        text.erase(0, 4);
+    }
+    return NormalizePath(std::filesystem::path(std::move(text))).make_preferred();
+}
+
 std::filesystem::path ExtendedPath(const std::filesystem::path& path) {
     const std::wstring text = path.native();
     if (text.starts_with(L"\\\\?\\")) {
@@ -249,7 +261,9 @@ bool IsDirectoryCoveredBy(const std::filesystem::path& candidate, const std::fil
     return isSeparator(rootText.back()) || isSeparator(candidateText[rootText.size()]);
 }
 
-std::vector<std::filesystem::path> NormalizeRoots(const std::span<const std::filesystem::path> roots) {
+std::vector<std::filesystem::path> NormalizeRoots(
+    const std::span<const std::filesystem::path> roots,
+    const PathExclusions& exclusions) {
     std::vector<std::filesystem::path> normalized;
     normalized.reserve(roots.size());
     for (const auto& root : roots) {
@@ -270,10 +284,9 @@ std::vector<std::filesystem::path> NormalizeRoots(const std::span<const std::fil
     std::vector<std::filesystem::path> disjoint;
     disjoint.reserve(normalized.size());
     for (const auto& candidate : normalized) {
-        const bool covered = !IsExplicitReparseRoot(candidate) &&
-            std::any_of(disjoint.begin(), disjoint.end(), [&](const auto& retained) {
+        const bool covered = std::any_of(disjoint.begin(), disjoint.end(), [&](const auto& retained) {
                 return IsDirectoryCoveredBy(candidate, retained);
-            });
+            }) && (exclusions.Contains(candidate) || !IsExplicitReparseRoot(candidate));
         if (!covered) {
             disjoint.push_back(candidate);
         }
@@ -281,7 +294,9 @@ std::vector<std::filesystem::path> NormalizeRoots(const std::span<const std::fil
     return disjoint;
 }
 
-std::uint64_t ComputeRootsFingerprint(const std::span<const std::filesystem::path> normalizedRoots) {
+std::uint64_t ComputeRootsFingerprint(
+    const std::span<const std::filesystem::path> normalizedRoots,
+    const PathExclusions& exclusions) {
     constexpr std::uint64_t offsetBasis = 14695981039346656037ULL;
     constexpr std::uint64_t prime = 1099511628211ULL;
     std::uint64_t hash = offsetBasis;
@@ -289,6 +304,16 @@ std::uint64_t ComputeRootsFingerprint(const std::span<const std::filesystem::pat
         hash = HashFoldedText(root.native(), hash);
         hash ^= 0xFFU;
         hash *= prime;
+    }
+    // Preserve v3 cache compatibility when the full-ignore scope is empty.
+    if (!exclusions.Paths().empty()) {
+        hash ^= 0xFEU;
+        hash *= prime;
+        for (const auto& path : exclusions.Paths()) {
+            hash = HashFoldedText(path.native(), hash);
+            hash ^= 0xFFU;
+            hash *= prime;
+        }
     }
     return hash;
 }
@@ -386,6 +411,33 @@ bool DecodeMetadata(const std::span<const std::byte> bytes, SnapshotMetadata& me
 }
 
 } // namespace
+
+PathExclusions::PathExclusions(const std::span<const std::filesystem::path> paths) {
+    paths_.reserve(paths.size());
+    for (const auto& path : paths) {
+        if (!path.empty()) {
+            paths_.push_back(NormalizeExclusionPath(path));
+        }
+    }
+    std::sort(paths_.begin(), paths_.end(), [](const auto& left, const auto& right) {
+        const int foldedOrder = CompareOrdinalIgnoreCase(left.native(), right.native());
+        return foldedOrder != 0 ? foldedOrder < 0 : CompareOrdinal(left.native(), right.native(), FALSE) < 0;
+    });
+    paths_.erase(std::unique(paths_.begin(), paths_.end(), [](const auto& left, const auto& right) {
+        return CompareOrdinalIgnoreCase(left.native(), right.native()) == 0;
+    }), paths_.end());
+}
+
+bool PathExclusions::Contains(const std::filesystem::path& path) const {
+    if (path.empty() || paths_.empty()) {
+        return false;
+    }
+    const auto normalized = NormalizeExclusionPath(path);
+    return std::any_of(paths_.begin(), paths_.end(), [&](const auto& excluded) {
+        return CompareOrdinalIgnoreCase(normalized.native(), excluded.native()) == 0 ||
+            IsDirectoryCoveredBy(normalized, excluded);
+    });
+}
 
 SearchMatchQuality ClassifySearchMatch(
     const std::wstring_view name,
@@ -583,9 +635,12 @@ std::vector<SearchResult> IndexSnapshot::Query(
     return results;
 }
 
-bool IndexSnapshot::MatchesRoots(const std::span<const std::filesystem::path> roots) const {
-    const auto normalized = NormalizeRoots(roots);
-    return rootsFingerprint_ == ComputeRootsFingerprint(normalized);
+bool IndexSnapshot::MatchesRoots(
+    const std::span<const std::filesystem::path> roots,
+    const std::span<const std::filesystem::path> fullIgnorePaths) const {
+    const PathExclusions exclusions(fullIgnorePaths);
+    const auto normalized = NormalizeRoots(roots, exclusions);
+    return rootsFingerprint_ == ComputeRootsFingerprint(normalized, exclusions);
 }
 
 std::size_t IndexSnapshot::FileCount() const noexcept {
@@ -809,9 +864,11 @@ std::shared_ptr<const IndexSnapshot> IndexSnapshot::Load(const std::filesystem::
 
 std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
     const std::span<const std::filesystem::path> roots,
-    const std::atomic_bool* cancellation) {
-    const auto normalizedRoots = NormalizeRoots(roots);
-    const auto rootsFingerprint = ComputeRootsFingerprint(normalizedRoots);
+    const std::atomic_bool* cancellation,
+    const std::span<const std::filesystem::path> fullIgnorePaths) {
+    const PathExclusions exclusions(fullIgnorePaths);
+    const auto normalizedRoots = NormalizeRoots(roots, exclusions);
+    const auto rootsFingerprint = ComputeRootsFingerprint(normalizedRoots, exclusions);
 
     std::vector<TemporaryDirectory> directories;
     std::vector<TemporaryEntity> entities;
@@ -820,6 +877,9 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
     for (const auto& root : normalizedRoots) {
         if (cancellation != nullptr && cancellation->load(std::memory_order_relaxed)) {
             return {};
+        }
+        if (exclusions.Contains(root)) {
+            continue;
         }
         const DWORD rootAttributes = AttributesOf(root);
         if (rootAttributes == INVALID_FILE_ATTRIBUTES ||
@@ -889,13 +949,16 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
             if (name == L"." || name == L".." || name.empty()) {
                 continue;
             }
+            const auto entryPath = (current.path / name).lexically_normal();
+            if (exclusions.Contains(entryPath)) {
+                continue;
+            }
             if (entities.size() >= (std::numeric_limits<std::uint32_t>::max)()) {
                 FindClose(find);
                 return {};
             }
 
             const bool directory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
-            const auto entryPath = (current.path / name).lexically_normal();
             if (directory) {
                 if (directories.size() >= (std::numeric_limits<std::uint32_t>::max)()) {
                     FindClose(find);

@@ -123,7 +123,8 @@ No edit distance, token score, usage history, or pinyin score participates in Ph
   disconnect, or Delta count and memory thresholds as unsafe state. Discard uncertain
   incremental assumptions and schedule a complete background rebuild.
 - Retain periodic full reconciliation as a correctness safety net, defaulting to six
-  minutes after each successful scan. Phase 2 does not
+  minutes from scope configuration, independent of file-triggered or manual scans.
+  Busy timer ticks coalesce and respect the automatic minimum gap. Phase 2 does not
   persist Delta state or claim to recover changes that occurred while LuvLetter was not
   running.
 - Coalesce event-triggered reconciliation and retry requests, wait at least one
@@ -135,7 +136,11 @@ No edit distance, token score, usage history, or pinyin score participates in Ph
 - Default ignore rules cover generated developer directories by complete component name
   and common package caches by absolute path. Keep source roots active, preserve user
   overrides, and apply missing-field defaults when reading older configurations.
-- Allow `index.refresh` to bypass automatic cooldowns and ignore scopes. A running scan
+- Support a separate `FullIgnorePaths` list for exact files and directory subtrees.
+  Exclude these paths before enumeration and live updates, and include the normalized
+  exclusions in cache provenance so stale excluded results cannot reappear on startup.
+- Allow `index.refresh` to bypass automatic cooldowns and rebuild-ignore scopes while
+  preserving full-ignore exclusions. A running scan
   completes before one coalesced manual follow-up begins.
 
 ### Snapshot provenance and compatibility
@@ -163,6 +168,10 @@ No edit distance, token score, usage history, or pinyin score participates in Ph
   published, then convert it in place to the ordinary five-second `索引已就绪` message.
   Disconnects and shutdown dismiss the activity without reporting a false completion.
   Failed scans also dismiss it without a success message and report a delayed retry.
+- Distinguish file-change triggers (gray), periodic triggers (green), per-path cooldown
+  refusals (red), and force requests (green) in the debug console. Other lines default to
+  gray regardless of stdout/stderr. Log queue/coalescing separately from scan start,
+  completion, cancellation, and retry; identify watcher recovery and capacity refusal.
 
 ### Activation behavior and verification
 
@@ -175,7 +184,7 @@ No edit distance, token score, usage history, or pinyin score participates in Ph
   deterministic ranking, overlapping roots, v3 persistence, provenance mismatch,
   checksum corruption, Delta ordering, ancestor tombstones, rebuild-cutoff pruning, and
   live create/rename/delete notifications.
-- Core and Native suites cover LLIX v4 activity decoding, Native ABI v7, icon categories,
+- Core and Native suites cover LLIX v5 activity decoding, Native ABI v7, icon categories,
   default and same-revision selection, persistent message timelines, stale revision
   rejection, and file/folder activation success or failure.
 
@@ -384,8 +393,9 @@ candidates, persistence, or activation:
 27. Enter `index.refresh` in `Cmd` during cooldown and confirm the debug log records a
     manual scan without waiting for the automatic deadline. Repeat while scanning and
     confirm requests merge into one follow-up with no simultaneous scan.
-28. Supply an invalid maintenance interval or malformed JSON, restart, and confirm the
-    console reports fallback to defaults while the application remains operational.
+28. Supply an invalid maintenance interval, wildcard full-ignore path, or malformed JSON,
+    restart, and confirm the console reports indexing paused, with no cached file results
+    exposed. Commands and Echo remain operational. Correct the file and restart to recover.
 29. Start from root `start.bat` and confirm the console stays open, prints the PID and
     index diagnostics, and records stdout/stderr logs. Verify `Q`, Enter, Ctrl+C, and
     tray exit in separate sessions; only the launched process should be stopped, and
@@ -398,6 +408,27 @@ candidates, persistence, or activation:
     fields. Confirm new defaults apply without rewriting existing user settings. Then
     set either field to `[]`, restart, and confirm its defaults are disabled. Verify a
     custom absolute cache path suppresses only that subtree, not a similar sibling.
+32. Launch with `start.bat`. Rename a disposable populated directory outside ignore scopes
+    to trigger gray `File changed triggered`, then repeat the same path during cooldown
+    to observe red `File changed but cooldown refused` with remaining seconds. Run
+    `index.refresh` for green `Force rebuild queued`. Confirm startup, cache, scan
+    completion, and ordinary stderr diagnostics are gray.
+33. Observe green `Automatic index rebuild` at the six-minute deadlines measured from
+    configuration. Issue a manual refresh between deadlines and confirm it does not
+    restart the timer. A running scan or the one-minute automatic gap may delay the
+    actual start; logs must distinguish queued work from started work and never overlap
+    scans or drain multiple missed ticks as a burst.
+34. First cache a disposable file, then add its absolute path to `FullIgnorePaths` and
+    restart. Confirm the file is absent during cache loading and after both periodic
+    and forced scans. Its siblings remain searchable. Repeat with an entire directory,
+    a similarly prefixed sibling, mixed case, and an environment-variable path.
+35. Change files under the full-ignored directory and confirm they neither enter live
+    search nor trigger a known-path rebuild. Compare with ordinary rebuild ignore, where
+    files remain searchable. Remove the full-ignore entry and restart to restore coverage.
+36. Configure a disposable missing root that is entirely full-ignored and confirm it
+    does not cause scan failure or a root-access attempt. In a separate session simulate
+    unattributed watcher overflow; confirm diagnostics identify watcher recovery rather
+    than attributing the event to an ignored file.
 
 Automated suites cover deterministic logic and protocol boundaries, but they do not
 replace these user-driven focus, shell-activation, and perceived-performance checks.

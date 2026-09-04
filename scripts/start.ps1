@@ -16,8 +16,7 @@ $launchExitCode = 0
 
 function Show-RuntimeOutput {
     param(
-        [System.IO.StreamReader]$Reader,
-        [switch]$IsError
+        [System.IO.StreamReader]$Reader
     )
 
     if ($null -eq $Reader) {
@@ -31,12 +30,17 @@ function Show-RuntimeOutput {
             break
         }
 
-        if ($IsError) {
-            Write-Host $line -ForegroundColor Red
+        # The stream only records where a message was written. Index event tags
+        # determine its color, including when the indexer logs through stderr.
+        $color = 'Gray'
+        if ($line -match '^(?:\d{2}:\d{2}:\d{2}\s+)?\[Index\]\[(?<event>[^\]]+)\]') {
+            switch ($Matches.event) {
+                'periodic' { $color = 'Green' }
+                'cooldown-refused' { $color = 'Red' }
+                'force' { $color = 'Green' }
+            }
         }
-        else {
-            Write-Host $line
-        }
+        Write-Host $line -ForegroundColor $color
     }
 }
 
@@ -47,7 +51,7 @@ function Stop-LaunchedProcess {
         return
     }
 
-    Write-Host "Stopping LuvLetter (PID $($Process.Id))..."
+    Write-Host "Stopping LuvLetter (PID $($Process.Id))..." -ForegroundColor Gray
     # A tray-only application may have no main window. Allow a normal close when
     # available, then terminate only the process owned by this launch session.
     try {
@@ -103,7 +107,7 @@ try {
         throw "Visual Studio MSBuild was not found at: $msbuild"
     }
 
-    Write-Host "Building LuvLetter ($Configuration)..."
+    Write-Host "Building LuvLetter ($Configuration)..." -ForegroundColor Gray
     Push-Location -LiteralPath $repositoryRoot
     try {
         # Full MSBuild follows the application's native project references as well.
@@ -139,27 +143,27 @@ try {
     $standardErrorReader = [System.IO.StreamReader]::new(
         [System.IO.File]::Open($standardErrorPath, 'Open', 'Read', 'ReadWrite'))
 
-    Write-Host "LuvLetter launched (PID $($launchedProcess.Id), $Configuration)."
-    Write-Host 'Use the system tray or press Ctrl twice to open the input box.'
-    Write-Host "Standard output: $standardOutputPath"
-    Write-Host "Standard error:  $standardErrorPath"
-    Write-Host 'Runtime output is shown below as the application emits it.'
+    Write-Host "LuvLetter launched (PID $($launchedProcess.Id), $Configuration)." -ForegroundColor Gray
+    Write-Host 'Use the system tray or press Ctrl twice to open the input box.' -ForegroundColor Gray
+    Write-Host "Standard output: $standardOutputPath" -ForegroundColor Gray
+    Write-Host "Standard error:  $standardErrorPath" -ForegroundColor Gray
+    Write-Host 'Runtime output is shown below as the application emits it.' -ForegroundColor Gray
 
     $hasConsoleInput = -not [Console]::IsInputRedirected
     if ($hasConsoleInput) {
         $originalControlCMode = [Console]::TreatControlCAsInput
         [Console]::TreatControlCAsInput = $true
-        Write-Host 'Press Q, Enter, or Ctrl+C here to stop this process, or exit from the system tray.'
+        Write-Host 'Press Q, Enter, or Ctrl+C here to stop this process, or exit from the system tray.' -ForegroundColor Gray
     }
     else {
-        Write-Host 'Console input is redirected. Exit LuvLetter from the system tray to end this session.'
+        Write-Host 'Console input is redirected. Exit LuvLetter from the system tray to end this session.' -ForegroundColor Gray
     }
     Write-Host ''
 
     $stopRequested = $false
     while (-not $launchedProcess.HasExited) {
         Show-RuntimeOutput -Reader $standardOutputReader
-        Show-RuntimeOutput -Reader $standardErrorReader -IsError
+        Show-RuntimeOutput -Reader $standardErrorReader
 
         if ($hasConsoleInput -and [Console]::KeyAvailable) {
             $key = [Console]::ReadKey($true)
@@ -177,15 +181,15 @@ try {
     $launchedProcess.WaitForExit()
     while (-not $standardOutputReader.EndOfStream -or -not $standardErrorReader.EndOfStream) {
         Show-RuntimeOutput -Reader $standardOutputReader
-        Show-RuntimeOutput -Reader $standardErrorReader -IsError
+        Show-RuntimeOutput -Reader $standardErrorReader
     }
-    Write-Host "LuvLetter exited (code $($launchedProcess.ExitCode)). Logs remain in $logDirectory."
+    Write-Host "LuvLetter exited (code $($launchedProcess.ExitCode)). Logs remain in $logDirectory." -ForegroundColor Gray
     if (-not $stopRequested) {
         $launchExitCode = $launchedProcess.ExitCode
     }
 }
 catch {
-    [Console]::Error.WriteLine("LuvLetter debug session failed: $($_.Exception.Message)")
+    Write-Host "LuvLetter debug session failed: $($_.Exception.Message)" -ForegroundColor Gray
     $launchExitCode = 1
 }
 finally {
@@ -195,7 +199,7 @@ finally {
         Stop-LaunchedProcess -Process $launchedProcess
     }
     catch {
-        [Console]::Error.WriteLine("Cannot stop the launched process: $($_.Exception.Message)")
+        Write-Host "Cannot stop the launched process: $($_.Exception.Message)" -ForegroundColor Gray
         $launchExitCode = 1
     }
     if ($null -ne $originalControlCMode) {

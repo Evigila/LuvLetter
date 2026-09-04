@@ -10,7 +10,7 @@
 namespace luvletter::indexing::protocol {
 
 inline constexpr std::uint32_t kMagic = 0x58494C4C;
-inline constexpr std::uint16_t kMajorVersion = 4;
+inline constexpr std::uint16_t kMajorVersion = 5;
 inline constexpr std::uint32_t kHeaderSize = 20;
 inline constexpr std::uint32_t kMaximumPayloadSize = 1U * 1024U * 1024U;
 

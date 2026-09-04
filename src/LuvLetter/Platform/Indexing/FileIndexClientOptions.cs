@@ -35,11 +35,16 @@ internal sealed class FileIndexClientOptions
             .ThenBy(static root => root, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
+        var fullIgnorePaths = Maintenance.NormalizedFullIgnorePaths();
         var retained = new List<string>(normalized.Length);
         foreach (var candidate in normalized)
         {
-            if (IsReparseDirectory(candidate)
-                || !retained.Any(parent => IsSameOrChild(parent, candidate)))
+            var comparisonPath = fullIgnorePaths.Length == 0
+                ? candidate : FileIndexMaintenanceOptions.NormalizeScopePath(candidate);
+            var fullyIgnored = fullIgnorePaths.Any(parent => IsSameOrChild(parent, comparisonPath));
+            // Keep excluded roots in the configured scope without probing their metadata.
+            if (!retained.Any(parent => IsSameOrChild(parent, candidate))
+                || (!fullyIgnored && IsReparseDirectory(candidate)))
             {
                 retained.Add(candidate);
             }
