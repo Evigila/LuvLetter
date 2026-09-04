@@ -10,7 +10,15 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 
 - Added root-level `start.bat` and `scripts/start.ps1` for one-click build and launch on
   Windows, with automatic Visual Studio MSBuild discovery, Debug/Release selection,
-  required-output checks, and failure messages retained by the BAT launcher.
+  required-output checks, and a persistent debug console with process stop controls and
+  stdout/stderr logs under `%LocalAppData%\LuvLetter\Logs`.
+- Added editable index-maintenance settings with a six-minute periodic refresh,
+  directory scopes that suppress rebuild triggers while retaining search, and a bounded
+  one-minute per-path trigger cooldown. Added `index.refresh` to force a full scan.
+- Added default rebuild-ignore rules for version-control metadata, developer dependencies,
+  build output, virtual environments, and package caches. Exact directory-name matching
+  works across workspace locations; older configuration files receive defaults for new
+  fields while explicit empty lists remain respected.
 - Added the `Gen`, `Ask`, and `Cmd` input modes with a persistent status tag inside the
   input surface.
 - Added a clipped vertical transition for mode changes: the outgoing tag label exits
@@ -25,7 +33,7 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 - Added an `IGeneralInputMatcher` extension boundary for built-in General-mode matchers.
 - Added the first built-in file-index implementation as a hidden C++ companion process.
   It loads a persistent snapshot immediately, rebuilds the current user-profile index in
-  the background, performs a low-priority six-hour reconciliation, and keeps queries on
+  the background, performs a low-priority periodic reconciliation, and keeps queries on
   an immutable previous snapshot while rebuilding.
 - Added a compact C++ filename index with case-insensitive Unicode prefix matching,
   stable ordering, bounded top-result path reconstruction, validated persistence, and
@@ -62,6 +70,16 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 
 ### Changed
 
+- Coalesced watcher-triggered full index rebuilds with a one-minute minimum interval
+  after each scan. Directory churn no longer cancels active scans; ordinary incremental
+  updates remain enabled. The periodic reconciliation now defaults to six minutes.
+- Moved index-cache loading off the companion handshake thread and added a validated
+  `.bak` fallback. Cache publication refreshes unchanged input before scanning completes.
+- Retained the previous index after failed scans or Delta overflow, bounded deletion
+  bursts, and delayed failed-build retries. Root access and unexpected enumeration
+  failures no longer overwrite a usable cache with an incomplete replacement.
+- Upgraded LLIX to v4 with an explicit failed-build state so failed maintenance does not
+  announce successful completion. Snapshot schema v3 and Native ABI v7 are unchanged.
 - Fixed application startup with file indexing enabled. The companion client now exposes
   a constructor that the default dependency-injection container can activate.
 - Changed double-Ctrl input activation from a visibility toggle to a three-state focus

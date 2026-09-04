@@ -10,7 +10,7 @@
 namespace luvletter::indexing::protocol {
 
 inline constexpr std::uint32_t kMagic = 0x58494C4C;
-inline constexpr std::uint16_t kMajorVersion = 3;
+inline constexpr std::uint16_t kMajorVersion = 4;
 inline constexpr std::uint32_t kHeaderSize = 20;
 inline constexpr std::uint32_t kMaximumPayloadSize = 1U * 1024U * 1024U;
 
@@ -23,6 +23,7 @@ enum class MessageType : std::uint16_t {
     Status = 6,
     Shutdown = 7,
     Error = 8,
+    Refresh = 9,
 };
 
 struct FrameHeader final {
@@ -37,6 +38,7 @@ enum class IndexActivity : std::uint8_t {
     Ready = 0,
     InitialBuild = 1,
     Updating = 2,
+    Failed = 3,
 };
 
 struct IndexStatus final {
@@ -158,7 +160,7 @@ inline bool DecodeStatus(const std::span<const std::byte> bytes, IndexStatus& st
         return false;
     }
     const auto activity = std::to_integer<std::uint8_t>(bytes[cursor]);
-    if (activity > static_cast<std::uint8_t>(IndexActivity::Updating)) {
+    if (activity > static_cast<std::uint8_t>(IndexActivity::Failed)) {
         return false;
     }
     status.activity = static_cast<IndexActivity>(activity);

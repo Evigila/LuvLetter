@@ -37,7 +37,11 @@ struct FileSystemChange final {
 class LiveIndexDelta final {
 public:
     [[nodiscard]] std::uint64_t CaptureRevision() const noexcept;
-    [[nodiscard]] bool Apply(std::span<const FileSystemChange> changes);
+    // Optionally append the paths that require reconciliation, without filtering
+    // any live changes. Callers can apply their rebuild policy to those causes.
+    [[nodiscard]] bool Apply(
+        std::span<const FileSystemChange> changes,
+        std::vector<std::filesystem::path>* rebuildCauses = nullptr);
     [[nodiscard]] std::vector<indexing::SearchResult> Query(
         std::wstring_view query,
         const indexing::IndexSnapshot& baseSnapshot,

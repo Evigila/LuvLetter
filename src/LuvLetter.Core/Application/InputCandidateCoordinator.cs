@@ -226,6 +226,21 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
                     EndIndexActivityLocked(sendReadyMessage: indexWorkObserved);
                     indexWorkObserved = false;
                     break;
+                case FileIndexRuntimeActivity.Failed:
+                    EndIndexActivityLocked(sendReadyMessage: false);
+                    if (indexWorkObserved)
+                    {
+                        indexWorkObserved = false;
+                        try
+                        {
+                            nativeShell.EnqueueMessage("索引更新失败，将稍后重试");
+                        }
+                        catch
+                        {
+                            // Index status presentation must not terminate candidate coordination.
+                        }
+                    }
+                    break;
                 case FileIndexRuntimeActivity.Unavailable:
                     EndIndexActivityLocked(sendReadyMessage: false);
                     break;

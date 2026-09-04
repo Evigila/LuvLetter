@@ -94,6 +94,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="IndexMaintenance.h" />
+    <ClInclude Include="IndexRebuildPolicy.h" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\LuvLetter.IndexKernel\LuvLetter.IndexKernel.vcxproj">

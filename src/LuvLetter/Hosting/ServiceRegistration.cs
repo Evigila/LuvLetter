@@ -5,6 +5,7 @@ using LuvLetter.Core.Commands;
 using LuvLetter.Core.Configuration;
 using LuvLetter.Core.Modules.QuickActions;
 using LuvLetter.Core.Modules.Settings;
+using LuvLetter.Core.Modules.Indexing;
 using LuvLetter.Core.NativeShell;
 using LuvLetter.Core.Application;
 using LuvLetter.Core.Plugins;
@@ -42,6 +43,8 @@ internal static class ServiceRegistration
         services.AddSingleton<FileIndexCompanionClient>();
         services.AddSingleton<IFileIndexClient>(
             provider => provider.GetRequiredService<FileIndexCompanionClient>());
+        services.AddSingleton<IIndexRefreshRequester>(
+            provider => provider.GetRequiredService<FileIndexCompanionClient>());
         services.AddHostedService(
             provider => provider.GetRequiredService<FileIndexCompanionClient>());
         services.AddSingleton<WindowsFileCandidateLauncher>();
@@ -66,6 +69,7 @@ internal static class ServiceRegistration
         services.AddSingleton<IApplicationShell>(
             provider => provider.GetRequiredService<TrayIconService>());
         services.AddSingleton<ILuvLetterPlugin, SettingsPlugin>();
+        services.AddSingleton<ILuvLetterPlugin, IndexingPlugin>();
 
         services.AddSingleton<ApplicationCoordinator>();
         services.AddHostedService(

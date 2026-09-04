@@ -43,7 +43,7 @@ Phase 1 establishes an end-to-end, recoverable filename search path:
   Pipe. It exits when its parent exits or the pipe disconnects.
 - A validated v2 snapshot is loaded before maintenance begins. The companion rebuilds
   in Windows background-processing mode, publishes immutable generations, and performs
-  a six-hour full reconciliation.
+  a periodic full reconciliation, now six minutes by default.
 - The `LLIX` v1 protocol provides handshake, root configuration, revisioned queries,
   generation status, shutdown, and bounded error frames under a 1 MiB payload ceiling.
 - Managed supervision restarts failed sessions without blocking Host startup. Generation
@@ -61,7 +61,7 @@ fuzzy ranking, pinyin matching, content indexing, or an implemented Global Searc
 ## Phase 2 — Filesystem candidate completeness `[Complete]`
 
 Phase 2 completes the expected file-and-folder candidate behavior and makes names created
-during the current session searchable without waiting for the six-hour reconciliation.
+during the current session searchable without waiting for the periodic reconciliation.
 Its Delta state is memory-only; durable change replay remains a later phase.
 
 ### Win32 enumeration and error isolation
@@ -118,9 +118,21 @@ No edit distance, token score, usage history, or pinyin score participates in Ph
 - Treat notification-buffer overflow, watcher loss, ambiguous rename pairs, root
   disconnect, or Delta count and memory thresholds as unsafe state. Discard uncertain
   incremental assumptions and schedule a complete background rebuild.
-- Retain the six-hour full reconciliation as a correctness safety net. Phase 2 does not
+- Retain periodic full reconciliation as a correctness safety net, defaulting to six
+  minutes after each successful scan. Phase 2 does not
   persist Delta state or claim to recover changes that occurred while LuvLetter was not
   running.
+- Coalesce event-triggered reconciliation and retry requests, wait at least one
+  minute after the previous scan, and never cancel an active scan for ordinary events.
+  Retained-Delta overflow falls back to the complete base snapshot during this wait.
+- Ignore configured directory scopes only for rebuild triggers, retaining their normal
+  incremental updates and scheduled search coverage. Track accepted trigger paths in a
+  bounded sixty-second cooldown map; suppression does not extend a path's deadline.
+- Default ignore rules cover generated developer directories by complete component name
+  and common package caches by absolute path. Keep source roots active, preserve user
+  overrides, and apply missing-field defaults when reading older configurations.
+- Allow `index.refresh` to bypass automatic cooldowns and ignore scopes. A running scan
+  completes before one coalesced manual follow-up begins.
 
 ### Snapshot provenance and compatibility
 
@@ -129,8 +141,9 @@ No edit distance, token score, usage history, or pinyin score participates in Ph
   provenance matches the configured scope.
 - Upgrade the snapshot layout for file and directory candidates, match metadata, and a
   payload checksum. Invalid, truncated, incompatible, checksum-failed, or
-  scope-mismatched snapshots are discarded and rebuilt without failing application
-  startup.
+  scope-mismatched primary snapshots fall back to a validated `.bak` snapshot. If neither
+  matches, rebuild without failing application startup. Cache I/O and validation stay
+  outside the pipe handshake and query loop; failed scans retain the last usable index.
 - Upgrade `LLIX` and the Native ABI when folder kind and icon category cross their
   boundaries. All new layouts remain fixed-width, size-checked, and version-gated.
   Mixed versions fail the session explicitly instead of interpreting old memory or wire
@@ -138,13 +151,14 @@ No edit distance, token score, usage history, or pinyin score participates in Ph
 
 ### Index lifecycle feedback
 
-- Report `Ready`, `InitialBuild`, and `Updating` explicitly in LLIX status responses.
+- Report `Ready`, `InitialBuild`, `Updating`, and `Failed` explicitly in LLIX status responses.
   Generation changes alone do not distinguish the first scan from background maintenance.
 - Present initial construction as the persistent `正在生成索引表` activity and later
-  rebuilds, including the six-hour reconciliation, as `正在更新索引`.
+  rebuilds, including the six-minute reconciliation, as `正在更新索引`.
 - Keep the activity visible with a rotating indicator until a generation is successfully
   published, then convert it in place to the ordinary five-second `索引已就绪` message.
   Disconnects and shutdown dismiss the activity without reporting a false completion.
+  Failed scans also dismiss it without a success message and report a delayed retry.
 
 ### Activation behavior and verification
 
@@ -157,7 +171,7 @@ No edit distance, token score, usage history, or pinyin score participates in Ph
   deterministic ranking, overlapping roots, v3 persistence, provenance mismatch,
   checksum corruption, Delta ordering, ancestor tombstones, rebuild-cutoff pruning, and
   live create/rename/delete notifications.
-- Core and Native suites cover LLIX v3 activity decoding, Native ABI v7, icon categories,
+- Core and Native suites cover LLIX v4 activity decoding, Native ABI v7, icon categories,
   default and same-revision selection, persistent message timelines, stale revision
   rejection, and file/folder activation success or failure.
 
@@ -326,8 +340,10 @@ candidates, persistence, or activation:
     message, does not open the wrong item, and keeps InputWindow open.
 14. Change configured roots and confirm a snapshot from the previous scope is not exposed
     as if it belonged to the new scope.
-15. Corrupt or truncate the snapshot and confirm startup degrades to an empty index,
-    rebuilds in the background, and leaves the main application operational.
+15. With the app stopped and both cache files backed up elsewhere, corrupt or truncate
+    the primary snapshot and confirm the compatible `.bak` supplies candidates before
+    scanning completes. Repeat with both files invalid and confirm background rebuilding
+    leaves the main application operational.
 16. Terminate the companion during a query and confirm supervision restarts it, stale
     results are rejected, and the current input refreshes after readiness returns.
 17. Exercise `Gen`, `Ask`, and `Cmd` with identical text and confirm their candidate and
@@ -339,6 +355,45 @@ candidates, persistence, or activation:
 20. Start with a compatible snapshot or trigger scheduled maintenance and confirm the
     persistent activity reads `正在更新索引`; hiding the queue must not consume continuous
     animation CPU, and showing it again must resume the spinner.
+21. After a completed scan, create and rename temporary folders repeatedly for several
+    minutes. Confirm ordinary file changes remain visible, a new full scan does not
+    start within one minute, and incoming events do not repeatedly restart a scan.
+    Descendants moved in as a whole directory may await the scheduled reconciliation.
+22. On a disposable configured root, simulate loss of root access during maintenance.
+    Confirm a failure message replaces the spinner, cached results remain searchable,
+    cache files are retained, and automatic retries are separated by one minute. Restore
+    access and confirm the next successful scan publishes and saves a new generation.
+23. Exceed the retained-Delta capacity with a large create/delete burst in a disposable
+    directory. Confirm queries fall back to the complete snapshot instead of becoming
+    blank, and normal live results resume after a successful reconciliation.
+24. Restart with a large valid cache on a slow disk. Confirm the companion does not enter
+    a five-second handshake restart loop and unchanged input refreshes as soon as cache
+    validation finishes, before the startup scan completes.
+25. Add a disposable absolute directory to `IgnoreRebuildDirectories` in
+    `%LocalAppData%\LuvLetter\Index\maintenance.json`, restart, and generate directory
+    churn there. Confirm those known paths do not queue full scans, ordinary file
+    changes remain searchable, and a similarly named sibling is not ignored. Observe
+    the next six-minute scheduled scan and confirm the ignored scope is still covered.
+26. Rename the same disposable directory back and forth within sixty seconds. Confirm
+    each normalized path is accepted at most once during its cooldown; later suppressed
+    events do not postpone eligibility beyond the original deadline.
+27. Enter `index.refresh` in `Cmd` during cooldown and confirm the debug log records a
+    manual scan without waiting for the automatic deadline. Repeat while scanning and
+    confirm requests merge into one follow-up with no simultaneous scan.
+28. Supply an invalid maintenance interval or malformed JSON, restart, and confirm the
+    console reports fallback to defaults while the application remains operational.
+29. Start from root `start.bat` and confirm the console stays open, prints the PID and
+    index diagnostics, and records stdout/stderr logs. Verify `Q`, Enter, Ctrl+C, and
+    tray exit in separate sessions; only the launched process should be stopped, and
+    BAT should retain the output after it exits.
+30. Generate changes under nested `.git`, `node_modules`, `bin`, `obj`, and `.venv`
+    directories in a disposable workspace. Confirm those paths do not request full
+    scans, while `.github`, `binoculars`, and ordinary source folders remain eligible.
+    Check that files inside ignored scopes are still searchable.
+31. Start with an older maintenance JSON lacking the directory-name and package-cache
+    fields. Confirm new defaults apply without rewriting existing user settings. Then
+    set either field to `[]`, restart, and confirm its defaults are disabled. Verify a
+    custom absolute cache path suppresses only that subtree, not a similar sibling.
 
 Automated suites cover deterministic logic and protocol boundaries, but they do not
 replace these user-driven focus, shell-activation, and perceived-performance checks.

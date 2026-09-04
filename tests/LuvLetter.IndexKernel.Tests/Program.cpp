@@ -1,6 +1,7 @@
 #include "luvletter/indexing/FileIndex.h"
 #include "luvletter/indexing/IndexProtocol.h"
 #include "IndexMaintenance.h"
+#include "IndexRebuildPolicy.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -66,7 +67,7 @@ void TestProtocolHeaderRoundTrip() {
     const auto encoded = EncodeHeader(expected);
     FrameHeader actual{};
     Expect(encoded.size() == kHeaderSize, L"protocol header must remain exactly 20 bytes");
-    Expect(kMajorVersion == 3, L"activity-aware status requires LLIX protocol major version 3");
+    Expect(kMajorVersion == 4, L"failure-aware status requires LLIX protocol major version 4");
     Expect(DecodeHeader(encoded, actual), L"protocol header should decode");
     Expect(actual.magic == expected.magic && actual.majorVersion == expected.majorVersion &&
         actual.type == expected.type && actual.payloadLength == expected.payloadLength &&
@@ -85,8 +86,87 @@ void TestStatusPayloadRoundTrip() {
         L"status payload round-trip should preserve generation and activity state");
 
     auto malformed = encoded;
-    malformed.back() = std::byte{3};
+    malformed.back() = std::byte{4};
     Expect(!DecodeStatus(malformed, actual), L"status payload should reject unknown activity values");
+}
+
+void TestIndexRebuildPolicy() {
+    using luvletter::indexer::IndexRebuildPolicy;
+    using std::chrono::seconds;
+    const std::filesystem::path root = LR"(C:\LuvLetter.Policy.Tests)";
+    const auto now = IndexRebuildPolicy::Clock::time_point{} + seconds(100);
+    IndexRebuildPolicy policy;
+    policy.Configure({root / L"ignored"}, seconds(60));
+
+    Expect(!policy.Accept(root / L"ignored", now),
+        L"an ignored directory itself must not request a rebuild");
+    Expect(!policy.Accept(root / L"IGNORED" / L"nested" / L"file.tmp", now),
+        L"ignore scopes must cover descendants case-insensitively");
+    Expect(policy.Accept(root / L"ignored-sibling" / L"file.tmp", now),
+        L"ignore scopes must not match a sibling with the same name prefix");
+
+    const auto first = root / L"first.txt";
+    const auto second = root / L"second.txt";
+    Expect(policy.Accept(first, now), L"a new triggering path should be accepted");
+    Expect(!policy.Accept(LR"(c:\luvletter.policy.tests\FIRST.TXT)", now + seconds(30)),
+        L"case-equivalent triggering paths must share the same cooldown entry");
+    Expect(!policy.Accept(first, now + seconds(59)),
+        L"a path must remain suppressed until its full cooldown expires");
+    Expect(policy.Accept(second, now + seconds(59)),
+        L"a different triggering path must have an independent cooldown");
+    Expect(policy.Accept(first, now + seconds(60)),
+        L"suppressed events must not extend the original 60-second deadline");
+    Expect(!policy.Accept(second, now + seconds(60)),
+        L"expiry of another path must not reset a later cooldown");
+
+    Expect(policy.AcceptUnknown(now + seconds(60)),
+        L"an unattributed watcher event should have its own cooldown entry");
+    Expect(!policy.AcceptUnknown(now + seconds(119)),
+        L"repeated unattributed watcher events must be suppressed during cooldown");
+    Expect(policy.AcceptUnknown(now + seconds(120)),
+        L"suppression must not extend an unattributed event's cooldown");
+}
+
+void TestIgnoredDeveloperDirectoryNames() {
+    using luvletter::indexer::IndexRebuildPolicy;
+    using std::chrono::seconds;
+    const std::filesystem::path root = LR"(C:\LuvLetter.Policy.Tests)";
+    const auto now = IndexRebuildPolicy::Clock::time_point{};
+    IndexRebuildPolicy policy;
+    policy.Configure({}, seconds(60), {L".git", L"node_modules", L"BIN", L"obj"});
+
+    Expect(!policy.Accept(root / L"repo" / L".git" / L"objects" / L"new-object", now),
+        L"source-control directory descendants must not trigger a rebuild");
+    Expect(!policy.Accept(root / L"repo" / L"NODE_MODULES" / L"package" / L"index.js", now),
+        L"developer directory names must match case-insensitively at any depth");
+    Expect(!policy.Accept(root / L"repo" / L"bin", now),
+        L"creation of an ignored directory itself must not trigger a rebuild");
+    Expect(!policy.Accept(root / L"repo" / L"obj" / L"Debug" / L"generated.cs", now),
+        L"nested build output must remain inside the ignored scope");
+    Expect(policy.Accept(root / L"repo" / L".github" / L"workflows", now),
+        L"directory name rules must not treat .github as .git");
+    Expect(policy.Accept(root / L"repo" / L"binoculars" / L"source.cs", now),
+        L"directory name rules must not match a longer component prefix");
+    Expect(policy.Accept(root / L"repo" / L"file.bin", now) &&
+        policy.Accept(root / L"repo" / L"node_modules.txt", now),
+        L"directory name rules must not act as filename extension or substring patterns");
+    Expect(policy.Accept(LR"(\\bin\share\source.cs)", now),
+        L"a UNC server name must not be treated as a directory component");
+    Expect(policy.AcceptUnknown(now),
+        L"directory name ignores must not suppress unattributed watcher events");
+    policy.Configure({}, seconds(60));
+    Expect(policy.Accept(root / L"repo" / L"bin", now),
+        L"clearing directory name rules must restore change-triggered rebuilds");
+
+    for (const auto name : {L"", L".", L"..", L"*.tmp", L"nested/path", L"nested\\path",
+            L"drive:name", L"bad|name", L"bad<name", L"bad>name", L"bad\"name", L"bad?name",
+            L"trailing.", L"trailing ", L"control\nname"}) {
+        Expect(!IndexRebuildPolicy::IsValidIgnoredDirectoryName(name),
+            L"directory name rules must reject paths, patterns, and invalid Windows components");
+    }
+    Expect(!IndexRebuildPolicy::IsValidIgnoredDirectoryName(std::wstring(256, L'a')) &&
+        IndexRebuildPolicy::IsValidIgnoredDirectoryName(L".git"),
+        L"directory name rules must enforce component length while permitting dot directories");
 }
 
 void TestIndexBuildQueryAndPersistence() {
@@ -526,6 +606,8 @@ void TestLargePrefixTopKIsNotWindowed() {
 int wmain() {
     TestProtocolHeaderRoundTrip();
     TestStatusPayloadRoundTrip();
+    TestIndexRebuildPolicy();
+    TestIgnoredDeveloperDirectoryNames();
     TestIndexBuildQueryAndPersistence();
     TestLiveDeltaOrderingAndDirectoryTombstones();
     TestDeltaFilteredBaseQueryFillsTopK();

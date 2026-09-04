@@ -14,6 +14,7 @@ internal enum FileIndexMessageType : ushort
     Status = 6,
     Shutdown = 7,
     Error = 8,
+    Refresh = 9,
 }
 
 internal readonly record struct FileIndexFrame(
@@ -25,7 +26,7 @@ internal readonly record struct FileIndexStatus(
     ulong IndexGeneration,
     FileIndexActivity Activity)
 {
-    internal bool Rebuilding => Activity != FileIndexActivity.Ready;
+    internal bool Rebuilding => Activity is FileIndexActivity.InitialBuild or FileIndexActivity.Updating;
 }
 
 internal enum FileIndexActivity : byte
@@ -33,18 +34,21 @@ internal enum FileIndexActivity : byte
     Ready = 0,
     InitialBuild = 1,
     Updating = 2,
+    Failed = 3,
 }
 
 internal static class FileIndexProtocol
 {
     internal const uint Magic = 0x58494C4C;
-    internal const ushort MajorVersion = 3;
+    internal const ushort MajorVersion = 4;
     internal const int HeaderSize = 20;
     internal const int MaximumPayloadLength = 1024 * 1024;
 
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
-    internal static byte[] ConfigureRootsPayload(IReadOnlyList<string> roots)
+    internal static byte[] ConfigureRootsPayload(
+        IReadOnlyList<string> roots,
+        FileIndexMaintenanceOptions maintenance)
     {
         using var stream = new MemoryStream();
         using var writer = new BinaryWriter(stream, StrictUtf8, leaveOpen: true);
@@ -52,6 +56,22 @@ internal static class FileIndexProtocol
         foreach (var root in roots)
         {
             WriteString(writer, root);
+        }
+
+        writer.Write(checked((uint)maintenance.RefreshIntervalSeconds));
+        writer.Write(checked((uint)maintenance.TriggerCooldownSeconds));
+        var ignored = maintenance.NormalizedIgnoreDirectories();
+        writer.Write(checked((uint)ignored.Length));
+        foreach (var directory in ignored)
+        {
+            WriteString(writer, directory);
+        }
+
+        var ignoredNames = maintenance.NormalizedIgnoreDirectoryNames();
+        writer.Write(checked((uint)ignoredNames.Length));
+        foreach (var name in ignoredNames)
+        {
+            WriteString(writer, name);
         }
 
         return FinishPayload(stream);
@@ -182,7 +202,7 @@ internal static class FileIndexProtocol
 
         var generation = BinaryPrimitives.ReadUInt64LittleEndian(payload.AsSpan(0, 8));
         var activity = payload[8];
-        if (activity > (byte)FileIndexActivity.Updating)
+        if (activity > (byte)FileIndexActivity.Failed)
         {
             throw new InvalidDataException("The file-index activity value is invalid.");
         }

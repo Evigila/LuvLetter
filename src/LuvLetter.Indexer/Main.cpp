@@ -1,6 +1,7 @@
 #include "luvletter/indexing/FileIndex.h"
 #include "luvletter/indexing/IndexProtocol.h"
 #include "IndexMaintenance.h"
+#include "IndexRebuildPolicy.h"
 
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
@@ -13,6 +14,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <iostream>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -30,7 +32,7 @@ using luvletter::indexing::Utf8ToWide;
 using luvletter::indexing::WideToUtf8;
 namespace protocol = luvletter::indexing::protocol;
 
-constexpr auto kRefreshInterval = std::chrono::hours(6);
+constexpr auto kMinimumRebuildInterval = std::chrono::minutes(1);
 constexpr std::uint32_t kMaximumQueryResults = 256;
 
 class UniqueHandle final {
@@ -200,7 +202,6 @@ class IndexStore final {
 public:
     explicit IndexStore(std::filesystem::path snapshotPath)
         : snapshotPath_(std::move(snapshotPath)) {
-        cachedSnapshot_ = IndexSnapshot::Load(snapshotPath_);
         snapshot_ = std::make_shared<const IndexSnapshot>();
         worker_ = std::thread([this] { WorkerMain(); });
     }
@@ -221,7 +222,12 @@ public:
     IndexStore(const IndexStore&) = delete;
     IndexStore& operator=(const IndexStore&) = delete;
 
-    void Configure(std::vector<std::filesystem::path> roots) {
+    void Configure(
+        std::vector<std::filesystem::path> roots,
+        const std::chrono::seconds refreshInterval,
+        const std::chrono::seconds triggerCooldown,
+        const std::vector<std::filesystem::path>& ignoredDirectories,
+        const std::vector<std::wstring>& ignoredDirectoryNames) {
         changeMonitor_.Stop();
         const auto watcherRoots = roots;
         {
@@ -239,6 +245,7 @@ public:
                 compatibleSnapshot = cachedSnapshot_;
             }
             const bool hasCompatibleSnapshot = compatibleSnapshot != nullptr;
+            hasUsableSnapshot_ = hasCompatibleSnapshot;
             if (!compatibleSnapshot) {
                 compatibleSnapshot = std::make_shared<const IndexSnapshot>();
             }
@@ -256,8 +263,13 @@ public:
                 : protocol::IndexActivity::InitialBuild;
             status_.store(PackStatus(generation, activity), std::memory_order_release);
             roots_ = std::move(roots);
+            refreshInterval_ = refreshInterval;
+            rebuildPolicy_.Configure(ignoredDirectories, triggerCooldown, ignoredDirectoryNames);
             hasConfiguration_ = true;
             ++configurationGeneration_;
+            rebuildRequested_ = true;
+            forcedRefreshRequested_ = false;
+            nextMaintenanceAllowed_ = (std::chrono::steady_clock::time_point::min)();
             cancelBuild_.store(true, std::memory_order_relaxed);
         }
         try {
@@ -269,6 +281,17 @@ public:
         } catch (...) {
             // Full reconciliation remains available when change monitoring cannot start.
         }
+        configurationChanged_.notify_all();
+    }
+
+    void RequestRefresh() {
+        {
+            std::lock_guard lock(configurationMutex_);
+            if (stopping_ || !hasConfiguration_) return;
+            rebuildRequested_ = true;
+            forcedRefreshRequested_ = true;
+        }
+        std::cerr << "[Index] Manual refresh queued (cooldown bypassed).\n";
         configurationChanged_.notify_all();
     }
 
@@ -314,7 +337,19 @@ private:
     void ApplyFileSystemChanges(
         std::vector<luvletter::indexer::FileSystemChange> changes,
         const bool uncertain) {
-        const bool deltaLimitReached = delta_.Apply(changes);
+        // Snapshot writes must not feed changes back into their own index.
+        const auto cacheDirectory = snapshotPath_.parent_path();
+        std::erase_if(changes, [&cacheDirectory](const auto& change) {
+            return CompareStringOrdinal(
+                change.path.parent_path().c_str(), -1,
+                cacheDirectory.c_str(), -1, TRUE) == CSTR_EQUAL;
+        });
+        bool deltaLimitReached = false;
+        std::vector<std::filesystem::path> rebuildCauses;
+        {
+            std::shared_lock viewLock(viewMutex_);
+            deltaLimitReached = delta_.Apply(changes, &rebuildCauses);
+        }
         if (!changes.empty()) {
             status_.fetch_add(1ULL << kActivityBits, std::memory_order_acq_rel);
         }
@@ -322,17 +357,30 @@ private:
             return;
         }
 
+        const auto now = std::chrono::steady_clock::now();
+        bool accepted = uncertain && rebuildPolicy_.AcceptUnknown(now);
+        std::filesystem::path acceptedCause;
+        for (const auto& cause : rebuildCauses) {
+            if (rebuildPolicy_.Accept(cause, now)) {
+                accepted = true;
+                if (acceptedCause.empty()) acceptedCause = cause;
+            }
+        }
+        if (!accepted) return;
+
         {
             std::lock_guard lock(configurationMutex_);
             if (stopping_ || !hasConfiguration_) {
                 return;
             }
-            const auto current = Status();
-            SetActivity(current.activity == protocol::IndexActivity::InitialBuild
-                ? protocol::IndexActivity::InitialBuild
-                : protocol::IndexActivity::Updating);
-            ++configurationGeneration_;
-            cancelBuild_.store(true, std::memory_order_relaxed);
+            // Coalesce watcher recovery and directory churn without cancelling a scan.
+            // Only a real root reconfiguration invalidates the in-flight build.
+            if (!rebuildRequested_) {
+                std::cerr << "[Index] Automatic rebuild queued: "
+                    << (acceptedCause.empty() ? "watcher recovery" : WideToUtf8(acceptedCause.native()))
+                    << "\n";
+            }
+            rebuildRequested_ = true;
         }
         configurationChanged_.notify_all();
     }
@@ -343,10 +391,10 @@ private:
             SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
         }
         std::unique_lock lock(configurationMutex_);
-        std::uint64_t completedGeneration = 0;
+        bool cacheLoadAttempted = false;
         while (!stopping_) {
-            configurationChanged_.wait(lock, [this, completedGeneration] {
-                return stopping_ || (hasConfiguration_ && configurationGeneration_ != completedGeneration);
+            configurationChanged_.wait(lock, [this] {
+                return stopping_ || hasConfiguration_;
             });
             if (stopping_) {
                 break;
@@ -354,17 +402,76 @@ private:
 
             const auto roots = roots_;
             const auto generation = configurationGeneration_;
+            if (!cacheLoadAttempted) {
+                cacheLoadAttempted = true;
+                lock.unlock();
+                // Keep cache I/O and validation off the pipe/handshake thread.
+                const auto loadCache = [](const std::filesystem::path& path) {
+                    try {
+                        return IndexSnapshot::Load(path);
+                    } catch (...) {
+                        std::cerr << "[Index] Could not load the index snapshot.\n";
+                        return std::shared_ptr<const IndexSnapshot>{};
+                    }
+                };
+                auto cached = loadCache(snapshotPath_);
+                if (!cached || !cached->MatchesRoots(roots)) {
+                    auto backupPath = snapshotPath_;
+                    backupPath += L".bak";
+                    cached = loadCache(backupPath);
+                }
+                lock.lock();
+                cachedSnapshot_ = std::move(cached);
+                if (stopping_) break;
+                if (cachedSnapshot_ && cachedSnapshot_->MatchesRoots(roots_)) {
+                    std::unique_lock viewLock(viewMutex_);
+                    std::unique_lock snapshotLock(snapshotMutex_);
+                    snapshot_ = cachedSnapshot_;
+                    hasUsableSnapshot_ = true;
+                    status_.fetch_add(1ULL << kActivityBits, std::memory_order_acq_rel);
+                    SetActivity(protocol::IndexActivity::Ready);
+                    std::cerr << "[Index] Cached snapshot is available for queries.\n";
+                }
+                continue;
+            }
+
+            const bool requested = rebuildRequested_;
+            const bool forced = forcedRefreshRequested_;
+            const auto deadline = forced ? (std::chrono::steady_clock::time_point::min)()
+                : requested ? nextMaintenanceAllowed_ : nextRefresh_;
+            if (std::chrono::steady_clock::now() < deadline) {
+                configurationChanged_.wait_until(lock, deadline, [this, generation, requested, forced] {
+                    return stopping_ || configurationGeneration_ != generation ||
+                        rebuildRequested_ != requested || forcedRefreshRequested_ != forced;
+                });
+                continue;
+            }
+            rebuildRequested_ = false;
+            forcedRefreshRequested_ = false;
             const auto deltaRevision = delta_.CaptureRevision();
             cancelBuild_.store(false, std::memory_order_relaxed);
+            SetActivity(hasUsableSnapshot_
+                ? protocol::IndexActivity::Updating
+                : protocol::IndexActivity::InitialBuild);
             lock.unlock();
 
-            auto rebuilt = IndexBuilder::Build(roots, &cancelBuild_);
+            const auto scanStarted = std::chrono::steady_clock::now();
+            std::cerr << "[Index] Full scan started" << (forced ? " (manual).\n" : ".\n");
+            std::shared_ptr<const IndexSnapshot> rebuilt;
+            try {
+                rebuilt = IndexBuilder::Build(roots, &cancelBuild_);
+            } catch (...) {
+                std::cerr << "[Index] Rebuild failed; retaining the previous snapshot.\n";
+            }
 
             lock.lock();
             if (stopping_) {
                 break;
             }
-            if (rebuilt && generation == configurationGeneration_) {
+            if (generation != configurationGeneration_) continue;
+            nextMaintenanceAllowed_ = std::chrono::steady_clock::now() + kMinimumRebuildInterval;
+            if (rebuilt) {
+                hasUsableSnapshot_ = true;
                 {
                     std::unique_lock viewLock(viewMutex_);
                     {
@@ -382,26 +489,34 @@ private:
                     std::memory_order_release,
                     std::memory_order_acquire)) {
                 }
-                completedGeneration = generation;
-
+                const auto previousCache = cachedSnapshot_;
                 lock.unlock();
-                (void)rebuilt->Save(snapshotPath_);
+                bool saved = false;
+                try {
+                    auto backupPath = snapshotPath_;
+                    backupPath += L".bak";
+                    // Keep the preceding valid snapshot if the primary is later damaged.
+                    const auto backup = previousCache && previousCache->MatchesRoots(roots)
+                        ? previousCache : rebuilt;
+                    if (backup->Save(backupPath)) {
+                        saved = rebuilt->Save(snapshotPath_);
+                    }
+                } catch (...) {
+                    // Failed persistence must not discard the last usable cache.
+                }
+                if (!saved) std::cerr << "[Index] Cache save failed; previous cache retained.\n";
+                std::cerr << "[Index] Full scan completed in "
+                    << std::chrono::duration_cast<std::chrono::seconds>(
+                        std::chrono::steady_clock::now() - scanStarted).count()
+                    << " seconds; cache " << (saved ? "saved.\n" : "not saved.\n");
                 lock.lock();
-                if (stopping_) {
-                    break;
-                }
-                if (configurationGeneration_ != generation) {
-                    continue;
-                }
-
-                const bool reconfigured = configurationChanged_.wait_for(
-                    lock,
-                    kRefreshInterval,
-                    [this, generation] { return stopping_ || configurationGeneration_ != generation; });
-                if (!reconfigured && !stopping_) {
-                    SetActivity(protocol::IndexActivity::Updating);
-                    ++configurationGeneration_;
-                }
+                if (saved) cachedSnapshot_ = rebuilt;
+                nextRefresh_ = std::chrono::steady_clock::now() + refreshInterval_;
+            } else {
+                // Avoid a tight retry loop; queries keep using the previous snapshot.
+                rebuildRequested_ = true;
+                SetActivity(protocol::IndexActivity::Failed);
+                std::cerr << "[Index] Rebuild failed; retry deferred for one minute.\n";
             }
         }
         if (backgroundMode) {
@@ -415,6 +530,7 @@ private:
     std::shared_ptr<const IndexSnapshot> snapshot_;
     std::shared_ptr<const IndexSnapshot> cachedSnapshot_;
     luvletter::indexer::LiveIndexDelta delta_;
+    luvletter::indexer::IndexRebuildPolicy rebuildPolicy_;
     luvletter::indexer::DirectoryChangeMonitor changeMonitor_;
 
     std::mutex configurationMutex_;
@@ -424,6 +540,12 @@ private:
     std::atomic_uint64_t status_ = 0;
     std::atomic_bool cancelBuild_ = false;
     bool hasConfiguration_ = false;
+    bool hasUsableSnapshot_ = false;
+    bool rebuildRequested_ = false;
+    bool forcedRefreshRequested_ = false;
+    std::chrono::seconds refreshInterval_{360};
+    std::chrono::steady_clock::time_point nextMaintenanceAllowed_{};
+    std::chrono::steady_clock::time_point nextRefresh_{};
     bool stopping_ = false;
     std::thread worker_;
 };
@@ -483,10 +605,42 @@ bool ConfigureRoots(IndexStore& store, const std::span<const std::byte> payload)
         }
         roots.emplace_back(std::move(decoded));
     }
+    std::uint32_t refreshSeconds = 0;
+    std::uint32_t cooldownSeconds = 0;
+    std::uint32_t ignoredCount = 0;
+    if (!protocol::ReadU32(payload, cursor, refreshSeconds) || refreshSeconds < 60 || refreshSeconds > 86400 ||
+        !protocol::ReadU32(payload, cursor, cooldownSeconds) || cooldownSeconds < 1 || cooldownSeconds > 3600 ||
+        !protocol::ReadU32(payload, cursor, ignoredCount) || ignoredCount > 1024) {
+        return false;
+    }
+    std::vector<std::filesystem::path> ignoredDirectories;
+    ignoredDirectories.reserve(ignoredCount);
+    for (std::uint32_t index = 0; index < ignoredCount; ++index) {
+        std::string encoded;
+        if (!protocol::ReadUtf8(payload, cursor, encoded)) return false;
+        auto decoded = Utf8ToWide(encoded);
+        const std::filesystem::path directory(decoded);
+        if (decoded.empty() || !directory.is_absolute()) return false;
+        ignoredDirectories.push_back(directory);
+    }
+    std::uint32_t ignoredNameCount = 0;
+    if (!protocol::ReadU32(payload, cursor, ignoredNameCount) || ignoredNameCount > 128) {
+        return false;
+    }
+    std::vector<std::wstring> ignoredDirectoryNames;
+    ignoredDirectoryNames.reserve(ignoredNameCount);
+    for (std::uint32_t index = 0; index < ignoredNameCount; ++index) {
+        std::string encoded;
+        if (!protocol::ReadUtf8(payload, cursor, encoded)) return false;
+        auto decoded = Utf8ToWide(encoded);
+        if (!luvletter::indexer::IndexRebuildPolicy::IsValidIgnoredDirectoryName(decoded)) return false;
+        ignoredDirectoryNames.push_back(std::move(decoded));
+    }
     if (cursor != payload.size()) {
         return false;
     }
-    store.Configure(std::move(roots));
+    store.Configure(std::move(roots), std::chrono::seconds(refreshSeconds),
+        std::chrono::seconds(cooldownSeconds), ignoredDirectories, ignoredDirectoryNames);
     return true;
 }
 
@@ -596,14 +750,16 @@ int Run(const Options& options) {
                 return 5;
             }
             break;
+        case protocol::MessageType::Refresh:
         case protocol::MessageType::Status:
             if (!payload.empty()) {
-                if (!SendError(pipe.Get(), parentProcess.Get(), header.requestId, "Status payload must be empty.")) {
+                if (!SendError(pipe.Get(), parentProcess.Get(), header.requestId, "Status/Refresh payload must be empty.")) {
                     return 8;
                 }
                 break;
             }
             {
+                if (header.type == protocol::MessageType::Refresh) store.RequestRefresh();
                 const auto statusPayload = protocol::EncodeStatus(store.Status());
                 if (!SendFrame(
                         pipe.Get(),

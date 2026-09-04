@@ -16,6 +16,8 @@ internal sealed class FileIndexClientOptions
 
     internal IReadOnlyList<string> Roots { get; init; } = CreateDefaultRoots();
 
+    internal FileIndexMaintenanceOptions Maintenance { get; init; } = FileIndexMaintenanceOptions.LoadDefault();
+
     internal TimeSpan ConnectionTimeout { get; init; } = TimeSpan.FromSeconds(5);
 
     internal TimeSpan RestartDelay { get; init; } = TimeSpan.FromSeconds(2);
@@ -51,6 +53,8 @@ internal sealed class FileIndexClientOptions
         ArgumentException.ThrowIfNullOrWhiteSpace(IndexerExecutablePath);
         ArgumentException.ThrowIfNullOrWhiteSpace(DataDirectory);
         ArgumentNullException.ThrowIfNull(Roots);
+        ArgumentNullException.ThrowIfNull(Maintenance);
+        Maintenance.Validate();
         if (ConnectionTimeout <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(nameof(ConnectionTimeout));

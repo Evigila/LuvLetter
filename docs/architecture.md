@@ -106,7 +106,10 @@ with an older DLL.
 - `ReadDirectoryChangesW` watchers coalesce file and folder name changes for 250 ms.
   Upserts and tombstones are merged with the base generation; directory-prefix
   tombstones hide stale descendants. Overflow, ambiguous directory rename recovery, and
-  Delta thresholds request a safe background rebuild.
+  Delta thresholds request a safe background rebuild. Requests are coalesced and never
+  cancel an active scan; automatic retries and event-driven scans wait at least one
+  minute after the preceding scan finishes. If Delta exceeds its retained capacity,
+  queries fall back to the last complete snapshot until reconciliation succeeds.
 - It is deliberately not a Windows Service and does not require administrator access.
 
 ## Host lifecycle
@@ -256,7 +259,13 @@ a background animation timer.
 
 Snapshot writes use a same-directory temporary file, flush it, and atomically replace the
 old file. Query publication is independent: a completed in-memory generation can continue
-serving when persistence fails, and an incompatible or damaged cache rebuilds safely.
+serving when persistence fails. A `.bak` file retains the preceding scope-compatible
+snapshot (or the first completed snapshot when no predecessor exists). Startup tries
+this backup if the primary is missing, invalid, or incompatible. Both files use the same
+validation and atomic-save rules. Failed root access or unexpected enumeration errors
+do not publish a replacement snapshot; ordinary inaccessible or disappearing descendants
+remain skippable. A failed rebuild keeps the previous query view and retries after
+one minute instead of entering a tight loop.
 
 ## File-index lifecycle and protocol
 
@@ -264,24 +273,116 @@ The default scope is the current user profile plus redirected Windows Known Fold
 resolve outside it; an explicitly configured reparse root is retained even when its path
 is textually below another root. The last scope-compatible snapshot is loaded from
 `%LocalAppData%\LuvLetter\Index\v1\file-index-v3.bin`. The `v1` directory is the cache
-namespace and is independent of snapshot schema v3. A complete background rescan remains
-the six-hour correctness safety net; MFT/USN integration, fuzzy matching, pinyin matching,
+namespace and is independent of snapshot schema v3. Loading and validating the primary
+or its `.bak` fallback runs on the worker, outside the pipe handshake and request loop.
+Publishing a compatible cache increments the generation so unchanged input refreshes
+before the startup rescan finishes. Queries may briefly have no file results while the
+cache itself is loading; they do not wait for a full directory scan. Cache-directory
+write events are ignored by live maintenance to avoid feeding persistence back into it.
+A complete background rescan runs six minutes after the previous successful scan and
+save attempt finish; MFT/USN integration, fuzzy matching, pinyin matching,
 and privileged services remain outside this phase.
 
-The `LLIX` v3 protocol uses a fixed 20-byte little-endian header, UTF-8 length-prefixed
+The `LLIX` v4 protocol uses a fixed 20-byte little-endian header, UTF-8 length-prefixed
 strings, request IDs, editor revisions, and a 1 MiB payload ceiling. Managed owns the
 single pipe server and starts `LuvLetter.Indexer.exe` with the pipe name, parent process
 ID, and data directory. The pipe is restricted to the current user. Protocol, timeout,
 or process failures invalidate the whole session and trigger bounded background restart;
 the command and Echo paths remain available. A compact status request reports the index
-generation and an explicit `Ready`, `InitialBuild`, or `Updating` activity. Core maps an
+generation and an explicit `Ready`, `InitialBuild`, `Updating`, or `Failed` activity. Core maps an
 initial build to the persistent `正在生成索引表` activity, maintenance rebuilds including
-the six-hour reconciliation to `正在更新索引`, and a successfully published generation to
-the five-second `索引已就绪` completion. Session loss maps locally to `Unavailable`,
+the six-minute reconciliation to `正在更新索引`, and a successfully published generation to
+the five-second `索引已就绪` completion. Failed scans dismiss the spinner and report a
+delayed retry without announcing success; existing snapshots remain queryable. Session
+loss maps locally to `Unavailable`,
 dismisses the spinner without a false completion, and rejects stale session state. Session
 readiness and completed generations requeue the latest unchanged editor revision, so a
 user does not need to type another character after the initial background build, a live
 Delta publication, or a companion restart.
+
+### Maintenance policy
+
+`%LocalAppData%\LuvLetter\Index\maintenance.json` is created on first startup and read
+once per application launch. Invalid or unreadable configuration falls back to defaults
+with a console diagnostic; an existing file is never overwritten. The default values
+are a 360-second periodic refresh, a 60-second trigger cooldown, and ignored rebuild
+scopes covering temporary data, developer-generated directories, and package caches.
+For example, an editable configuration can use environment variables:
+
+```json
+{
+  "RefreshIntervalSeconds": 360,
+  "TriggerCooldownSeconds": 60,
+  "IgnoreRebuildDirectories": [
+    "%TEMP%",
+    "%LOCALAPPDATA%\\LuvLetter\\Index"
+  ]
+}
+```
+
+Ignore entries must be absolute directory paths after environment expansion. They match
+case-insensitively at directory boundaries, so ignoring `C:\work\cache` does not ignore
+`C:\work\cache-other`. These scopes suppress change-triggered full rebuilds only:
+ordinary incremental changes, scheduled scans, and search remain enabled. Moving a
+populated directory into scope can leave its descendants waiting for the next full scan.
+
+Three independently editable lists control rebuild triggers:
+
+| Setting | Default scope |
+| --- | --- |
+| `IgnoreRebuildDirectories` | The user's temporary directory and LuvLetter's index data directory. Add specific noisy workspace paths here. |
+| `IgnoreRebuildDirectoryNames` | Complete directory components at any depth, covering the developer directories listed below. |
+| `IgnoreRebuildCacheDirectories` | Absolute package-cache paths for NuGet, Maven, Cargo, npm, pip, Yarn, pnpm, and uv. |
+
+The directory-name defaults are:
+
+- Version control and IDE metadata: `.git`, `.hg`, `.svn`, `.vs`, `.idea`.
+- Dependencies and build results: `node_modules`, `.pnpm-store`, `.yarn`, `bin`, `obj`,
+  `build`, `dist`, `target`, `coverage`, `TestResults`.
+- Web-tool output: `.next`, `.nuxt`, `.output`, `.svelte-kit`, `.angular`, `.turbo`,
+  `.parcel-cache`.
+- Python environments and caches: `.venv`, `venv`, `__pycache__`, `.pytest_cache`,
+  `.mypy_cache`, `.ruff_cache`, `.tox`.
+- Other build caches: `.gradle`, `.dart_tool`.
+
+Package-cache defaults are `%USERPROFILE%\.nuget\packages`,
+`%USERPROFILE%\.m2\repository`, `%USERPROFILE%\.cargo\registry`,
+`%USERPROFILE%\.cargo\git`, `%LOCALAPPDATA%\npm-cache`, `%LOCALAPPDATA%\pip\Cache`,
+`%LOCALAPPDATA%\Yarn\Cache`, `%LOCALAPPDATA%\pnpm\store`, and
+`%LOCALAPPDATA%\uv\cache`. Custom cache locations can replace or extend that list;
+the indexer does not inspect tool-specific configuration or discover directories by
+recursively searching for dependencies.
+
+Names match case-insensitively as whole path components: `.git` does not match `.github`
+or `.gitignore`, and `bin` does not match `binoculars` or a `.bin` extension. General
+source/workspace roots such as `src`, `source`, `repos`, and `projects` are not defaults.
+All three lists retain live updates, periodic scanning, and search coverage.
+
+Older JSON files that omit either new field receive its defaults in memory without
+rewriting the file or changing existing lists. Providing a list replaces that field's
+defaults; an explicit `[]` disables it. The example above intentionally omits the two
+new fields and therefore uses their defaults. Restart the app after editing. The two
+absolute-path lists together allow at most 1024 entries; the name list allows 128 single
+components of at most 255 characters, with no wildcards, separators, or trailing dots
+or spaces.
+
+The in-memory cooldown map records paths whose reconciliation requests were accepted.
+Repeated events for the same normalized path cannot request another rebuild until its
+deadline, and suppressed events do not extend that deadline. The map expires entries
+and is capped at 4096; when full it suppresses new keys until room is available. Watcher
+overflow has no trustworthy source path and uses one shared cooldown entry, so it cannot
+be attributed to an ignored directory. Such uncertainty can still queue a recovery scan.
+
+Accepted requests are coalesced, with at most one scan running and a one-minute global
+gap between automatic scans. Thus six minutes is the periodic interval, not a guarantee
+that event-driven maintenance waits six minutes. A new temporary filename can bypass a
+different filename's cooldown; noisy directory scopes belong in the ignore list.
+
+The built-in `index.refresh` command in `Gen` or `Cmd` queues a full scan regardless of
+ignore and cooldown rules, including the global automatic gap. If a scan is already
+running, one follow-up scan is queued rather than cancelling or overlapping it. LLIX v4
+carries maintenance settings with root configuration and acknowledges `Refresh` with a
+status response. Disconnected manual requests wait for the next companion connection.
 
 ## Build and tests
 
@@ -314,16 +415,25 @@ From a PowerShell terminal at the repository root:
 
 The BAT entry point also forwards arguments, for example
 `.\start.bat -Configuration Release`. It uses Windows PowerShell with a
-process-local execution-policy bypass and pauses on failure so diagnostics remain
+process-local execution-policy bypass and pauses after the debug session so diagnostics remain
 visible. Both entry points resolve paths from the script directory and can be called
 from another working directory, including when the repository path contains spaces.
 
 Exit any running LuvLetter instance from the system tray before launching again. The
 script refuses to rebuild while a process named `LuvLetter` is running, stops if the
 build fails or a required native output is missing, and starts the executable with its
-output directory as the working directory. A successful launch request closes the BAT
-window; application startup errors are displayed by LuvLetter itself. Press Ctrl twice
-to show the input box, or use the system tray.
+output directory as the working directory. The console stays open, displays the launched
+PID, and streams standard output and error to both the console and per-run files under
+`%LocalAppData%\LuvLetter\Logs`. Companion diagnostics include cache readiness, accepted
+rebuild causes, scan duration, and persistence failures. OutputDebugString/Trace output
+is not captured. Press Ctrl twice to show the input box, or use the system tray.
+
+Press `Q`, Enter, or Ctrl+C in the debug console to stop only the process launched by
+that session. The script first tries a window close and then forces termination if
+necessary; exit from the system tray for normal application shutdown. The companion
+observes its parent exit. Closing the console window forcibly can bypass script cleanup,
+so use the stop keys or tray exit. The BAT launcher pauses after exit to retain logs;
+direct PowerShell invocation returns to the existing terminal prompt.
 
 ### Manual build
 

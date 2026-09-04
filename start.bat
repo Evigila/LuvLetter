@@ -4,7 +4,9 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\st
 set "launchExitCode=%ERRORLEVEL%"
 if not "%launchExitCode%"=="0" (
     echo.
-    echo LuvLetter could not be launched. Review the error above.
-    pause
+    echo The LuvLetter debug session failed. Review the output above.
 )
+echo.
+echo Debug session ended. Press any key to close this launcher.
+pause >nul
 exit /b %launchExitCode%

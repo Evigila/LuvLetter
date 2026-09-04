@@ -824,7 +824,7 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
         const DWORD rootAttributes = AttributesOf(root);
         if (rootAttributes == INVALID_FILE_ATTRIBUTES ||
             (rootAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
-            continue;
+            return {};
         }
         if (directories.size() >= (std::numeric_limits<std::uint32_t>::max)()) {
             return {};
@@ -861,7 +861,23 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
                 0);
         }
         if (find == INVALID_HANDLE_VALUE) {
-            continue;
+            const DWORD error = GetLastError();
+            const bool isRoot = directories[current.directoryIndex].parentIndex == kNoParent;
+            if (error == ERROR_FILE_NOT_FOUND) {
+                // A wildcard can find no entries in an empty directory. A root
+                // that disappeared during enumeration must not replace its cache.
+                const DWORD attributes = AttributesOf(current.path);
+                if (attributes != INVALID_FILE_ATTRIBUTES &&
+                    (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+                    continue;
+                }
+            }
+            if (!isRoot && (error == ERROR_ACCESS_DENIED ||
+                    error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)) {
+                // Protected or concurrently removed descendants are expected.
+                continue;
+            }
+            return {};
         }
 
         do {
@@ -903,9 +919,16 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
                     SearchResultKind::File});
             }
         } while (FindNextFileW(find, &data));
+        const DWORD enumerationError = GetLastError();
         FindClose(find);
+        if (enumerationError != ERROR_NO_MORE_FILES) {
+            return {};
+        }
     }
 
+    if (cancellation != nullptr && cancellation->load(std::memory_order_relaxed)) {
+        return {};
+    }
     std::sort(entities.begin(), entities.end(), [](const TemporaryEntity& left, const TemporaryEntity& right) {
         return BaseEntityLess(
             left.name,
@@ -932,6 +955,9 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
     };
 
     for (const auto& directory : directories) {
+        if (cancellation != nullptr && cancellation->load(std::memory_order_relaxed)) {
+            return {};
+        }
         const auto offset = addString(directory.name);
         if (!offset.has_value()) {
             return {};
@@ -942,6 +968,9 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
             static_cast<std::uint32_t>(directory.name.size())});
     }
     for (const auto& entity : entities) {
+        if (cancellation != nullptr && cancellation->load(std::memory_order_relaxed)) {
+            return {};
+        }
         const auto offset = addString(entity.name);
         if (!offset.has_value()) {
             return {};
@@ -955,6 +984,9 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
             static_cast<std::uint32_t>(entity.kind)});
     }
 
+    if (cancellation != nullptr && cancellation->load(std::memory_order_relaxed)) {
+        return {};
+    }
     return std::make_shared<const IndexSnapshot>(
         std::move(packedDirectories),
         std::move(packedEntities),

@@ -3,6 +3,7 @@ using System.IO;
 using System.IO.Pipes;
 using Microsoft.Extensions.Hosting;
 using LuvLetter.Core.Application;
+using LuvLetter.Core.Modules.Indexing;
 
 namespace LuvLetter.Platform.Indexing;
 
@@ -10,7 +11,7 @@ namespace LuvLetter.Platform.Indexing;
 /// Supervises the out-of-process indexer. Startup and recovery remain off the host
 /// startup path; a missing companion safely produces no file matches.
 /// </summary>
-internal sealed class FileIndexCompanionClient : IFileIndexClient, IHostedService, IDisposable
+internal sealed class FileIndexCompanionClient : IFileIndexClient, IIndexRefreshRequester, IHostedService, IDisposable
 {
     private static readonly TimeSpan RebuildingPollInterval = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan StablePollInterval = TimeSpan.FromMilliseconds(250);
@@ -25,6 +26,7 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IHostedServic
     private long currentSessionEpoch;
     private int started;
     private int disposed;
+    private int refreshRequested;
 
     public FileIndexCompanionClient(FileIndexClientOptions options)
     {
@@ -38,6 +40,13 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IHostedServic
     public event Action<FileIndexRuntimeState>? StateChanged;
 
     public FileIndexRuntimeState CurrentState => Volatile.Read(ref currentState);
+
+    public void RequestRefresh()
+    {
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
+        Interlocked.Exchange(ref refreshRequested, 1);
+        Console.WriteLine("Index refresh requested; waiting for the companion.");
+    }
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -197,6 +206,8 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IHostedServic
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden,
                 WorkingDirectory = AppContext.BaseDirectory,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
             };
             startInfo.ArgumentList.Add("--pipe");
             startInfo.ArgumentList.Add(pipeName);
@@ -207,6 +218,16 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IHostedServic
             startInfo.ArgumentList.Add(options.DataDirectory);
             process = Process.Start(startInfo)
                 ?? throw new InvalidOperationException("The file-index companion did not start.");
+            process.OutputDataReceived += (_, output) =>
+            {
+                if (output.Data is not null) Console.WriteLine($"{DateTimeOffset.Now:HH:mm:ss} {output.Data}");
+            };
+            process.ErrorDataReceived += (_, output) =>
+            {
+                if (output.Data is not null) Console.Error.WriteLine($"{DateTimeOffset.Now:HH:mm:ss} {output.Data}");
+            };
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(options.ConnectionTimeout);
@@ -231,7 +252,7 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IHostedServic
                 pipe,
                 FileIndexMessageType.ConfigureRoots,
                 NextRequestId(),
-                FileIndexProtocol.ConfigureRootsPayload(options.NormalizedRoots()),
+                FileIndexProtocol.ConfigureRootsPayload(options.NormalizedRoots(), options.Maintenance),
                 timeout.Token).ConfigureAwait(false);
 
             var session = new Session(pipe, process, options.QueryTimeout);
@@ -267,11 +288,14 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IHostedServic
         {
             while (!pollingToken.IsCancellationRequested)
             {
+                var forceRefresh = Interlocked.Exchange(ref refreshRequested, 0) != 0;
                 var status = await session.QueryStatusAsync(
                     NextRequestId(),
+                    forceRefresh,
                     pollingToken).ConfigureAwait(false);
                 if (status is null)
                 {
+                    if (forceRefresh) Interlocked.Exchange(ref refreshRequested, 1);
                     return;
                 }
 
@@ -281,6 +305,7 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IHostedServic
                         FileIndexActivity.Ready => FileIndexRuntimeActivity.Ready,
                         FileIndexActivity.InitialBuild => FileIndexRuntimeActivity.InitialBuild,
                         FileIndexActivity.Updating => FileIndexRuntimeActivity.Updating,
+                        FileIndexActivity.Failed => FileIndexRuntimeActivity.Failed,
                         _ => FileIndexRuntimeActivity.Unavailable,
                     },
                     status.Value.IndexGeneration);
@@ -468,6 +493,7 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IHostedServic
 
         internal async ValueTask<FileIndexStatus?> QueryStatusAsync(
             ulong requestId,
+            bool forceRefresh,
             CancellationToken cancellationToken)
         {
             using var callerCancellation = CancellationTokenSource.CreateLinkedTokenSource(
@@ -494,7 +520,7 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IHostedServic
                 timeout.CancelAfter(queryTimeout);
                 await FileIndexProtocol.WriteFrameAsync(
                     pipe,
-                    FileIndexMessageType.Status,
+                    forceRefresh ? FileIndexMessageType.Refresh : FileIndexMessageType.Status,
                     requestId,
                     [],
                     timeout.Token).ConfigureAwait(false);

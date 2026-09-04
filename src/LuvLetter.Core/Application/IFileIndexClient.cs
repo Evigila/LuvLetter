@@ -18,6 +18,7 @@ public enum FileIndexRuntimeActivity
     Ready,
     InitialBuild,
     Updating,
+    Failed,
 }
 
 public sealed record FileIndexRuntimeState(

@@ -30,6 +30,7 @@ internal static class Program
         }
         catch (Exception exception)
         {
+            Console.Error.WriteLine(exception);
             WpfMessageBox.Show(
                 $"Cannot start LuvLetter.\n\n{exception.GetBaseException().Message}",
                 "LuvLetter"

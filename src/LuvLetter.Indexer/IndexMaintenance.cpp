@@ -161,13 +161,16 @@ std::uint64_t LiveIndexDelta::CaptureRevision() const noexcept {
     return revision_;
 }
 
-bool LiveIndexDelta::Apply(const std::span<const FileSystemChange> changes) {
+bool LiveIndexDelta::Apply(
+    const std::span<const FileSystemChange> changes,
+    std::vector<std::filesystem::path>* rebuildCauses) {
     if (changes.empty()) {
         return false;
     }
 
     std::unique_lock lock(mutex_);
     bool requiresRebuild = unsafe_;
+    std::vector<std::filesystem::path> capacityCauses;
     for (const auto& change : changes) {
         const auto normalized = NormalizePath(change.path);
         const auto key = FoldPath(normalized);
@@ -179,27 +182,30 @@ bool LiveIndexDelta::Apply(const std::span<const FileSystemChange> changes) {
         if (unsafe_) {
             unsafeRevision_ = revision;
             requiresRebuild = true;
+            if (rebuildCauses != nullptr) {
+                rebuildCauses->push_back(normalized);
+            }
             continue;
         }
+        bool causesRebuild = false;
         if (change.action == FileSystemChangeAction::Remove) {
             upserts_.erase(key);
             tombstones_[key] = revision;
             removedPrefixes_[RemovedPrefix(key)] = revision;
-            continue;
+        } else {
+            auto current = ReadCurrentEntry(normalized);
+            if (!current.has_value()) {
+                upserts_.erase(key);
+                tombstones_[key] = revision;
+                removedPrefixes_[RemovedPrefix(key)] = revision;
+            } else {
+                tombstones_.erase(key);
+                causesRebuild = change.action == FileSystemChangeAction::UpsertAndReconcile &&
+                    current->kind == indexing::SearchResultKind::Directory;
+                requiresRebuild |= causesRebuild;
+                upserts_[key] = VersionedResult{std::move(*current), revision};
+            }
         }
-
-        auto current = ReadCurrentEntry(normalized);
-        if (!current.has_value()) {
-            upserts_.erase(key);
-            tombstones_[key] = revision;
-            removedPrefixes_[RemovedPrefix(key)] = revision;
-            continue;
-        }
-
-        tombstones_.erase(key);
-        requiresRebuild |= change.action == FileSystemChangeAction::UpsertAndReconcile &&
-            current->kind == indexing::SearchResultKind::Directory;
-        upserts_[key] = VersionedResult{std::move(*current), revision};
 
         if (upserts_.size() + tombstones_.size() + removedPrefixes_.size()
             >= kMaximumRetainedDeltaChanges) {
@@ -209,12 +215,27 @@ bool LiveIndexDelta::Apply(const std::span<const FileSystemChange> changes) {
             unsafe_ = true;
             unsafeRevision_ = revision;
             requiresRebuild = true;
+            causesRebuild = true;
+        }
+        if (rebuildCauses != nullptr) {
+            if (causesRebuild) {
+                rebuildCauses->push_back(normalized);
+            } else if (upserts_.size() + tombstones_.size() + removedPrefixes_.size()
+                >= kMaximumDeltaChanges) {
+                capacityCauses.push_back(normalized);
+            }
         }
     }
 
-    return requiresRebuild ||
-        upserts_.size() + tombstones_.size() + removedPrefixes_.size()
-            >= kMaximumDeltaChanges;
+    const bool capacityExceeded =
+        upserts_.size() + tombstones_.size() + removedPrefixes_.size() >= kMaximumDeltaChanges;
+    if (rebuildCauses != nullptr && (capacityExceeded || unsafe_)) {
+        rebuildCauses->insert(
+            rebuildCauses->end(),
+            std::make_move_iterator(capacityCauses.begin()),
+            std::make_move_iterator(capacityCauses.end()));
+    }
+    return requiresRebuild || capacityExceeded;
 }
 
 std::vector<indexing::SearchResult> LiveIndexDelta::Query(
@@ -227,7 +248,8 @@ std::vector<indexing::SearchResult> LiveIndexDelta::Query(
 
     std::shared_lock lock(mutex_);
     if (unsafe_) {
-        return {};
+        // Keep the last complete snapshot searchable until reconciliation succeeds.
+        return baseSnapshot.Query(query, maximumResults);
     }
 
     const auto baseResults = baseSnapshot.Query(
@@ -253,7 +275,8 @@ std::vector<indexing::SearchResult> LiveIndexDelta::Merge(
 
     std::shared_lock lock(mutex_);
     if (unsafe_) {
-        return {};
+        const auto retained = (std::min)(baseResults.size(), maximumResults);
+        return {baseResults.begin(), baseResults.begin() + retained};
     }
     return MergeLocked(query, baseResults, maximumResults);
 }
