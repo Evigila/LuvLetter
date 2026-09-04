@@ -39,6 +39,12 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
     private int started;
     private int disposed;
     private int applicationActivationPending;
+    private long applicationIndexRevision;
+    private long fileIndexRevision;
+    private long cachedApplicationIndexRevision = -1;
+    private long cachedFileIndexRevision = -1;
+    private string? cachedApplicationQuery;
+    private IReadOnlyList<ApplicationMatch> cachedApplicationMatches = [];
     private string? cachedFileQuery;
     private IReadOnlyList<FileIndexMatch> cachedFileMatches = [];
 
@@ -89,9 +95,9 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         lifetimeCancellation = new CancellationTokenSource();
         nativeShell.InputChanged += HandleInputChanged;
         nativeShell.CandidateActivated += HandleCandidateActivated;
-        fileIndexClient.IndexChanged += HandleIndexChanged;
+        fileIndexClient.IndexChanged += HandleFileIndexChanged;
         fileIndexClient.StateChanged += HandleIndexStateChanged;
-        if (applicationCatalog is not null) applicationCatalog.Changed += HandleIndexChanged;
+        if (applicationCatalog is not null) applicationCatalog.Changed += HandleApplicationIndexChanged;
         consumeTask = ConsumeAsync(lifetimeCancellation.Token);
         HandleIndexStateChanged(fileIndexClient.CurrentState);
         return Task.CompletedTask;
@@ -105,8 +111,8 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         }
 
         fileIndexClient.StateChanged -= HandleIndexStateChanged;
-        if (applicationCatalog is not null) applicationCatalog.Changed -= HandleIndexChanged;
-        fileIndexClient.IndexChanged -= HandleIndexChanged;
+        if (applicationCatalog is not null) applicationCatalog.Changed -= HandleApplicationIndexChanged;
+        fileIndexClient.IndexChanged -= HandleFileIndexChanged;
         nativeShell.CandidateActivated -= HandleCandidateActivated;
         nativeShell.InputChanged -= HandleInputChanged;
 
@@ -143,6 +149,10 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
             new Dictionary<ulong, CandidateTarget>());
         activeIdentityTokens = new Dictionary<string, ulong>(StringComparer.OrdinalIgnoreCase);
         activeCandidateRevision = 0;
+        cachedApplicationQuery = null;
+        cachedApplicationMatches = [];
+        cachedFileQuery = null;
+        cachedFileMatches = [];
         EndIndexActivity(sendReadyMessage: false);
     }
 
@@ -155,9 +165,9 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
 
         nativeShell.CandidateActivated -= HandleCandidateActivated;
         nativeShell.InputChanged -= HandleInputChanged;
-        fileIndexClient.IndexChanged -= HandleIndexChanged;
+        fileIndexClient.IndexChanged -= HandleFileIndexChanged;
         fileIndexClient.StateChanged -= HandleIndexStateChanged;
-        if (applicationCatalog is not null) applicationCatalog.Changed -= HandleIndexChanged;
+        if (applicationCatalog is not null) applicationCatalog.Changed -= HandleApplicationIndexChanged;
         pendingChanges.Writer.TryComplete();
         lock (stateLock)
         {
@@ -187,6 +197,18 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         }
 
         pendingChanges.Writer.TryWrite(change);
+    }
+
+    private void HandleFileIndexChanged()
+    {
+        Interlocked.Increment(ref fileIndexRevision);
+        HandleIndexChanged();
+    }
+
+    private void HandleApplicationIndexChanged()
+    {
+        Interlocked.Increment(ref applicationIndexRevision);
+        HandleIndexChanged();
     }
 
     private void HandleIndexChanged()
@@ -471,36 +493,77 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
             options.FileCandidateCount,
             Math.Max(0, options.TotalCandidateCount - 1));
         var retrievalLimit = Math.Max(directLimit, options.RetrievalCandidateCount);
+        var applicationRevision = Volatile.Read(ref applicationIndexRevision);
         IReadOnlyList<ApplicationMatch> applications = [];
+        var applicationQuerySucceeded = false;
         if (directLimit > 0 && applicationCatalog is not null)
         {
-            try { applications = applicationCatalog.Query(query, retrievalLimit); }
-            catch { /* A catalog failure must not prevent filesystem candidates. */ }
+            if (cachedApplicationIndexRevision == applicationRevision
+                && string.Equals(cachedApplicationQuery, query, StringComparison.Ordinal))
+            {
+                applications = cachedApplicationMatches;
+                applicationQuerySucceeded = true;
+            }
+            else
+            {
+                try
+                {
+                    applications = applicationCatalog.Query(query, retrievalLimit);
+                    applicationQuerySucceeded = true;
+                }
+                catch
+                {
+                    // A catalog failure must not prevent filesystem candidates.
+                }
+            }
+        }
+        if (applicationQuerySucceeded
+            && applicationRevision == Volatile.Read(ref applicationIndexRevision))
+        {
+            cachedApplicationQuery = query;
+            cachedApplicationMatches = applications;
+            cachedApplicationIndexRevision = applicationRevision;
         }
         if (applications.Count > 0 && activeCandidateRevision != change.Revision)
         {
             // Applications can be shown immediately while the companion query runs.
+            var fileRevision = Volatile.Read(ref fileIndexRevision);
             Publish(MergeSearchCandidates(query, directLimit, applications,
-                string.Equals(cachedFileQuery, query, StringComparison.Ordinal) ? cachedFileMatches : []), change.Revision);
+                cachedFileIndexRevision == fileRevision
+                    && string.Equals(cachedFileQuery, query, StringComparison.Ordinal)
+                        ? cachedFileMatches
+                        : []), change.Revision);
         }
+        var fileRevisionAtQuery = Volatile.Read(ref fileIndexRevision);
         IReadOnlyList<FileIndexMatch> files = [];
+        var fileQuerySucceeded = false;
         if (directLimit > 0)
         {
-            try
+            if (cachedFileIndexRevision == fileRevisionAtQuery
+                && string.Equals(cachedFileQuery, query, StringComparison.Ordinal))
             {
-                files = await fileIndexClient.QueryAsync(
-                    query,
-                    retrievalLimit,
-                    change.Revision,
-                    cancellationToken).ConfigureAwait(false);
+                files = cachedFileMatches;
+                fileQuerySucceeded = true;
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            else
             {
-                throw;
-            }
-            catch
-            {
-                // The companion is optional; commands and Global Search remain available.
+                try
+                {
+                    files = await fileIndexClient.QueryAsync(
+                        query,
+                        retrievalLimit,
+                        change.Revision,
+                        cancellationToken).ConfigureAwait(false);
+                    fileQuerySucceeded = true;
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch
+                {
+                    // The companion is optional; commands and Global Search remain available.
+                }
             }
         }
 
@@ -510,8 +573,13 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
             return;
         }
 
-        cachedFileQuery = query;
-        cachedFileMatches = files;
+        if (fileQuerySucceeded
+            && fileRevisionAtQuery == Volatile.Read(ref fileIndexRevision))
+        {
+            cachedFileQuery = query;
+            cachedFileMatches = files;
+            cachedFileIndexRevision = fileRevisionAtQuery;
+        }
         Publish(MergeSearchCandidates(query, directLimit, applications, files), change.Revision);
     }
 
@@ -519,8 +587,8 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         string query, int directLimit, IReadOnlyList<ApplicationMatch> applications,
         IReadOnlyList<FileIndexMatch> files)
     {
-        var ranked = new List<(CandidateSpec Spec, double Score)>();
-        var applicationFiles = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var ranked = new List<(CandidateSpec Spec, double Score)>(applications.Count + files.Count);
+        var applicationFiles = new HashSet<string>(applications.Count, StringComparer.OrdinalIgnoreCase);
         foreach (var match in applications.DistinctBy(match => match.Entry.Id, StringComparer.OrdinalIgnoreCase))
         {
             var entry = match.Entry;
@@ -834,7 +902,7 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         return -1;
     }
 
-    private sealed record CandidateSpec(
+    private readonly record struct CandidateSpec(
         CandidateKind Kind,
         CandidateIconKind IconKind,
         string PrimaryText,
@@ -844,7 +912,7 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         string Identity,
         string? ApplicationId = null);
 
-    private sealed record CandidateTarget(
+    private readonly record struct CandidateTarget(
         CandidateKind Kind,
         string Value,
         FileSystemEntryKind? EntryKind,

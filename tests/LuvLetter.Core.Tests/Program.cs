@@ -27,6 +27,7 @@ internal static partial class Program
         ("Legacy index ignore default migration", TestLegacyIndexIgnoreUpgrade),
         ("Customized index ignore preservation", TestCustomIndexIgnoreConfiguration),
         ("Application name matching", TestApplicationNameMatching),
+        ("Application partition cache fallback", TestApplicationPartitionCacheFallback),
         ("Application and file candidate ranking", TestApplicationCandidateRanking),
         ("Application candidate merge and refresh", TestApplicationCandidateMerge),
         ("Application candidate source isolation and modes", TestApplicationCandidateIsolation),

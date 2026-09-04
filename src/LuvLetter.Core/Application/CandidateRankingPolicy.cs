@@ -2,7 +2,7 @@ namespace LuvLetter.Core.Application;
 
 public enum SearchCandidateSource { Application, File, Directory }
 
-public sealed record CandidateRankingContext(
+public readonly record struct CandidateRankingContext(
     string Identity, string Query, SearchCandidateSource Source, int MatchScore);
 
 public interface ICandidateRankingPolicy

@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using LuvLetter.Core.Application;
@@ -13,6 +14,8 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
     private const int MaximumCandidateCount = InputCandidateOptions.MaximumCandidateCount;
     private const int MaximumCallbackTextLength = 1_048_576;
     private const int MaximumQuickActionLabelLength = 96;
+    private const int MaximumCandidatePrimaryTextLength = 512;
+    private const int MaximumCandidateSecondaryTextLength = 2048;
     private const int MaximumMessageLength = 4096;
     private const int MaximumPendingNotifications = 128;
 
@@ -202,73 +205,98 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
         lock (operationSyncRoot)
         {
             ThrowIfDisposed();
-            var nativeItems = candidates.Count == 0
-                ? Array.Empty<NativeInputCandidate>()
-                : new NativeInputCandidate[candidates.Count];
+            if (candidates.Count == 0)
+            {
+                ThrowIfFailed(
+                    nativeApi.SetInputCandidates(Array.Empty<NativeInputCandidate>(), 0, revision),
+                    "SetInputCandidates");
+                return;
+            }
+
+            Span<int> primaryTextLengths = stackalloc int[candidates.Count];
+            Span<int> secondaryTextLengths = stackalloc int[candidates.Count];
+            var packedTextLength = 0;
+            for (var index = 0; index < candidates.Count; index++)
+            {
+                var candidate = candidates[index];
+                if (candidate.Token == 0
+                    || !Enum.IsDefined(candidate.Kind)
+                    || !Enum.IsDefined(candidate.IconKind))
+                {
+                    throw new ArgumentException(
+                        "Candidates must have a non-zero token, defined kind, and defined icon kind.",
+                        nameof(candidates));
+                }
+
+                primaryTextLengths[index] = GetPackedTextLength(
+                    candidate.PrimaryText,
+                    MaximumCandidatePrimaryTextLength);
+                secondaryTextLengths[index] = GetPackedTextLength(
+                    candidate.SecondaryText,
+                    MaximumCandidateSecondaryTextLength);
+                packedTextLength = checked(
+                    packedTextLength
+                    + primaryTextLengths[index] + 1
+                    + secondaryTextLengths[index] + 1);
+            }
+
+            var packedText = ArrayPool<char>.Shared.Rent(packedTextLength);
+            NativeInputCandidate[] nativeItems;
             try
             {
+                nativeItems = ArrayPool<NativeInputCandidate>.Shared.Rent(candidates.Count);
+            }
+            catch
+            {
+                ArrayPool<char>.Shared.Return(packedText);
+                throw;
+            }
+
+            GCHandle packedTextHandle = default;
+            try
+            {
+                packedTextHandle = GCHandle.Alloc(packedText, GCHandleType.Pinned);
+                var packedTextPointer = packedTextHandle.AddrOfPinnedObject();
+                var packedTextOffset = 0;
                 for (var index = 0; index < candidates.Count; index++)
                 {
                     var candidate = candidates[index];
-                    if (candidate.Token == 0
-                        || !Enum.IsDefined(candidate.Kind)
-                        || !Enum.IsDefined(candidate.IconKind))
+                    nativeItems[index] = new NativeInputCandidate
                     {
-                        throw new ArgumentException(
-                            "Candidates must have a non-zero token, defined kind, and defined icon kind.",
-                            nameof(candidates));
-                    }
-
-                    var primaryText = IntPtr.Zero;
-                    var secondaryText = IntPtr.Zero;
-                    try
-                    {
-                        primaryText = Marshal.StringToHGlobalUni(
-                            candidate.PrimaryText ?? string.Empty);
-                        secondaryText = Marshal.StringToHGlobalUni(
-                            candidate.SecondaryText ?? string.Empty);
-                        nativeItems[index] = new NativeInputCandidate
-                        {
-                            Token = candidate.Token,
-                            Kind = (int)candidate.Kind,
-                            IconKind = (int)candidate.IconKind,
-                            PrimaryText = primaryText,
-                            SecondaryText = secondaryText,
-                        };
-                    }
-                    catch
-                    {
-                        if (primaryText != IntPtr.Zero)
-                        {
-                            Marshal.FreeHGlobal(primaryText);
-                        }
-
-                        if (secondaryText != IntPtr.Zero)
-                        {
-                            Marshal.FreeHGlobal(secondaryText);
-                        }
-                        throw;
-                    }
+                        Token = candidate.Token,
+                        Kind = (int)candidate.Kind,
+                        IconKind = (int)candidate.IconKind,
+                        PrimaryText = PackText(
+                            candidate.PrimaryText,
+                            primaryTextLengths[index],
+                            packedText,
+                            packedTextPointer,
+                            ref packedTextOffset),
+                        SecondaryText = PackText(
+                            candidate.SecondaryText,
+                            secondaryTextLengths[index],
+                            packedText,
+                            packedTextPointer,
+                            ref packedTextOffset),
+                    };
                 }
 
+                // The native host copies every pointed-to string before this synchronous
+                // call returns, so the pooled buffer can be unpinned immediately afterward.
                 ThrowIfFailed(
-                    nativeApi.SetInputCandidates(nativeItems, nativeItems.Length, revision),
+                    nativeApi.SetInputCandidates(nativeItems, candidates.Count, revision),
                     "SetInputCandidates");
             }
             finally
             {
-                foreach (var item in nativeItems)
+                if (packedTextHandle.IsAllocated)
                 {
-                    if (item.PrimaryText != IntPtr.Zero)
-                    {
-                        Marshal.FreeHGlobal(item.PrimaryText);
-                    }
-
-                    if (item.SecondaryText != IntPtr.Zero)
-                    {
-                        Marshal.FreeHGlobal(item.SecondaryText);
-                    }
+                    packedTextHandle.Free();
                 }
+
+                ArrayPool<char>.Shared.Return(packedText);
+                nativeItems.AsSpan(0, candidates.Count).Clear();
+                ArrayPool<NativeInputCandidate>.Shared.Return(nativeItems);
             }
         }
     }
@@ -718,6 +746,31 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
                 $"Native operation '{operation}' failed with HRESULT 0x{result:X8}.",
                 result);
         }
+    }
+
+    private static int GetPackedTextLength(string? text, int maximumLength)
+    {
+        text ??= string.Empty;
+        // Copy one character beyond the accepted maximum so the native bounded
+        // wcsnlen check still rejects overlong values without packing them in full.
+        var inspectedLength = Math.Min(text.Length, maximumLength + 1);
+        var terminator = text.AsSpan(0, inspectedLength).IndexOf('\0');
+        return terminator >= 0 ? terminator : inspectedLength;
+    }
+
+    private static IntPtr PackText(
+        string? text,
+        int length,
+        char[] destination,
+        IntPtr destinationPointer,
+        ref int destinationOffset)
+    {
+        text ??= string.Empty;
+        var result = IntPtr.Add(destinationPointer, checked(destinationOffset * sizeof(char)));
+        text.AsSpan(0, length).CopyTo(destination.AsSpan(destinationOffset, length));
+        destinationOffset += length;
+        destination[destinationOffset++] = '\0';
+        return result;
     }
 
     private static string NormalizeQuickActionLabel(string displayName)

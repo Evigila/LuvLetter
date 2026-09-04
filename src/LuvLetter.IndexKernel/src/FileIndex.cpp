@@ -8,6 +8,7 @@
 #include <limits>
 #include <optional>
 #include <system_error>
+#include <type_traits>
 #include <utility>
 
 namespace luvletter::indexing {
@@ -32,18 +33,6 @@ struct SnapshotMetadata final {
     std::uint64_t fileLength = 0;
     std::uint64_t rootsFingerprint = 0;
     std::uint64_t payloadChecksum = 0;
-};
-
-struct TemporaryDirectory final {
-    std::uint32_t parentIndex;
-    std::wstring name;
-};
-
-struct TemporaryEntity final {
-    std::uint32_t directoryIndex;
-    std::wstring name;
-    std::uint64_t stableId;
-    SearchResultKind kind;
 };
 
 struct PendingDirectory final {
@@ -432,11 +421,30 @@ bool PathExclusions::Contains(const std::filesystem::path& path) const {
     if (path.empty() || paths_.empty()) {
         return false;
     }
-    const auto normalized = NormalizeExclusionPath(path);
-    return std::any_of(paths_.begin(), paths_.end(), [&](const auto& excluded) {
-        return CompareOrdinalIgnoreCase(normalized.native(), excluded.native()) == 0 ||
-            IsDirectoryCoveredBy(normalized, excluded);
-    });
+    return ContainsNormalized(NormalizeExclusionPath(path));
+}
+
+bool PathExclusions::ContainsNormalized(const std::filesystem::path& path) const {
+    if (path.empty() || paths_.empty()) return false;
+    const std::wstring_view candidate(path.native());
+    const auto containsExact = [this](const std::wstring_view value) {
+        const auto found = std::lower_bound(paths_.begin(), paths_.end(), value,
+            [](const std::filesystem::path& excluded, const std::wstring_view key) {
+                return CompareOrdinalIgnoreCase(excluded.native(), key) < 0;
+            });
+        return found != paths_.end() && CompareOrdinalIgnoreCase(found->native(), value) == 0;
+    };
+    if (containsExact(candidate)) return true;
+
+    const auto rootLength = path.root_path().native().size();
+    if (rootLength != 0 && rootLength < candidate.size() &&
+        containsExact(candidate.substr(0, rootLength))) return true;
+    auto separator = candidate.find_first_of(L"\\/", rootLength);
+    while (separator != std::wstring_view::npos) {
+        if (containsExact(candidate.substr(0, separator))) return true;
+        separator = candidate.find_first_of(L"\\/", separator + 1);
+    }
+    return false;
 }
 
 SearchMatchQuality ClassifySearchMatch(
@@ -677,22 +685,6 @@ bool IndexSnapshot::Save(const std::filesystem::path& filePath) const {
         return false;
     }
 
-    std::vector<std::byte> records;
-    records.reserve(static_cast<std::size_t>(directoryBytes + entityBytes));
-    for (const auto& directory : directories_) {
-        AppendU32(records, directory.parentIndex);
-        AppendU32(records, directory.nameOffset);
-        AppendU32(records, directory.nameLength);
-    }
-    for (const auto& entity : entities_) {
-        AppendU32(records, entity.directoryIndex);
-        AppendU32(records, entity.nameOffset);
-        AppendU32(records, entity.nameLength);
-        AppendU32(records, entity.stableIdLow);
-        AppendU32(records, entity.stableIdHigh);
-        AppendU32(records, entity.kind);
-    }
-
     auto temporaryPath = filePath;
     temporaryPath += L".tmp." + std::to_wstring(GetCurrentProcessId());
     const HANDLE handle = CreateFileW(
@@ -707,25 +699,52 @@ bool IndexSnapshot::Save(const std::filesystem::path& filePath) const {
         return false;
     }
 
+    constexpr std::size_t chunkCapacity = 48U * 1024U;
+    std::vector<std::byte> records;
+    records.reserve(chunkCapacity);
+    std::uint64_t checksum = 14695981039346656037ULL;
+    const auto flushRecords = [&] {
+        if (records.empty()) return true;
+        checksum = HashBytes(records, checksum);
+        const bool written = WriteAll(handle, records);
+        records.clear();
+        return written;
+    };
+    const auto appendRecord = [&](const auto& record) {
+        if constexpr (std::is_same_v<std::decay_t<decltype(record)>, DirectoryRecord>) {
+            AppendU32(records, record.parentIndex);
+            AppendU32(records, record.nameOffset);
+            AppendU32(records, record.nameLength);
+        } else {
+            AppendU32(records, record.directoryIndex);
+            AppendU32(records, record.nameOffset);
+            AppendU32(records, record.nameLength);
+            AppendU32(records, record.stableIdLow);
+            AppendU32(records, record.stableIdHigh);
+            AppendU32(records, record.kind);
+        }
+        return records.size() < chunkCapacity || flushRecords();
+    };
+
+    const std::array<std::byte, kSnapshotHeaderSize> placeholder{};
+    bool succeeded = WriteAll(handle, placeholder);
+    for (const auto& directory : directories_) succeeded = succeeded && appendRecord(directory);
+    for (const auto& entity : entities_) succeeded = succeeded && appendRecord(entity);
+    succeeded = succeeded && flushRecords();
     const auto poolBytesView = std::span{
         reinterpret_cast<const std::byte*>(stringPool_.data()),
         stringPool_.size() * sizeof(wchar_t)};
-    const auto checksum = HashBytes(poolBytesView, HashBytes(records));
+    if (succeeded) {
+        checksum = HashBytes(poolBytesView, checksum);
+        succeeded = WriteAll(handle, poolBytesView);
+    }
     const SnapshotMetadata metadata{
-        directories_.size(),
-        entities_.size(),
-        stringPool_.size(),
-        directoryBytes,
-        entityBytes,
-        poolBytes,
-        fileLength,
-        rootsFingerprint_,
-        checksum};
+        directories_.size(), entities_.size(), stringPool_.size(), directoryBytes,
+        entityBytes, poolBytes, fileLength, rootsFingerprint_, checksum};
     const auto header = EncodeMetadata(metadata);
-    const bool succeeded = WriteAll(handle, header) &&
-        WriteAll(handle, records) &&
-        WriteAll(handle, poolBytesView) &&
-        FlushFileBuffers(handle);
+    LARGE_INTEGER beginning{};
+    succeeded = succeeded && SetFilePointerEx(handle, beginning, nullptr, FILE_BEGIN) &&
+        WriteAll(handle, header) && FlushFileBuffers(handle);
     CloseHandle(handle);
 
     if (!succeeded || !MoveFileExW(
@@ -784,58 +803,82 @@ std::shared_ptr<const IndexSnapshot> IndexSnapshot::Load(const std::filesystem::
         return {};
     }
 
-    std::vector<std::byte> recordBytes(static_cast<std::size_t>(expectedDirectoryBytes + expectedEntityBytes));
-    std::vector<wchar_t> stringPool(static_cast<std::size_t>(metadata.poolCharacterCount));
-    valid = ReadAll(handle, recordBytes) &&
-        ReadAll(handle, std::span{
-            reinterpret_cast<std::byte*>(stringPool.data()),
-            stringPool.size() * sizeof(wchar_t)});
-    CloseHandle(handle);
-    const auto poolBytesView = std::span{
-        reinterpret_cast<const std::byte*>(stringPool.data()),
-        stringPool.size() * sizeof(wchar_t)};
-    if (!valid || HashBytes(poolBytesView, HashBytes(recordBytes)) != metadata.payloadChecksum) {
-        return {};
-    }
-
     std::vector<DirectoryRecord> directories;
     std::vector<EntityRecord> entities;
     directories.reserve(static_cast<std::size_t>(metadata.directoryCount));
     entities.reserve(static_cast<std::size_t>(metadata.entityCount));
-    std::size_t cursor = 0;
-    for (std::uint64_t index = 0; index < metadata.directoryCount; ++index) {
-        DirectoryRecord directory{};
-        valid = ReadU32(recordBytes, cursor, directory.parentIndex) &&
-            ReadU32(recordBytes, cursor, directory.nameOffset) &&
-            ReadU32(recordBytes, cursor, directory.nameLength) &&
-            directory.nameOffset <= stringPool.size() &&
-            directory.nameLength <= stringPool.size() - directory.nameOffset &&
-            (directory.parentIndex == kNoParent || directory.parentIndex < index);
-        if (!valid) {
-            return {};
+    std::vector<std::byte> recordChunk;
+    recordChunk.reserve(48U * 1024U);
+    std::uint64_t checksum = 14695981039346656037ULL;
+    constexpr std::size_t directoriesPerChunk = (48U * 1024U) / kPersistedDirectorySize;
+    constexpr std::size_t entitiesPerChunk = (48U * 1024U) / kPersistedEntitySize;
+    while (valid && directories.size() < metadata.directoryCount) {
+        const auto count = (std::min)(directoriesPerChunk,
+            static_cast<std::size_t>(metadata.directoryCount) - directories.size());
+        recordChunk.resize(count * static_cast<std::size_t>(kPersistedDirectorySize));
+        valid = ReadAll(handle, recordChunk);
+        if (!valid) break;
+        checksum = HashBytes(recordChunk, checksum);
+        std::size_t cursor = 0;
+        for (std::size_t offset = 0; offset < count; ++offset) {
+            DirectoryRecord directory{};
+            const auto index = directories.size();
+            valid = ReadU32(recordChunk, cursor, directory.parentIndex) &&
+                ReadU32(recordChunk, cursor, directory.nameOffset) &&
+                ReadU32(recordChunk, cursor, directory.nameLength) &&
+                (directory.parentIndex == kNoParent || directory.parentIndex < index);
+            if (!valid) break;
+            directories.push_back(directory);
         }
-        directories.push_back(directory);
+        valid = valid && cursor == recordChunk.size();
     }
-    for (std::uint64_t index = 0; index < metadata.entityCount; ++index) {
-        EntityRecord entity{};
-        valid = ReadU32(recordBytes, cursor, entity.directoryIndex) &&
-            ReadU32(recordBytes, cursor, entity.nameOffset) &&
-            ReadU32(recordBytes, cursor, entity.nameLength) &&
-            ReadU32(recordBytes, cursor, entity.stableIdLow) &&
-            ReadU32(recordBytes, cursor, entity.stableIdHigh) &&
-            ReadU32(recordBytes, cursor, entity.kind) &&
-            entity.directoryIndex < directories.size() &&
-            entity.nameOffset <= stringPool.size() &&
-            entity.nameLength <= stringPool.size() - entity.nameOffset &&
-            IsValidKind(entity.kind);
-        if (!valid) {
-            return {};
+    while (valid && entities.size() < metadata.entityCount) {
+        const auto count = (std::min)(entitiesPerChunk,
+            static_cast<std::size_t>(metadata.entityCount) - entities.size());
+        recordChunk.resize(count * static_cast<std::size_t>(kPersistedEntitySize));
+        valid = ReadAll(handle, recordChunk);
+        if (!valid) break;
+        checksum = HashBytes(recordChunk, checksum);
+        std::size_t cursor = 0;
+        for (std::size_t offset = 0; offset < count; ++offset) {
+            EntityRecord entity{};
+            valid = ReadU32(recordChunk, cursor, entity.directoryIndex) &&
+                ReadU32(recordChunk, cursor, entity.nameOffset) &&
+                ReadU32(recordChunk, cursor, entity.nameLength) &&
+                ReadU32(recordChunk, cursor, entity.stableIdLow) &&
+                ReadU32(recordChunk, cursor, entity.stableIdHigh) &&
+                ReadU32(recordChunk, cursor, entity.kind) &&
+                entity.directoryIndex < directories.size() && IsValidKind(entity.kind);
+            if (!valid) break;
+            entities.push_back(entity);
         }
-        entities.push_back(entity);
+        valid = valid && cursor == recordChunk.size();
     }
-    if (cursor != recordBytes.size()) {
+    if (!valid) {
+        CloseHandle(handle);
         return {};
     }
+    std::vector<wchar_t> stringPool(static_cast<std::size_t>(metadata.poolCharacterCount));
+    const auto writablePoolBytes = std::span{
+        reinterpret_cast<std::byte*>(stringPool.data()),
+        stringPool.size() * sizeof(wchar_t)};
+    valid = valid && ReadAll(handle, writablePoolBytes);
+    CloseHandle(handle);
+    const auto poolBytesView = std::span{
+        reinterpret_cast<const std::byte*>(stringPool.data()),
+        stringPool.size() * sizeof(wchar_t)};
+    if (!valid || HashBytes(poolBytesView, checksum) != metadata.payloadChecksum) {
+        return {};
+    }
+
+    valid = std::all_of(directories.begin(), directories.end(), [&](const auto& directory) {
+        return directory.nameOffset <= stringPool.size() &&
+            directory.nameLength <= stringPool.size() - directory.nameOffset;
+    }) && std::all_of(entities.begin(), entities.end(), [&](const auto& entity) {
+        return entity.nameOffset <= stringPool.size() &&
+            entity.nameLength <= stringPool.size() - entity.nameOffset;
+    });
+    if (!valid) return {};
 
     for (std::size_t index = 1; index < entities.size(); ++index) {
         const auto& previous = entities[index - 1];
@@ -870,9 +913,18 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
     const auto normalizedRoots = NormalizeRoots(roots, exclusions);
     const auto rootsFingerprint = ComputeRootsFingerprint(normalizedRoots, exclusions);
 
-    std::vector<TemporaryDirectory> directories;
-    std::vector<TemporaryEntity> entities;
+    std::vector<IndexSnapshot::DirectoryRecord> directories;
+    std::vector<IndexSnapshot::EntityRecord> entities;
+    std::vector<wchar_t> stringPool;
     std::vector<PendingDirectory> pending;
+    const auto addString = [&stringPool](const std::wstring_view value) -> std::optional<std::uint32_t> {
+        if (value.size() > (std::numeric_limits<std::uint32_t>::max)() - stringPool.size()) {
+            return std::nullopt;
+        }
+        const auto offset = static_cast<std::uint32_t>(stringPool.size());
+        stringPool.insert(stringPool.end(), value.begin(), value.end());
+        return offset;
+    };
 
     for (const auto& root : normalizedRoots) {
         if (cancellation != nullptr && cancellation->load(std::memory_order_relaxed)) {
@@ -890,7 +942,11 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
             return {};
         }
         const auto rootIndex = static_cast<std::uint32_t>(directories.size());
-        directories.push_back(TemporaryDirectory{kNoParent, root.native()});
+        const auto& rootName = root.native();
+        const auto rootOffset = addString(rootName);
+        if (!rootOffset) return {};
+        directories.push_back(IndexSnapshot::DirectoryRecord{
+            kNoParent, *rootOffset, static_cast<std::uint32_t>(rootName.size())});
         pending.push_back(PendingDirectory{root, rootIndex});
     }
 
@@ -950,7 +1006,11 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
                 continue;
             }
             const auto entryPath = (current.path / name).lexically_normal();
-            if (exclusions.Contains(entryPath)) {
+            const auto& entryText = entryPath.native();
+            const bool extendedEntry = entryText.starts_with(L"\\\\?\\");
+            if (!exclusions.Empty() && (extendedEntry
+                    ? exclusions.Contains(entryPath)
+                    : exclusions.ContainsNormalized(entryPath))) {
                 continue;
             }
             if (entities.size() >= (std::numeric_limits<std::uint32_t>::max)()) {
@@ -959,27 +1019,40 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
             }
 
             const bool directory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+            const auto nameOffset = addString(name);
+            if (!nameOffset) {
+                FindClose(find);
+                return {};
+            }
+            const auto stableId = StablePathId(entryPath.native());
             if (directory) {
                 if (directories.size() >= (std::numeric_limits<std::uint32_t>::max)()) {
                     FindClose(find);
                     return {};
                 }
                 const auto directoryIndex = static_cast<std::uint32_t>(directories.size());
-                directories.push_back(TemporaryDirectory{current.directoryIndex, std::wstring(name)});
-                entities.push_back(TemporaryEntity{
+                directories.push_back(IndexSnapshot::DirectoryRecord{
                     current.directoryIndex,
-                    std::wstring(name),
-                    StablePathId(entryPath.native()),
-                    SearchResultKind::Directory});
+                    *nameOffset,
+                    static_cast<std::uint32_t>(name.size())});
+                entities.push_back(IndexSnapshot::EntityRecord{
+                    current.directoryIndex,
+                    *nameOffset,
+                    static_cast<std::uint32_t>(name.size()),
+                    static_cast<std::uint32_t>(stableId),
+                    static_cast<std::uint32_t>(stableId >> 32U),
+                    static_cast<std::uint32_t>(SearchResultKind::Directory)});
                 if ((data.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0) {
                     pending.push_back(PendingDirectory{entryPath, directoryIndex});
                 }
             } else {
-                entities.push_back(TemporaryEntity{
+                entities.push_back(IndexSnapshot::EntityRecord{
                     current.directoryIndex,
-                    std::wstring(name),
-                    StablePathId(entryPath.native()),
-                    SearchResultKind::File});
+                    *nameOffset,
+                    static_cast<std::uint32_t>(name.size()),
+                    static_cast<std::uint32_t>(stableId),
+                    static_cast<std::uint32_t>(stableId >> 32U),
+                    static_cast<std::uint32_t>(SearchResultKind::File)});
             }
         } while (FindNextFileW(find, &data));
         const DWORD enumerationError = GetLastError();
@@ -992,67 +1065,26 @@ std::shared_ptr<const IndexSnapshot> IndexBuilder::Build(
     if (cancellation != nullptr && cancellation->load(std::memory_order_relaxed)) {
         return {};
     }
-    std::sort(entities.begin(), entities.end(), [](const TemporaryEntity& left, const TemporaryEntity& right) {
-        return BaseEntityLess(
-            left.name,
-            left.kind,
-            left.stableId,
-            right.name,
-            right.kind,
-            right.stableId);
-    });
-
-    std::vector<wchar_t> stringPool;
-    std::vector<IndexSnapshot::DirectoryRecord> packedDirectories;
-    std::vector<IndexSnapshot::EntityRecord> packedEntities;
-    packedDirectories.reserve(directories.size());
-    packedEntities.reserve(entities.size());
-
-    auto addString = [&stringPool](const std::wstring_view value) -> std::optional<std::uint32_t> {
-        if (stringPool.size() > (std::numeric_limits<std::uint32_t>::max)() - value.size()) {
-            return std::nullopt;
-        }
-        const auto offset = static_cast<std::uint32_t>(stringPool.size());
-        stringPool.insert(stringPool.end(), value.begin(), value.end());
-        return offset;
+    const auto pooledName = [&stringPool](const IndexSnapshot::EntityRecord& record) {
+        return std::wstring_view(stringPool.data() + record.nameOffset, record.nameLength);
     };
-
-    for (const auto& directory : directories) {
-        if (cancellation != nullptr && cancellation->load(std::memory_order_relaxed)) {
-            return {};
-        }
-        const auto offset = addString(directory.name);
-        if (!offset.has_value()) {
-            return {};
-        }
-        packedDirectories.push_back(IndexSnapshot::DirectoryRecord{
-            directory.parentIndex,
-            *offset,
-            static_cast<std::uint32_t>(directory.name.size())});
-    }
-    for (const auto& entity : entities) {
-        if (cancellation != nullptr && cancellation->load(std::memory_order_relaxed)) {
-            return {};
-        }
-        const auto offset = addString(entity.name);
-        if (!offset.has_value()) {
-            return {};
-        }
-        packedEntities.push_back(IndexSnapshot::EntityRecord{
-            entity.directoryIndex,
-            *offset,
-            static_cast<std::uint32_t>(entity.name.size()),
-            static_cast<std::uint32_t>(entity.stableId),
-            static_cast<std::uint32_t>(entity.stableId >> 32U),
-            static_cast<std::uint32_t>(entity.kind)});
-    }
+    std::sort(entities.begin(), entities.end(), [&pooledName](
+            const IndexSnapshot::EntityRecord& left, const IndexSnapshot::EntityRecord& right) {
+        return BaseEntityLess(
+            pooledName(left),
+            static_cast<SearchResultKind>(left.kind),
+            left.StableId(),
+            pooledName(right),
+            static_cast<SearchResultKind>(right.kind),
+            right.StableId());
+    });
 
     if (cancellation != nullptr && cancellation->load(std::memory_order_relaxed)) {
         return {};
     }
     return std::make_shared<const IndexSnapshot>(
-        std::move(packedDirectories),
-        std::move(packedEntities),
+        std::move(directories),
+        std::move(entities),
         std::move(stringPool),
         rootsFingerprint);
 }

@@ -8,6 +8,9 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 
 ### Added
 
+- Added a performance and resident-memory audit, a two-process working-set/private-bytes
+  sampler, and a synthetic index-kernel benchmark that reports warm Top-K query
+  percentiles and compact-snapshot memory changes.
 - Added non-overlapping filesystem partitions for Desktop, Downloads, the user-profile
   remainder, and other configured roots. Each partition owns its baseline, live Delta,
   rebuild policy, cache/backup, generation, and refresh schedule; parent scans exclude
@@ -107,6 +110,20 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 
 ### Changed
 
+- Reduced ready-state companion status polling from four round trips per second to one
+  every five seconds while preserving immediate forced refresh through an explicit wake.
+- Reworked application lookup to precompute compact display/alias keys and retain only a
+  bounded Top-K heap per query. Semantically unchanged source refreshes skip cache and
+  publication work, and application/file publications reuse the unaffected query half.
+- Removed retained application-cache JSON buffers, packed candidate interop strings into
+  pooled contiguous storage, and reused candidate-window rendering resources across
+  ordinary result updates. Explicit Settings close now releases the window visual tree.
+- Reduced filesystem indexing peaks by building compact records directly, decoding cache
+  records into final vectors, and streaming snapshot writes and checksums. Existing valid
+  primary cache files are rotated to backup by hard link or file copy when possible.
+- Batched watcher changes by owning partition and bounded Delta and cross-partition result
+  merges to the requested Top-K. Full-ignore checks now use an empty-list fast path and
+  sorted path-boundary lookup without repeated normalization on hot scanner paths.
 - Upgraded LLIX to v6 so managed configuration sends partition IDs, roots, delegated
   subtrees, maintenance tiers, maximum ages, and automatic gaps. Snapshot schema v3 and
   Native ABI v7 remain unchanged.

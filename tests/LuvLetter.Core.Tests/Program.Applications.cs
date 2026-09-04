@@ -22,6 +22,18 @@ internal static partial class Program
             "Raw exact names, exact aliases, compact names, and prefixes must retain their ranking tiers.");
         Assert.True(ApplicationNameMatcher.Score(todo, "tasks").HasValue);
         Assert.True(ApplicationNameMatcher.Score(todo, "Microsoftto").HasValue);
+        var indexed = ApplicationNameMatcher.CreateIndex(todo);
+        foreach (var query in new[] { "Microsoft To Do", "TODO.EXE", "Microsoft todo", "Micro", "tasks" })
+        {
+            var preparedQuery = ApplicationNameMatcher.CreateQuery(query);
+            Assert.Equal(ApplicationNameMatcher.Score(todo, query),
+                ApplicationNameMatcher.Score(todo, indexed, preparedQuery),
+                "Precomputed application names must preserve matching scores.");
+        }
+        var localized = TestApplication("power", "Power Options", ["电源选项"]);
+        Assert.Equal(ApplicationNameMatcher.Score(localized, "电源"), ApplicationNameMatcher.Score(localized,
+            ApplicationNameMatcher.CreateIndex(localized), ApplicationNameMatcher.CreateQuery("电源")),
+            "Precomputed localized aliases must preserve prefix matching.");
         foreach (var query in new[] { "", "   ", @"C:\Apps\todo", "Apps/todo", "Microsoft/to", "Microsofft", "Microsoft-To-Do" })
         {
             Assert.False(ApplicationNameMatcher.Score(todo, query).HasValue,
@@ -90,13 +102,26 @@ internal static partial class Program
             Assert.Equal(CandidateKind.GlobalSearch, first[^1].Kind);
 
             var priorQueries = apps.QueryCount;
+            var fileQueriesBeforeApplicationRefresh = files.Queries.Count;
             var priorSnapshots = shell.CandidateSnapshots.Count;
             apps.RaiseChanged();
             var refreshed = await WaitApplicationSnapshotAsync(shell, 1, priorSnapshots,
                 candidates => candidates.Any(candidate => candidate.PrimaryText == "micro"));
             Assert.True(apps.QueryCount > priorQueries);
+            Assert.Equal(fileQueriesBeforeApplicationRefresh, files.Queries.Count,
+                "An application-only publication must reuse the unchanged file result.");
             Assert.SequenceEqual(first.Select(candidate => candidate.Token), refreshed.Select(candidate => candidate.Token),
                 "An unchanged application catalog refresh must preserve same-revision identities and tokens.");
+
+            var appQueriesBeforeFileRefresh = apps.QueryCount;
+            var fileQueriesBeforeFileRefresh = files.Queries.Count;
+            priorSnapshots = shell.CandidateSnapshots.Count;
+            files.RaiseIndexChanged();
+            refreshed = await WaitApplicationSnapshotAsync(shell, 1, priorSnapshots,
+                candidates => candidates.Any(candidate => candidate.PrimaryText == "micro"));
+            Assert.Equal(appQueriesBeforeFileRefresh, apps.QueryCount,
+                "A file-only publication must reuse the unchanged application result.");
+            Assert.True(files.Queries.Count > fileQueriesBeforeFileRefresh);
 
             shell.RaiseCandidateActivated(refreshed[0].Token);
             await WaitApplicationConditionAsync(() => launcher.Opened.Count == 1 && shell.HideCommandInputCalls == 1,
@@ -150,6 +175,7 @@ internal static partial class Program
             Assert.True(appFailure.Any(candidate => candidate.Kind == CandidateKind.Command));
             apps.FailQueries = false;
             files.SetQuery(static (_, _, _, _) => throw new IOException("File index unavailable."));
+            files.RaiseIndexChanged();
             shell.RaiseInputChanged("micro", revision: 2);
             var fileFailure = await WaitApplicationSnapshotAsync(shell, 2);
             var appToken = fileFailure.Single(candidate => candidate.PrimaryText == "Microsoft To Do").Token;
@@ -170,6 +196,7 @@ internal static partial class Program
 
             var delayed = new TaskCompletionSource<IReadOnlyList<FileIndexMatch>>(TaskCreationOptions.RunContinuationsAsynchronously);
             files.SetQuery((_, _, _, _) => new ValueTask<IReadOnlyList<FileIndexMatch>>(delayed.Task));
+            files.RaiseIndexChanged();
             shell.RaiseInputChanged("micro", revision: 5);
             await WaitApplicationConditionAsync(() => files.Queries.Count != 0 && files.Queries[^1].Revision == 5,
                 "The delayed filesystem source was not queried.");

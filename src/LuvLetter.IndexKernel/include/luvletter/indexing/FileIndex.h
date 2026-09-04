@@ -50,6 +50,10 @@ public:
     explicit PathExclusions(std::span<const std::filesystem::path> paths = {});
 
     [[nodiscard]] bool Contains(const std::filesystem::path& path) const;
+    // The caller guarantees an absolute, lexically-normal path without an
+    // extended-length prefix. This avoids repeating normalization in scanners.
+    [[nodiscard]] bool ContainsNormalized(const std::filesystem::path& path) const;
+    [[nodiscard]] bool Empty() const noexcept { return paths_.empty(); }
     [[nodiscard]] std::span<const std::filesystem::path> Paths() const noexcept { return paths_; }
 
 private:

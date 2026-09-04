@@ -241,6 +241,10 @@ Phase 4 exposes already-established indexing policy through configuration and Se
 
 Phase 5 changes storage only in response to repeatable measurements:
 
+The static [performance and resident-memory audit](performance-memory-audit.md) records
+the current structural costs, evidence, measurement matrix, and recommended order of
+work. Its estimates are hypotheses until the benchmark fixtures below produce a baseline.
+
 - Add benchmark fixtures at approximately 10 thousand, 100 thousand, and 1 million
   entries, including long Unicode names, many identical basenames, deep directories,
   cold snapshot load, warm query, rebuild cancellation, and concurrent queries.

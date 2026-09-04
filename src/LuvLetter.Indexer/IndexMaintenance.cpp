@@ -107,6 +107,34 @@ std::uint64_t StablePathId(const std::wstring_view foldedPath) noexcept {
     return hash;
 }
 
+void InsertBoundedResult(
+    std::vector<indexing::SearchResult>& results,
+    indexing::SearchResult candidate,
+    const std::size_t maximumResults,
+    const std::wstring_view query,
+    const bool replaceDuplicate = false) {
+    const auto better = [query](const auto& left, const auto& right) {
+        return indexing::IsBetterSearchResult(left, right, query);
+    };
+    const auto duplicate = std::find_if(results.begin(), results.end(), [&](const auto& existing) {
+        return existing.stableId == candidate.stableId &&
+            CompareStringOrdinal(existing.fullPath.c_str(), -1, candidate.fullPath.c_str(), -1, TRUE) == CSTR_EQUAL;
+    });
+    if (duplicate != results.end()) {
+        if (replaceDuplicate || better(candidate, *duplicate)) {
+            *duplicate = std::move(candidate);
+            std::make_heap(results.begin(), results.end(), better);
+        }
+    } else if (results.size() < maximumResults) {
+        results.push_back(std::move(candidate));
+        std::push_heap(results.begin(), results.end(), better);
+    } else if (!results.empty() && better(candidate, results.front())) {
+        std::pop_heap(results.begin(), results.end(), better);
+        results.back() = std::move(candidate);
+        std::push_heap(results.begin(), results.end(), better);
+    }
+}
+
 std::wstring ExtendedPath(const std::filesystem::path& path) {
     auto value = NormalizePath(path).native();
     if (value.starts_with(L"\\\\?\\")) {
@@ -286,10 +314,7 @@ std::vector<indexing::SearchResult> LiveIndexDelta::MergeLocked(
     const std::span<const indexing::SearchResult> baseResults,
     const std::size_t maximumResults) const {
     std::vector<indexing::SearchResult> merged;
-
-    merged.reserve(baseResults.size() + upserts_.size());
-    std::unordered_map<std::wstring, std::size_t> resultByPath;
-    resultByPath.reserve(baseResults.size() + upserts_.size());
+    merged.reserve((std::min)(maximumResults, baseResults.size() + upserts_.size()));
 
     for (const auto& result : baseResults) {
         const auto key = FoldPath(result.fullPath);
@@ -298,8 +323,7 @@ std::vector<indexing::SearchResult> LiveIndexDelta::MergeLocked(
             upserts_.contains(key)) {
             continue;
         }
-        resultByPath.emplace(key, merged.size());
-        merged.push_back(result);
+        InsertBoundedResult(merged, result, maximumResults, query);
     }
 
     for (const auto& [key, versioned] : upserts_) {
@@ -314,21 +338,12 @@ std::vector<indexing::SearchResult> LiveIndexDelta::MergeLocked(
                 query) == indexing::SearchMatchQuality::None) {
             continue;
         }
-        const auto existing = resultByPath.find(key);
-        if (existing == resultByPath.end()) {
-            resultByPath.emplace(key, merged.size());
-            merged.push_back(versioned.result);
-        } else {
-            merged[existing->second] = versioned.result;
-        }
+        InsertBoundedResult(merged, versioned.result, maximumResults, query, true);
     }
 
     std::sort(merged.begin(), merged.end(), [&query](const auto& left, const auto& right) {
         return indexing::IsBetterSearchResult(left, right, query);
     });
-    if (merged.size() > maximumResults) {
-        merged.resize(maximumResults);
-    }
     return merged;
 }
 

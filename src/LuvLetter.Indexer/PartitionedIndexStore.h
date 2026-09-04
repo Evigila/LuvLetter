@@ -66,6 +66,7 @@ public:
                     SamePartitionPath(descriptor.root, delegated)) return false;
             auto partition = std::make_shared<Partition>();
             partition->descriptor = std::move(descriptor);
+            partition->normalizedRoot = NormalizePartitionPath(partition->descriptor.root);
             partition->snapshot = std::make_shared<const luvletter::indexing::IndexSnapshot>();
             partition->policy.Configure(ignoredDirectories, triggerCooldown, ignoredNames);
             partition->pending = true;
@@ -92,9 +93,11 @@ public:
             ++ownershipEpoch_;
             for (auto& partition : configured) partition->epoch = ownershipEpoch_;
             partitions_ = configured;
-            fullIgnore_ = fullIgnore;
             ++statusGeneration_;
-            { std::unique_lock viewLock(viewMutex_); viewPartitions_ = configured; }
+            { std::unique_lock viewLock(viewMutex_);
+                viewPartitions_ = configured;
+                fullIgnore_ = fullIgnore;
+            }
             UpdateStatusLocked();
         }
         try {
@@ -111,21 +114,34 @@ public:
     std::vector<luvletter::indexing::SearchResult> Query(
         const std::wstring_view query, const std::size_t maximumResults) const {
         std::vector<luvletter::indexing::SearchResult> merged;
+        merged.reserve(maximumResults);
+        const auto better = [&](const auto& left, const auto& right) {
+            return luvletter::indexing::IsBetterSearchResult(left, right, query);
+        };
         std::shared_lock viewLock(viewMutex_);
         for (const auto& partition : viewPartitions_) {
             auto found = partition->delta.Query(query, *partition->snapshot, maximumResults);
             for (auto& candidate : found) {
                 const auto duplicate = std::find_if(merged.begin(), merged.end(), [&](const auto& item) {
-                    return CompareStringOrdinal(item.fullPath.c_str(), -1, candidate.fullPath.c_str(), -1, TRUE) == CSTR_EQUAL;
+                    return item.stableId == candidate.stableId &&
+                        CompareStringOrdinal(item.fullPath.c_str(), -1, candidate.fullPath.c_str(), -1, TRUE) == CSTR_EQUAL;
                 });
-                if (duplicate == merged.end()) merged.push_back(std::move(candidate));
-                else if (luvletter::indexing::IsBetterSearchResult(candidate, *duplicate, query)) *duplicate = std::move(candidate);
+                if (duplicate != merged.end()) {
+                    if (better(candidate, *duplicate)) {
+                        *duplicate = std::move(candidate);
+                        std::make_heap(merged.begin(), merged.end(), better);
+                    }
+                } else if (merged.size() < maximumResults) {
+                    merged.push_back(std::move(candidate));
+                    std::push_heap(merged.begin(), merged.end(), better);
+                } else if (!merged.empty() && better(candidate, merged.front())) {
+                    std::pop_heap(merged.begin(), merged.end(), better);
+                    merged.back() = std::move(candidate);
+                    std::push_heap(merged.begin(), merged.end(), better);
+                }
             }
         }
-        std::sort(merged.begin(), merged.end(), [&](const auto& left, const auto& right) {
-            return luvletter::indexing::IsBetterSearchResult(left, right, query);
-        });
-        if (merged.size() > maximumResults) merged.resize(maximumResults);
+        std::sort(merged.begin(), merged.end(), better);
         return merged;
     }
 
@@ -169,6 +185,7 @@ private:
     struct Partition final {
         IndexPartitionDescriptor descriptor;
         std::filesystem::path cachePath;
+        std::wstring normalizedRoot;
         std::shared_ptr<const luvletter::indexing::IndexSnapshot> snapshot;
         std::shared_ptr<const luvletter::indexing::IndexSnapshot> cached;
         LiveIndexDelta delta;
@@ -176,6 +193,7 @@ private:
         std::uint64_t epoch = 0;
         std::uint64_t generation = 0;
         bool cacheAttempted = false, usable = false, pending = false, forced = false, running = false, failed = false;
+        bool primaryCacheValid = false;
         std::uint32_t causes = 0;
         Clock::time_point dirtySince{}, nextAllowed{}, nextPeriodic{}, lastServiced{};
         std::chrono::seconds estimatedCost{1};
@@ -188,55 +206,114 @@ private:
         return result;
     }
 
+    static bool CloneCacheFile(
+        const std::filesystem::path& source, const std::filesystem::path& destination) {
+        auto temporary = destination;
+        temporary += L".tmp." + std::to_wstring(GetCurrentProcessId());
+        DeleteFileW(temporary.c_str());
+        if (!CreateHardLinkW(temporary.c_str(), source.c_str(), nullptr) &&
+            !CopyFileW(source.c_str(), temporary.c_str(), FALSE)) return false;
+        if (MoveFileExW(temporary.c_str(), destination.c_str(),
+                MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) return true;
+        DeleteFileW(temporary.c_str());
+        return false;
+    }
+
     void ApplyChanges(std::vector<FileSystemChange> changes, const bool uncertain) {
         if (uncertain) RequestRefresh(std::nullopt, false, WatcherRecovery);
-        for (auto& change : changes) {
+        struct ChangeGroup final {
             std::shared_ptr<Partition> owner;
-            { std::shared_lock lock(viewMutex_);
+            std::vector<FileSystemChange> changes;
+        };
+        std::vector<ChangeGroup> groups;
+        {
+            std::shared_lock lock(viewMutex_);
+            const auto exclusions = fullIgnore_;
+            for (auto& change : changes) {
+                auto normalized = NormalizePartitionPath(change.path);
+                if (normalized.empty()) continue;
+                change.path = std::filesystem::path(std::move(normalized));
+                const auto& normalizedText = change.path.native();
+                if (!exclusions->Empty() && (normalizedText.starts_with(L"\\\\?\\")
+                        ? exclusions->Contains(change.path)
+                        : exclusions->ContainsNormalized(change.path))) continue;
+                std::shared_ptr<Partition> owner;
                 std::size_t best = 0;
-                for (const auto& partition : viewPartitions_)
-                    if (PartitionContainsPath(partition->descriptor.root, change.path)) {
-                        const auto length = NormalizePartitionPath(partition->descriptor.root).size();
-                        if (!owner || length > best) { owner = partition; best = length; }
-                    }
+                const auto& candidate = change.path.native();
+                for (const auto& partition : viewPartitions_) {
+                    const auto& root = partition->normalizedRoot;
+                    if (candidate.size() < root.size() ||
+                        CompareStringOrdinal(root.data(), static_cast<int>(root.size()),
+                            candidate.data(), static_cast<int>(root.size()), TRUE) != CSTR_EQUAL ||
+                        (candidate.size() != root.size() && root.back() != L'\\' && candidate[root.size()] != L'\\')) continue;
+                    if (!owner || root.size() > best) { owner = partition; best = root.size(); }
+                }
+                if (!owner) continue;
+                const auto group = std::find_if(groups.begin(), groups.end(), [&](const auto& item) {
+                    return item.owner.get() == owner.get();
+                });
+                if (group == groups.end()) groups.push_back(ChangeGroup{owner, {std::move(change)}});
+                else group->changes.push_back(std::move(change));
             }
-            if (!owner || fullIgnore_->Contains(change.path)) continue;
+        }
+
+        struct EvaluationSummary final {
+            std::shared_ptr<Partition> owner;
+            std::size_t changeCount = 0, accepted = 0, ignored = 0, cooldown = 0, capacity = 0, invalid = 0;
+            std::chrono::seconds remainingCooldown{0};
+            bool requiresRebuild = false;
+        };
+        std::vector<EvaluationSummary> summaries;
+        summaries.reserve(groups.size());
+        const auto now = Clock::now();
+        for (auto& group : groups) {
             std::vector<std::filesystem::path> causes;
-            const std::array batch{change};
-            const bool requiresRebuild = owner->delta.Apply(batch, &causes);
-            bool accepted = false;
-            const auto now = Clock::now();
+            EvaluationSummary summary{group.owner, group.changes.size()};
+            summary.requiresRebuild = group.owner->delta.Apply(group.changes, &causes);
             for (const auto& path : causes) {
-                const auto evaluation = owner->policy.Evaluate(path, now);
-                accepted |= evaluation.decision == RebuildDecision::Accepted;
+                const auto evaluation = group.owner->policy.Evaluate(path, now);
                 switch (evaluation.decision) {
-                case RebuildDecision::Ignored:
-                    LogPartition(*owner, "ignored", "File changed but rebuild ignored");
-                    break;
+                case RebuildDecision::Accepted: ++summary.accepted; break;
+                case RebuildDecision::Ignored: ++summary.ignored; break;
                 case RebuildDecision::Cooldown:
-                    LogPartition(*owner, "cooldown-refused", "File changed but cooldown refused | remaining_seconds=" +
-                        std::to_string(evaluation.remainingCooldownSeconds.count()));
+                    ++summary.cooldown;
+                    summary.remainingCooldown = (std::max)(summary.remainingCooldown,
+                        evaluation.remainingCooldownSeconds);
                     break;
-                case RebuildDecision::Capacity:
-                    LogPartition(*owner, "capacity-refused", "File changed but cooldown capacity refused");
-                    break;
-                case RebuildDecision::InvalidPath:
-                    LogPartition(*owner, "invalid-path", "File changed but path was invalid");
-                    break;
-                case RebuildDecision::Accepted:
-                    break;
+                case RebuildDecision::Capacity: ++summary.capacity; break;
+                case RebuildDecision::InvalidPath: ++summary.invalid; break;
                 }
             }
-            std::lock_guard lock(stateMutex_);
-            if (owner->epoch != ownershipEpoch_) continue;
-            ++statusGeneration_;
-            if (requiresRebuild && accepted) {
-                owner->pending = true; owner->causes |= FileChange;
-                if (owner->dirtySince == Clock::time_point{}) owner->dirtySince = now;
-                LogPartition(*owner, "file-change", "File changed triggered | result=queued-or-coalesced");
-            }
-            UpdateStatusLocked(); changed_.notify_all();
+            summaries.push_back(std::move(summary));
         }
+
+        bool published = false;
+        {
+            std::lock_guard lock(stateMutex_);
+            for (const auto& summary : summaries) {
+                if (summary.owner->epoch != ownershipEpoch_) continue;
+                published = true;
+                statusGeneration_ += summary.changeCount;
+                if (summary.requiresRebuild && summary.accepted != 0) {
+                    summary.owner->pending = true;
+                    summary.owner->causes |= FileChange;
+                    if (summary.owner->dirtySince == Clock::time_point{}) summary.owner->dirtySince = now;
+                    LogPartition(*summary.owner, "file-change", "File changed triggered | result=queued-or-coalesced | count=" +
+                        std::to_string(summary.accepted));
+                }
+                if (summary.ignored != 0) LogPartition(*summary.owner, "ignored",
+                    "File changed but rebuild ignored | count=" + std::to_string(summary.ignored));
+                if (summary.cooldown != 0) LogPartition(*summary.owner, "cooldown-refused",
+                    "File changed but cooldown refused | count=" + std::to_string(summary.cooldown) +
+                    " | remaining_seconds=" + std::to_string(summary.remainingCooldown.count()));
+                if (summary.capacity != 0) LogPartition(*summary.owner, "capacity-refused",
+                    "File changed but cooldown capacity refused | count=" + std::to_string(summary.capacity));
+                if (summary.invalid != 0) LogPartition(*summary.owner, "invalid-path",
+                    "File changed but path was invalid | count=" + std::to_string(summary.invalid));
+            }
+            if (published) UpdateStatusLocked();
+        }
+        if (published) changed_.notify_all();
     }
 
     void WorkerMain() {
@@ -276,9 +353,12 @@ private:
                 const auto exclusions = ScanExclusions(*selected);
                 lock.unlock();
                 std::shared_ptr<const luvletter::indexing::IndexSnapshot> cache;
+                bool loadedPrimary = false;
                 try { cache = luvletter::indexing::IndexSnapshot::Load(selected->cachePath); }
                 catch (...) { cache.reset(); }
-                if (!cache || !cache->MatchesRoots(std::array{selected->descriptor.root}, exclusions)) {
+                if (cache && cache->MatchesRoots(std::array{selected->descriptor.root}, exclusions)) {
+                    loadedPrimary = true;
+                } else {
                     auto backup = selected->cachePath; backup += L".bak";
                     try { cache = luvletter::indexing::IndexSnapshot::Load(backup); }
                     catch (...) { cache.reset(); }
@@ -288,6 +368,7 @@ private:
                 if (cache && epoch == ownershipEpoch_ && selected->epoch == epoch) {
                     std::unique_lock viewLock(viewMutex_);
                     selected->snapshot = selected->cached = std::move(cache); selected->usable = true;
+                    selected->primaryCacheValid = loadedPrimary;
                     ++statusGeneration_; LogPartition(*selected, "cache", "Partition cache published");
                     UpdateStatusLocked();
                 }
@@ -324,20 +405,34 @@ private:
                 if (!selected->pending) selected->dirtySince = {};
                 ++selected->generation; ++statusGeneration_;
                 const auto previous = selected->cached;
+                const bool previousWasPrimary = selected->primaryCacheValid;
                 lock.unlock();
                 auto backup = selected->cachePath; backup += L".bak";
-                const auto backupValue = previous ? previous : rebuilt;
-                bool saved = false;
+                bool primarySaved = false;
+                bool backupReady = true;
                 try {
                     std::error_code directoryError;
                     std::filesystem::create_directories(selected->cachePath.parent_path(), directoryError);
-                    saved = !directoryError && backupValue->Save(backup) && rebuilt->Save(selected->cachePath);
+                    if (directoryError) {
+                        backupReady = false;
+                    } else if (previous && previousWasPrimary) {
+                        backupReady = CloneCacheFile(selected->cachePath, backup) || previous->Save(backup);
+                    }
+                    if (backupReady) primarySaved = rebuilt->Save(selected->cachePath);
+                    if (primarySaved && !previous) {
+                        backupReady = CloneCacheFile(selected->cachePath, backup) || rebuilt->Save(backup);
+                    }
                 } catch (...) {
-                    saved = false;
+                    primarySaved = false;
+                    backupReady = false;
                 }
                 lock.lock();
-                if (saved) selected->cached = rebuilt;
-                LogPartition(*selected, "rebuild", "Partition rebuild completed | cache=" + std::string(saved ? "saved" : "not-saved"));
+                if (primarySaved) {
+                    selected->cached = rebuilt;
+                    selected->primaryCacheValid = true;
+                }
+                LogPartition(*selected, "rebuild", "Partition rebuild completed | cache=" +
+                    std::string(primarySaved && backupReady ? "saved" : primarySaved ? "primary-only" : "not-saved"));
             } else {
                 selected->failed = true; selected->pending = true; selected->causes |= Retry;
                 LogPartition(*selected, "rebuild", "Partition rebuild failed | previous-snapshot-retained");

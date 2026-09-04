@@ -257,13 +257,23 @@ internal static partial class Program
                     CandidateIconKind.Document,
                     "bbb.md",
                     @"C:\aaa"),
+                new InputCandidate(
+                    8,
+                    CandidateKind.Command,
+                    CandidateIconKind.Command,
+                    "电源",
+                    string.Empty),
             ], revision: 42);
             Assert.Equal(42UL, nativeApi.InputCandidateRevision);
-            Assert.Equal(1, nativeApi.InputCandidates.Count);
+            Assert.Equal(2, nativeApi.InputCandidates.Count);
             Assert.Equal(7UL, nativeApi.InputCandidates[0].Token);
             Assert.Equal(CandidateKind.File, nativeApi.InputCandidates[0].Kind);
             Assert.Equal(CandidateIconKind.Document, nativeApi.InputCandidates[0].IconKind);
             Assert.Equal("bbb.md", nativeApi.InputCandidates[0].Primary);
+            Assert.Equal("电源", nativeApi.InputCandidates[1].Primary);
+            Assert.True(
+                nativeApi.InputCandidateTextPointersWerePacked,
+                "Candidate text pointers must reference one contiguous UTF-16 payload.");
 
             var candidateActivated = new TaskCompletionSource<CandidateActivated>(
                 TaskCreationOptions.RunContinuationsAsynchronously);

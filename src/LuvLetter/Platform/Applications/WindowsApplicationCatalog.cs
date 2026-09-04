@@ -48,6 +48,8 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
     private bool forceAllPending;
     private long nextOwnershipEpoch;
     private long publicationRevision;
+    private static readonly IComparer<ScoredApplication> BestMatchFirst =
+        Comparer<ScoredApplication>.Create(static (left, right) => CompareMatchQuality(right, left));
 
     public WindowsApplicationCatalog(FileIndexClientOptions fileOptions, WindowsApplicationDiscovery discovery)
     {
@@ -148,15 +150,34 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
     public IReadOnlyList<ApplicationMatch> Query(string query, int maximumResults)
     {
         if (string.IsNullOrWhiteSpace(query) || maximumResults <= 0) return [];
+        var preparedQuery = ApplicationNameMatcher.CreateQuery(query);
+        if (!preparedQuery.IsEligible) return [];
         var current = Volatile.Read(ref published);
-        return current.Entries.Select(entry => new { Entry = entry, Score = ApplicationNameMatcher.Score(entry, query) })
-            .Where(item => item.Score.HasValue)
-            .OrderByDescending(item => item.Score!.Value)
-            .ThenBy(item => item.Entry.DisplayName, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(item => item.Entry.DisplayName, StringComparer.Ordinal)
-            .ThenBy(item => item.Entry.Id, StringComparer.Ordinal)
-            .Take(Math.Min(maximumResults, 256))
-            .Select(item => new ApplicationMatch(item.Entry, item.Score!.Value)).ToArray();
+        var limit = Math.Min(maximumResults, 256);
+        var best = new ScoredApplication[limit];
+        var count = 0;
+        foreach (var candidate in current.SearchEntries)
+        {
+            var score = ApplicationNameMatcher.Score(candidate.Entry, candidate.NameIndex, preparedQuery);
+            if (!score.HasValue) continue;
+            var scored = new ScoredApplication(candidate.Entry, score.Value);
+            if (count < limit)
+            {
+                best[count] = scored;
+                SiftUpWorstFirst(best, count++);
+            }
+            else if (CompareMatchQuality(scored, best[0]) > 0)
+            {
+                best[0] = scored;
+                SiftDownWorstFirst(best, count, 0);
+            }
+        }
+        if (count == 0) return [];
+        Array.Sort(best, 0, count, BestMatchFirst);
+        var matches = new ApplicationMatch[count];
+        for (var index = 0; index < count; index++)
+            matches[index] = new(best[index].Entry, best[index].Score);
+        return matches;
     }
 
     public bool TryGet(string id, out ApplicationEntry? entry)
@@ -173,11 +194,11 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
 
     internal bool IsPathExcluded(string path)
     {
-        if (string.IsNullOrEmpty(path)) return false;
+        if (string.IsNullOrEmpty(path) || fullIgnorePaths.Length == 0) return false;
         try
         {
             var normalized = FileIndexMaintenanceOptions.NormalizeScopePath(path);
-            return fullIgnorePaths.Any(parent => SameOrChild(parent, normalized));
+            return IsNormalizedPathExcluded(normalized);
         }
         catch (Exception exception) when (exception is ArgumentException or IOException or NotSupportedException)
         {
@@ -332,7 +353,7 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) { return; }
         catch (Exception exception)
         {
-            result = new(null, "error:" + SafeMessage(exception.Message));
+            result = new(null, null, "error:" + SafeMessage(exception.Message));
         }
 
         PendingPublication? publication = null;
@@ -341,20 +362,21 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
         {
             if (!CurrentPartitionLocked(partitionId, ownershipEpoch, out var partition)) return;
             partition.CacheLoaded = true;
-            var hit = result.Hit;
-            if (hit is not null && ValidateEntries(hit.Snapshot.Entries, partition)
-                && hit.Snapshot.Entries.All(IsEntryAllowed))
+            var snapshot = result.Snapshot;
+            if (snapshot is not null && ValidateEntries(snapshot.Entries, partition)
+                && (fullIgnorePaths.Length == 0 || snapshot.Entries.All(IsEntryAllowed)))
             {
-                partition.Entries = hit.Snapshot.Entries;
-                partition.Generation = hit.Snapshot.Generation;
-                partition.TrustedCache = hit;
+                Array.Sort(snapshot.Entries, ApplicationEntryIdComparer.Instance);
+                partition.Entries = snapshot.Entries;
+                partition.Generation = snapshot.Generation;
+                partition.TrustedCache = result.Generation;
                 partition.HasUsableSnapshot = true;
                 partition.Availability = "unknown";
                 partition.Freshness = "stale";
                 partition.State = "dirty";
                 publication = PreparePublicationLocked();
             }
-            else if (hit is not null)
+            else if (snapshot is not null)
             {
                 cacheResult = "incompatible";
                 partition.Availability = "unknown";
@@ -407,42 +429,70 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
             return;
         }
 
-        var entries = result.Entries.Where(IsEntryAllowed).ToArray();
-        ApplicationPartitionSnapshot snapshot;
-        ApplicationPartitionCacheHit? previous;
-        PendingPublication publication;
-        long generation;
+        var entries = fullIgnorePaths.Length == 0 ? result.Entries : result.Entries.Where(IsEntryAllowed).ToArray();
+        Array.Sort(entries, ApplicationEntryIdComparer.Instance);
+        ApplicationPartitionSnapshot? snapshot = null;
+        ApplicationPartitionCacheGeneration? previous;
+        PendingPublication? publication = null;
+        long generation = 0;
+        var unchanged = false;
         lock (gate)
         {
             if (!CurrentPartitionLocked(ticket.PartitionId, ticket.OwnershipEpoch, out var partition)
                 || !partition.Running) return;
-            partition.Entries = entries;
-            partition.Generation = partition.Generation >= long.MaxValue - 1
-                ? 1 : partition.Generation + 1;
-            generation = partition.Generation;
-            partition.HasUsableSnapshot = true;
-            partition.FailureCount = 0;
-            partition.Availability = "available";
-            partition.Freshness = "fresh";
-            partition.State = "persisting";
-            partition.NextAllowedAt = Environment.TickCount64 + cooldownMilliseconds;
-            snapshot = ApplicationPartitionCache.CreateSnapshot(partition.SourceId,
-                partition.ScopeFingerprint, partition.Generation, partition.Entries);
-            previous = partition.TrustedCache;
-            publication = PreparePublicationLocked();
+            if (partition.HasUsableSnapshot && EntriesEqual(partition.Entries, entries))
+            {
+                partition.Running = false;
+                partition.FailureCount = 0;
+                partition.Availability = "available";
+                partition.Freshness = "fresh";
+                partition.State = partition.Dirty ? "dirty" : "ready";
+                partition.NextAllowedAt = Environment.TickCount64 + cooldownMilliseconds;
+                unchanged = true;
+            }
+            if (unchanged)
+            {
+                previous = null;
+                generation = partition.Generation;
+            }
+            else
+            {
+                partition.Entries = entries;
+                partition.Generation = partition.Generation >= long.MaxValue - 1
+                    ? 1 : partition.Generation + 1;
+                generation = partition.Generation;
+                partition.HasUsableSnapshot = true;
+                partition.FailureCount = 0;
+                partition.Availability = "available";
+                partition.Freshness = "fresh";
+                partition.State = "persisting";
+                partition.NextAllowedAt = Environment.TickCount64 + cooldownMilliseconds;
+                snapshot = ApplicationPartitionCache.CreateSnapshot(partition.SourceId,
+                    partition.ScopeFingerprint, partition.Generation, partition.Entries);
+                previous = partition.TrustedCache;
+                publication = PreparePublicationLocked();
+            }
+        }
+
+        if (unchanged)
+        {
+            LogPartition("applications", ticket.PartitionId, ticket.Cause, stopwatch.ElapsedMilliseconds,
+                "refresh-unchanged");
+            Wake();
+            return;
         }
 
         // Query readers see this source as soon as discovery commits; cache I/O remains partition-local.
-        Publish(publication);
+        Publish(publication!);
         var persisted = false;
         string? persistenceError = null;
-        ApplicationPartitionCacheHit? saved = null;
+        ApplicationPartitionCacheGeneration? saved = null;
         try
         {
             await cacheSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                saved = await cache.SaveAsync(snapshot, previous, cancellationToken).ConfigureAwait(false);
+                saved = await cache.SaveAsync(snapshot!, previous, cancellationToken).ConfigureAwait(false);
             }
             finally
             {
@@ -507,8 +557,9 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
 
     private void Publish(PendingPublication pendingPublication)
     {
-        var entries = pendingPublication.Sources.SelectMany(source => source.Entries)
-            .Where(IsEntryAllowed)
+        IEnumerable<ApplicationEntry> candidates = pendingPublication.Sources.SelectMany(source => source.Entries);
+        if (fullIgnorePaths.Length != 0) candidates = candidates.Where(IsEntryAllowed);
+        var entries = candidates
             .GroupBy(entry => string.IsNullOrEmpty(entry.DeduplicationKey) ? entry.Id : entry.DeduplicationKey,
                 StringComparer.OrdinalIgnoreCase)
             .Select(group =>
@@ -526,12 +577,17 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
             .ThenBy(entry => entry.DisplayName, StringComparer.Ordinal)
             .ThenBy(entry => entry.Id, StringComparer.Ordinal)
             .Take(MaximumPublishedEntries).ToArray();
+        var current = Volatile.Read(ref published);
+        if (EntriesEqual(current.SearchEntries, entries)) return;
+        var searchEntries = new PublishedSearchEntry[entries.Length];
+        for (var index = 0; index < entries.Length; index++)
+            searchEntries[index] = new(entries[index], ApplicationNameMatcher.CreateIndex(entries[index]));
         var byId = new Dictionary<string, ApplicationEntry>(StringComparer.Ordinal);
         foreach (var entry in entries) byId.TryAdd(entry.Id, entry);
         lock (gate)
         {
             if (stopping || pendingPublication.Revision != publicationRevision) return;
-            Volatile.Write(ref published, new(entries, byId));
+            Volatile.Write(ref published, new(searchEntries, byId));
         }
         var handlers = Changed;
         if (handlers is null) return;
@@ -611,8 +667,9 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
     {
         if (entry.LaunchKind is ApplicationLaunchKind.Shortcut or ApplicationLaunchKind.Executable
             && IsPathExcluded(entry.LaunchTarget)) return false;
-        foreach (var path in new[] { entry.ExecutablePath, entry.WorkingDirectory, entry.InstallDirectory })
-            if (!string.IsNullOrEmpty(path) && IsPathExcluded(path)) return false;
+        if (!string.IsNullOrEmpty(entry.ExecutablePath) && IsPathExcluded(entry.ExecutablePath)
+            || !string.IsNullOrEmpty(entry.WorkingDirectory) && IsPathExcluded(entry.WorkingDirectory)
+            || !string.IsNullOrEmpty(entry.InstallDirectory) && IsPathExcluded(entry.InstallDirectory)) return false;
         // App Paths search directories augment PATH; they are not the application target.
         return true;
     }
@@ -702,9 +759,9 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
     private void QueueFileChange(string partitionId, long ownershipEpoch, string path, bool recovery = false)
     {
         // Full ignore removes the entry and its trigger; ordinary ignore only removes this trigger.
-        if (IsPathExcluded(path)) return;
         try { path = FileIndexMaintenanceOptions.NormalizeScopePath(path); }
         catch (Exception exception) when (exception is ArgumentException or IOException or NotSupportedException) { return; }
+        if (IsNormalizedPathExcluded(path)) return;
         if (!recovery && (ignoreRebuildPaths.Any(parent => SameOrChild(parent, path))
             || path[(Path.GetPathRoot(path)?.Length ?? 0)..].Split('\\', StringSplitOptions.RemoveEmptyEntries)
                 .Any(ignoreRebuildNames.Contains))) return;
@@ -910,6 +967,81 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
         || path.StartsWith(Path.EndsInDirectorySeparator(parent) ? parent : parent + Path.DirectorySeparatorChar,
             StringComparison.OrdinalIgnoreCase);
 
+    private bool IsNormalizedPathExcluded(string normalizedPath)
+    {
+        if (fullIgnorePaths.Length == 0) return false;
+        foreach (var parent in fullIgnorePaths)
+            if (SameOrChild(parent, normalizedPath)) return true;
+        return false;
+    }
+
+    private static bool EntriesEqual(ApplicationEntry[] left, ApplicationEntry[] right)
+    {
+        if (ReferenceEquals(left, right)) return true;
+        if (left.Length != right.Length) return false;
+        for (var index = 0; index < left.Length; index++)
+            if (!EntryEquals(left[index], right[index])) return false;
+        return true;
+    }
+
+    private static bool EntriesEqual(PublishedSearchEntry[] left, ApplicationEntry[] right)
+    {
+        if (left.Length != right.Length) return false;
+        for (var index = 0; index < left.Length; index++)
+            if (!EntryEquals(left[index].Entry, right[index])) return false;
+        return true;
+    }
+
+    private static bool EntryEquals(ApplicationEntry left, ApplicationEntry right) =>
+        left.Id == right.Id
+        && left.DisplayName == right.DisplayName
+        && left.Aliases.AsSpan().SequenceEqual(right.Aliases)
+        && left.LaunchKind == right.LaunchKind
+        && left.LaunchTarget == right.LaunchTarget
+        && left.ExecutablePath == right.ExecutablePath
+        && left.WorkingDirectory == right.WorkingDirectory
+        && left.Arguments == right.Arguments
+        && left.Source == right.Source
+        && left.DeduplicationKey == right.DeduplicationKey
+        && left.InstallDirectory == right.InstallDirectory
+        && left.SearchPath == right.SearchPath;
+
+    private static int CompareMatchQuality(ScoredApplication left, ScoredApplication right)
+    {
+        var comparison = left.Score.CompareTo(right.Score);
+        if (comparison != 0) return comparison;
+        comparison = StringComparer.OrdinalIgnoreCase.Compare(right.Entry.DisplayName, left.Entry.DisplayName);
+        if (comparison != 0) return comparison;
+        comparison = StringComparer.Ordinal.Compare(right.Entry.DisplayName, left.Entry.DisplayName);
+        return comparison != 0 ? comparison : StringComparer.Ordinal.Compare(right.Entry.Id, left.Entry.Id);
+    }
+
+    private static void SiftUpWorstFirst(ScoredApplication[] heap, int index)
+    {
+        while (index > 0)
+        {
+            var parent = (index - 1) / 2;
+            if (CompareMatchQuality(heap[index], heap[parent]) >= 0) return;
+            (heap[parent], heap[index]) = (heap[index], heap[parent]);
+            index = parent;
+        }
+    }
+
+    private static void SiftDownWorstFirst(ScoredApplication[] heap, int count, int index)
+    {
+        while (true)
+        {
+            var left = index * 2 + 1;
+            if (left >= count) return;
+            var worst = left;
+            var right = left + 1;
+            if (right < count && CompareMatchQuality(heap[right], heap[left]) < 0) worst = right;
+            if (CompareMatchQuality(heap[worst], heap[index]) >= 0) return;
+            (heap[index], heap[worst]) = (heap[worst], heap[index]);
+            index = worst;
+        }
+    }
+
     private static string SafeMessage(string value) =>
         new(value.Take(512).Select(character => char.IsControl(character) ? ' ' : character).ToArray());
 
@@ -933,7 +1065,7 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
         internal string ScopeFingerprint { get; } = scopeFingerprint;
         internal Dictionary<string, long> TriggerTimes { get; } = new(StringComparer.OrdinalIgnoreCase);
         internal ApplicationEntry[] Entries { get; set; } = [];
-        internal ApplicationPartitionCacheHit? TrustedCache { get; set; }
+        internal ApplicationPartitionCacheGeneration? TrustedCache { get; set; }
         internal long Generation { get; set; }
         internal long DirtyRevision { get; set; } = 1;
         internal long NextAllowedAt { get; set; }
@@ -970,9 +1102,18 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
 
     private sealed record PublishedSource(string SourceId, ApplicationEntry[] Entries);
     private sealed record PendingPublication(long Revision, PublishedSource[] Sources);
+    private readonly record struct PublishedSearchEntry(ApplicationEntry Entry, ApplicationNameIndex NameIndex);
+    private readonly record struct ScoredApplication(ApplicationEntry Entry, int Score);
 
-    private sealed record PublishedCatalog(ApplicationEntry[] Entries, Dictionary<string, ApplicationEntry> ById)
+    private sealed record PublishedCatalog(PublishedSearchEntry[] SearchEntries, Dictionary<string, ApplicationEntry> ById)
     {
         internal static readonly PublishedCatalog Empty = new([], new(StringComparer.Ordinal));
+    }
+
+    private sealed class ApplicationEntryIdComparer : IComparer<ApplicationEntry>
+    {
+        internal static readonly ApplicationEntryIdComparer Instance = new();
+        public int Compare(ApplicationEntry? left, ApplicationEntry? right) =>
+            StringComparer.Ordinal.Compare(left?.Id, right?.Id);
     }
 }

@@ -47,8 +47,10 @@ Windows implementations through `IApplicationShell`, `IActivationGestureService`
 - `Application/InputCandidateCoordinator`: a separate hosted input pipeline. It consumes
   only the latest editor revision, ranks application and file candidates, fills command
   candidates according to the active mode, owns activation tokens, and rejects stale
-  results before Native display. Application contracts and the injectable ranking policy
-  live alongside it; Windows metadata and launching stay behind these ports.
+  results before Native display. Application and file publication revisions are tracked
+  independently, so a source-only refresh can reuse the unaffected half of the current
+  query. Application contracts and the injectable ranking policy live alongside it;
+  Windows metadata and launching stay behind these ports.
 - `Modules/Settings`: one cohesive settings capability containing the public service port,
   editor DTOs, validation/mapping, transactional apply/rollback, and the non-removable
   built-in settings plugin.
@@ -76,7 +78,8 @@ composition and cannot be removed; optional assemblies are discovered from `plug
 - `windows/InputCandidatesWindow`: the non-activating, keyboard-driven candidate list
   positioned above InputWindow. It stores copied display data, applies only the
   candidate snapshot matching the current editor revision, and draws lightweight
-  Direct2D type glyphs without Shell icon or thumbnail I/O.
+  Direct2D type glyphs without Shell icon or thumbnail I/O. Ordinary result updates
+  retain its layered DIB and Direct2D resources when geometry and device state permit.
 - `windows/QuickActionsWindow`: top-aligned Quick Action paging, hotkeys, animation,
   geometry, and rendering.
 - `windows/MessageQueueWindow`: a read-only, non-activating bottom-left notification stack.
@@ -90,17 +93,22 @@ candidate-activation callbacks, atomic candidate snapshots, and a bounded candid
 category. It also provides token-based begin, update, and complete operations for
 persistent message activities while retaining the submitted input mode, ordinary message
 queue, and `HidePopups` exports. A new Managed assembly therefore cannot silently pair
-with an older DLL.
+with an older DLL. Candidate synchronization validates all rows first, then uses pooled
+metadata and one pinned contiguous UTF-16 region for the synchronous ABI call; Native
+copies the bounded strings before the region is returned to the pool.
 
 ### `src/LuvLetter.IndexKernel`
 
 - A C++20 static library containing the compact immutable filesystem-name index.
 - Directory components plus searchable file and folder entities are stored in continuous
   tables and a shared UTF-16 string pool instead of one full path allocation per entry.
+- Construction writes those final compact records and the shared string pool directly;
+  it does not retain a second per-entity temporary name graph.
 - Prefix queries use the sorted filename records and reconstruct full paths only for the
   bounded result set.
 - The v3 persisted snapshot validates its magic, schema, roots fingerprint, payload
-  checksum, sizes, references, and ordering before it is accepted.
+  checksum, sizes, references, and ordering before it is accepted. Record sections are
+  decoded directly into final vectors and saved through a fixed-size streaming buffer.
 
 ### `src/LuvLetter.Indexer`
 
@@ -115,8 +123,9 @@ with an older DLL.
   configured roots use normal maintenance by default. One shared worker schedules builds
   by tier, overdue/dirty/starvation age, and measured prior cost.
 - `ReadDirectoryChangesW` watchers coalesce file and folder name changes for 250 ms.
-  Upserts and tombstones route to the longest-root owner and merge with only that
-  baseline; directory-prefix tombstones hide stale descendants. Overflow without a
+  Each batch is normalized once, grouped by longest-root owner, and applied per partition.
+  Upserts and tombstones then merge only with that baseline; directory-prefix tombstones
+  hide stale descendants. Overflow without a
   trustworthy source requests safe recovery for all file partitions. Requests coalesce,
   never overlap one partition's active build, and respect that partition's automatic
   gap. If a Delta exceeds its retained capacity, that partition falls back to its last
@@ -137,12 +146,16 @@ Hosted services have a fixed dependency order:
 
 1. `FileIndexCompanionClient` starts its supervisor in the background; a missing or
    incompatible companion degrades to no file candidates instead of blocking startup.
+   Rebuilding state is polled every 250 ms, stable state every five seconds, and a forced
+   refresh wakes the stable wait immediately.
 2. `WindowsApplicationCatalog` begins independent cache loading and source discovery.
 3. `InputCandidateCoordinator` subscribes the revisioned Native input stream and both
    index publication streams.
 4. `ApplicationCoordinator` applies Native configuration, loads built-in and external
    plugins, synchronizes Quick Actions, subscribes runtime events, and starts activation
-   gestures. The lazily created settings window remains closed.
+   gestures. The lazily created settings window remains closed. Minimizing Settings keeps
+   it available from the tray; explicitly closing it detaches handlers and releases the
+   visual tree so the next tray activation creates a fresh window.
 
 Plugin and initial-load diagnostics are recoverable warnings. A gesture-hook failure
 opens Settings as a degraded mode. Fatal partial startup executes compensating cleanup.
@@ -292,15 +305,18 @@ sleeps until the next lifecycle boundary. Manually hiding the surface therefore 
 rendering rather than activity lifetime, and a hidden persistent-only queue does not run
 a background animation timer.
 
-Snapshot writes use a same-directory temporary file, flush it, and atomically replace the
-old file. Query publication is independent: a completed in-memory partition generation
-can continue serving when persistence fails. Each partition's `.bak` file retains its
-preceding scope-compatible snapshot (or the first completed snapshot when no predecessor
-exists). Startup tries that backup if the primary is missing, invalid, or incompatible.
-Both files use the same validation and atomic-save rules. Failed root access or unexpected
-enumeration errors do not publish a replacement partition; ordinary inaccessible or
-disappearing descendants remain skippable. A failed build keeps that partition's previous
-query view and retries after its automatic gap instead of entering a tight loop.
+Snapshot writes stream encoded records and the checksum through a fixed-size buffer to a
+same-directory temporary file, flush it, and atomically replace the old file. Query
+publication is independent: a completed in-memory partition generation can continue
+serving when persistence fails. Each partition's `.bak` file retains its preceding
+scope-compatible snapshot (or the first completed snapshot when no predecessor exists).
+When the current primary is valid, hard-link or copy rotation preserves it without
+serializing the old in-memory snapshot; unsupported filesystems fall back to serialization.
+Startup tries the backup if the primary is missing, invalid, or incompatible. Both files
+use the same validation rules. Failed root access or unexpected enumeration errors do not
+publish a replacement partition; ordinary inaccessible or disappearing descendants remain
+skippable. A failed build keeps that partition's previous query view and retries after its
+automatic gap instead of entering a tight loop.
 
 ## File-index lifecycle and protocol
 
@@ -343,7 +359,9 @@ loss maps locally to `Unavailable`,
 dismisses the spinner without a false completion, and rejects stale session state. Session
 readiness and completed generations requeue the latest unchanged editor revision, so a
 user does not need to type another character after the initial background build, a live
-Delta publication, or a companion restart.
+Delta publication, or a companion restart. Cross-partition and Delta merges retain only
+the requested Top-K heap while preserving full-path collision checks and deterministic
+final ordering.
 
 ### Maintenance policy
 
@@ -510,12 +528,16 @@ Invalid shared maintenance settings pause both file and application indexing.
 
 Source discovery covers trusted user/common Start Menu shortcuts, App Paths in both
 registry views, packaged and non-package AppsFolder entries, a curated Windows system
-catalog, and bounded portable directories. Queries read an immutable merged view. Cache
+catalog, and bounded portable directories. Queries read an immutable merged view with
+publication-time compact display and alias keys. Each query prepares its normalized text
+once, scans without per-entry objects, and sorts only a bounded Top-K heap. Cache
 validation checks format, size, checksum, source/entry shape, scope, and full-ignore
 provenance. Failed sources retain their own previous entries while each successful source
 publishes and persists immediately. Successful empty sources remove stale entries. Atomic
 writes preserve that source's previous valid backup, and save failure retains in-memory
-results.
+results. Cache trust retains only source, scope, and generation metadata rather than the
+serialized JSON bytes. A source refresh whose sorted entries are unchanged updates
+freshness without increasing generation, rewriting cache, or publishing `Changed`.
 
 Every source shares the six-minute maximum age and 60-second cooldown defaults. Start Menu
 watchers coalesce changes into their owning source; other sources refresh periodically or
@@ -699,3 +721,26 @@ Run the C++ index-kernel suite with:
 & $msbuild tests/LuvLetter.IndexKernel.Tests/LuvLetter.IndexKernel.Tests.vcxproj /m /p:Configuration=Release /p:Platform=x64
 & .\tests\LuvLetter.IndexKernel.Tests\bin\x64\Release\LuvLetter.IndexKernel.Tests.exe
 ```
+
+### Performance measurement
+
+With both processes running, collect a ten-minute per-process and combined working-set,
+private-bytes, CPU, thread, and handle series with:
+
+```powershell
+.\scripts\measure-performance.ps1
+```
+
+The CSV is written below `artifacts\performance` by default. Build the synthetic compact
+snapshot benchmark with full MSBuild, then run its Release executable with optional
+entity-count, iteration-count, and query arguments:
+
+```powershell
+& $msbuild benchmarks/LuvLetter.IndexKernel.Benchmarks/LuvLetter.IndexKernel.Benchmarks.vcxproj /m /p:Configuration=Release /p:Platform=x64
+& .\benchmarks\LuvLetter.IndexKernel.Benchmarks\bin\x64\Release\LuvLetter.IndexKernel.Benchmarks.exe 100000 2000 item0000000
+```
+
+The benchmark reports construction time, private/working-set deltas, and warm Top-5
+query p50/p95/p99. It uses a synthetic in-memory snapshot and does not measure disk scan,
+pipe, managed ranking, or UI latency; use the process sampler and the manual scenarios in
+`performance-memory-audit.md` for the end-to-end view.

@@ -441,8 +441,14 @@ internal sealed class WindowsApplicationDiscovery
         }
     }
 
-    internal static bool IsExcluded(Func<string, bool> predicate, params string?[] paths) =>
-        paths.Any(path => !string.IsNullOrWhiteSpace(path) && predicate(path));
+    internal static bool IsExcluded(Func<string, bool> predicate, string? first) =>
+        !string.IsNullOrWhiteSpace(first) && predicate(first);
+
+    internal static bool IsExcluded(Func<string, bool> predicate, string? first, string? second) =>
+        IsExcluded(predicate, first) || IsExcluded(predicate, second);
+
+    internal static bool IsExcluded(Func<string, bool> predicate, string? first, string? second, string? third) =>
+        IsExcluded(predicate, first) || IsExcluded(predicate, second) || IsExcluded(predicate, third);
 
     private static bool IsExecutable(string? path) => !string.IsNullOrWhiteSpace(path)
         && Path.GetExtension(path).Equals(".exe", StringComparison.OrdinalIgnoreCase);

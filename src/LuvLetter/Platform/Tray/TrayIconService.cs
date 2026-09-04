@@ -117,10 +117,18 @@ public sealed class TrayIconService : IApplicationShell, IDisposable
             return;
         }
 
-        eventArgs.Cancel = true;
-        if (sender is WpfWindow closingWindow)
+        if (sender is SettingsWindow closingWindow)
         {
-            MinimizeToTray(closingWindow);
+            closingWindow.Closing -= Window_OnClosing;
+            closingWindow.StateChanged -= Window_OnStateChanged;
+            if (ReferenceEquals(window, closingWindow))
+            {
+                window = null;
+            }
+            if (ReferenceEquals(application.MainWindow, closingWindow))
+            {
+                application.MainWindow = null;
+            }
         }
     }
 

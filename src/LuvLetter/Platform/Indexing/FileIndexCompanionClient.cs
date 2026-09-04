@@ -14,10 +14,11 @@ namespace LuvLetter.Platform.Indexing;
 internal sealed class FileIndexCompanionClient : IFileIndexClient, IIndexRefreshRequester, IHostedService, IDisposable
 {
     private static readonly TimeSpan RebuildingPollInterval = TimeSpan.FromMilliseconds(250);
-    private static readonly TimeSpan StablePollInterval = TimeSpan.FromMilliseconds(250);
+    private static readonly TimeSpan StablePollInterval = TimeSpan.FromSeconds(5);
 
     private readonly FileIndexClientOptions options;
     private readonly object sessionStateLock = new();
+    private readonly SemaphoreSlim statusWake = new(0, 1);
     private CancellationTokenSource? lifetimeCancellation;
     private Task? supervisorTask;
     private Session? currentSession;
@@ -49,7 +50,17 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IIndexRefresh
             Console.WriteLine("[Index][configuration-error] Force refresh unavailable | state=configuration-invalid");
             return;
         }
-        Interlocked.Exchange(ref refreshRequested, 1);
+        if (Interlocked.Exchange(ref refreshRequested, 1) == 0)
+        {
+            try
+            {
+                statusWake.Release();
+            }
+            catch (SemaphoreFullException)
+            {
+                // A pending wake already covers this coalesced request.
+            }
+        }
         Console.WriteLine("[Index][force] Force rebuild queued | state=awaiting-companion");
     }
 
@@ -67,8 +78,11 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IIndexRefresh
             return Task.CompletedTask;
         }
 
-        lifetimeCancellation = new CancellationTokenSource();
-        supervisorTask = SuperviseAsync(lifetimeCancellation.Token);
+        var lifetime = new CancellationTokenSource();
+        lifetimeCancellation = lifetime;
+        supervisorTask = Task.Run(
+            () => SuperviseAsync(lifetime.Token),
+            CancellationToken.None);
         return Task.CompletedTask;
     }
 
@@ -344,7 +358,7 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IIndexRefresh
                 var delay = status.Value.Rebuilding
                     ? RebuildingPollInterval
                     : StablePollInterval;
-                await Task.Delay(delay, pollingToken).ConfigureAwait(false);
+                _ = await statusWake.WaitAsync(delay, pollingToken).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (pollingToken.IsCancellationRequested)

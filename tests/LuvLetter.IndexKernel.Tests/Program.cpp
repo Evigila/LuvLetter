@@ -421,6 +421,11 @@ void TestFullIgnorePathMatching() {
         !wholeDrive.Contains(LR"(D:\nested\file.txt)"),
         L"excluding a drive root must cover only that drive");
     Expect(!PathExclusions{}.Contains(paths[0]), L"an empty full-ignore list must exclude nothing");
+    Expect(exclusions.ContainsNormalized(std::filesystem::path(
+            LR"(C:\LuvLetter.Exclusions\Private\child.txt)").lexically_normal()) &&
+        !exclusions.ContainsNormalized(std::filesystem::path(
+            LR"(C:\LuvLetter.Exclusions\Private-sibling\child.txt)").lexically_normal()),
+        L"pre-normalized exclusion matching must retain exact path-boundary semantics");
 
     const std::array legacyRoots{std::filesystem::path(LR"(C:\LuvLetter.Scope.Tests)")};
     const luvletter::indexing::IndexSnapshot legacy({}, {}, {}, 0x5909BDEE8FABD043ULL);
@@ -528,6 +533,20 @@ void TestLiveDeltaOrderingAndDirectoryTombstones() {
     matches = delta.Merge(L"child", {}, 5);
     Expect(matches.size() == 1,
         L"a descendant upsert newer than its ancestor tombstone must become visible");
+
+    const std::array rankedPaths{
+        temporary.Path() / L"rank-z.txt",
+        temporary.Path() / L"rank.md",
+        temporary.Path() / L"rank"};
+    std::vector<FileSystemChange> rankedChanges;
+    for (const auto& path : rankedPaths) {
+        Expect(CreateEmptyFile(path), L"bounded Delta ranking fixture should be created");
+        rankedChanges.push_back(FileSystemChange{path, FileSystemChangeAction::Upsert});
+    }
+    Expect(!delta.Apply(rankedChanges), L"a small Delta batch should remain below the rebuild threshold");
+    const auto ranked = delta.Merge(L"rank", {}, 2);
+    Expect(ranked.size() == 2 && ranked[0].displayName == L"rank" && ranked[1].displayName == L"rank.md",
+        L"bounded Delta merging must retain exact-name and exact-stem ranking");
 }
 
 void TestDeltaFilteredBaseQueryFillsTopK() {

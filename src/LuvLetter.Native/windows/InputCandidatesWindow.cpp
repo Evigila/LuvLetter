@@ -326,7 +326,6 @@ bool InputCandidatesWindow::SetItems(
 		return false;
 	}
 
-	DiscardResources(true);
 	UpdateGeometry();
 	if (!inputVisible || state_.IsEmpty())
 	{

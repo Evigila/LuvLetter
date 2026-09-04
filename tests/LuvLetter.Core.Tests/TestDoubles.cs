@@ -39,6 +39,8 @@ internal sealed class FakeNativeShellApi : INativeShellApi
 
     public ulong InputCandidateRevision { get; private set; }
 
+    public bool InputCandidateTextPointersWerePacked { get; private set; }
+
     public int SetFeatureItemsResult { get; set; }
 
     public int ToggleInputBoxResult { get; set; }
@@ -174,18 +176,31 @@ internal sealed class FakeNativeShellApi : INativeShellApi
     public int SetInputCandidates(NativeInputCandidate[] items, int count, ulong revision)
     {
         var copied = new (ulong, CandidateKind, CandidateIconKind, string, string)[count];
+        var expectedTextPointer = count == 0 ? IntPtr.Zero : items[0].PrimaryText;
+        var textPointersWerePacked = true;
         for (var index = 0; index < count; index++)
         {
+            var primary = Marshal.PtrToStringUni(items[index].PrimaryText) ?? string.Empty;
+            var secondary = Marshal.PtrToStringUni(items[index].SecondaryText) ?? string.Empty;
+            textPointersWerePacked &= items[index].PrimaryText == expectedTextPointer;
+            expectedTextPointer = IntPtr.Add(
+                items[index].PrimaryText,
+                checked((primary.Length + 1) * sizeof(char)));
+            textPointersWerePacked &= items[index].SecondaryText == expectedTextPointer;
+            expectedTextPointer = IntPtr.Add(
+                items[index].SecondaryText,
+                checked((secondary.Length + 1) * sizeof(char)));
             copied[index] = (
                 items[index].Token,
                 (CandidateKind)items[index].Kind,
                 (CandidateIconKind)items[index].IconKind,
-                Marshal.PtrToStringUni(items[index].PrimaryText) ?? string.Empty,
-                Marshal.PtrToStringUni(items[index].SecondaryText) ?? string.Empty);
+                primary,
+                secondary);
         }
 
         InputCandidates = copied;
         InputCandidateRevision = revision;
+        InputCandidateTextPointersWerePacked = textPointersWerePacked;
         return 0;
     }
 

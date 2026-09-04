@@ -1,4 +1,5 @@
 <Solution>
+  <Project Path="benchmarks/LuvLetter.IndexKernel.Benchmarks/LuvLetter.IndexKernel.Benchmarks.vcxproj" Id="3b77e4cd-1e5c-47a1-845b-bd57d96992be" />
   <Project Path="src/LuvLetter.Core/LuvLetter.Core.csproj" />
   <Project Path="src/LuvLetter.IndexKernel/LuvLetter.IndexKernel.vcxproj" Id="533d6b2e-e5d0-4158-bf28-5ebc97d9e40c" />
   <Project Path="src/LuvLetter.Indexer/LuvLetter.Indexer.vcxproj" Id="4c2f1b1f-e0e1-44bf-9215-1d0e19c0ae3f" />
