@@ -9,6 +9,9 @@ Application discovery and executable launch improvements are proposed separately
 `roadmap.applications.md`; the existing filesystem index already includes `.exe` files
 inside its configured scope.
 
+For a concise implemented-versus-planned comparison and concrete search examples, see
+`indexing-capabilities.md`.
+
 ## Product invariants
 
 The following rules apply to every phase:
