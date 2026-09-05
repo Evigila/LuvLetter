@@ -779,7 +779,6 @@ HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 	case RequestKind::ShowInput:
 	{
 		CapturePreviousForegroundWindow();
-		quickActionsWindow_->Hide();
 		const auto monitor = CaptureTargetMonitor();
 		inputWindow_->Show(monitor, previousForegroundHwnd_);
 		const auto activated = TryActivateInteractiveWindow(
@@ -803,7 +802,6 @@ HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 		else if (!inputWindow_->IsVisible())
 		{
 			CapturePreviousForegroundWindow();
-			quickActionsWindow_->Hide();
 			const auto monitor = CaptureTargetMonitor();
 			inputWindow_->Show(monitor, previousForegroundHwnd_);
 			const auto activated = TryActivateInteractiveWindow(
@@ -817,7 +815,6 @@ HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 		else
 		{
 			CapturePreviousForegroundWindow();
-			quickActionsWindow_->Hide();
 			inputWindow_->SetPreviousForegroundWindow(previousForegroundHwnd_);
 			const auto activated = TryActivateInteractiveWindow(
 				inputWindow_->WindowHandle(),
@@ -841,8 +838,6 @@ HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 	case RequestKind::ShowQuickActions:
 		if (quickActionsWindow_->IsEmpty()) return S_FALSE;
 		CapturePreviousForegroundWindow();
-		inputWindow_->Hide();
-		inputCandidatesWindow_->Hide();
 		{
 			const auto monitor = CaptureTargetMonitor();
 			quickActionsWindow_->Show(monitor, previousForegroundHwnd_);
@@ -863,8 +858,6 @@ HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 		else if (!quickActionsWindow_->IsEmpty())
 		{
 			CapturePreviousForegroundWindow();
-			inputWindow_->Hide();
-			inputCandidatesWindow_->Hide();
 			const auto monitor = CaptureTargetMonitor();
 			quickActionsWindow_->Show(monitor, previousForegroundHwnd_);
 			return TryActivateInteractiveWindow(

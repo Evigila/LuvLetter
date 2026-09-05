@@ -8,6 +8,11 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 
 ### Fixed
 
+- Control Center now constructs its shared WPF font family as a typed object before
+  loading XAML. Opening Quick Actions and pressing `1` no longer fails while assigning
+  the shared typography string to `TextElement.FontFamily`.
+- InputBox and Quick Actions now keep independent visibility. Invoking either popup only
+  transfers keyboard focus, while Escape continues to dismiss both together.
 - The candidate list now inherits the input window's resolved width and left edge. The
   combined input surface keeps one DIP-based layout across monitor DPI and work-area
   changes, while narrow displays constrain both windows together.
@@ -228,8 +233,7 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 - Hidden persistent-only message queues no longer run a continuous animation timer.
 - Candidate publication now treats Native `S_FALSE` as a stale revision instead of
   committing managed activation tokens. Long secondary labels are truncated on a safe
-  UTF-16 boundary while activation retains the complete path, and InputWindow and Quick
-  Actions now hide each other before presentation.
+  UTF-16 boundary while activation retains the complete path.
 - Removed the second full result extraction, sort, and repack from normal filesystem
   construction. The scan now writes its captured Delta sequence into the packed snapshot
   directly, reducing initial-build CPU time and peak allocations.

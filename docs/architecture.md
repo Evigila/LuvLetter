@@ -235,6 +235,11 @@ focused application does not handle the same command concurrently. If Windows st
 denies activation, Native returns an explicit failure instead of silently presenting a
 popup that cannot receive keyboard input.
 
+InputBox and Quick Actions keep independent visibility. Invoking one while the other is
+visible transfers foreground activation and keyboard focus to the requested window but
+does not hide its peer; hiding the focused window returns focus to the visible peer when
+possible. Escape remains the explicit action that dismisses both interactive popups.
+
 Command-input toggling has three states based on actual keyboard ownership rather than
 visibility alone. A hidden input is shown and activated; a visible but unfocused input
 is reactivated without clearing its text; a visible and focused input is hidden. After

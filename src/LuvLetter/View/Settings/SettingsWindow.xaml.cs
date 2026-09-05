@@ -6,6 +6,7 @@ using System.Windows.Input;
 using LuvLetter.Core.Configuration;
 using LuvLetter.Core.Modules.Settings;
 using WpfKeyEventArgs = System.Windows.Input.KeyEventArgs;
+using WpfFontFamily = System.Windows.Media.FontFamily;
 using WpfTextBox = System.Windows.Controls.TextBox;
 
 namespace LuvLetter.View.Settings;
@@ -34,6 +35,8 @@ public partial class SettingsWindow : Window
         this.settingsService = settingsService;
         pendingConfiguration = settingsService.Current;
 
+        FontFamily = new WpfFontFamily(SurfaceStyleDefaults.FontFamily);
+        FontSize = SurfaceStyleDefaults.FontSize;
         InitializeComponent();
         PositionModeComboBox.ItemsSource = Enum.GetValues<InputBoxPositionMode>();
         FirstItemNumberComboBox.ItemsSource = firstItemKeyChoices;
