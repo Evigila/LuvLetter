@@ -1,4 +1,5 @@
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -51,7 +52,13 @@ internal sealed class FileIndexClientOptions
         }
     }
 
-    internal IReadOnlyList<FileIndexPartitionDescriptor> NormalizedPartitions()
+    internal IReadOnlyList<FileIndexPartitionDescriptor> NormalizedPartitions() => NormalizedPartitions(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
+        GetDownloadsPath());
+
+    internal IReadOnlyList<FileIndexPartitionDescriptor> NormalizedPartitions(
+        string? userProfile, string? desktopPath, string? downloadsPath)
     {
         var roots = Roots.Where(static root => !string.IsNullOrWhiteSpace(root))
             .Select(Path.GetFullPath).Select(Path.TrimEndingDirectorySeparator)
@@ -60,9 +67,9 @@ internal sealed class FileIndexClientOptions
             .ThenBy(static root => root, StringComparer.OrdinalIgnoreCase)
             .ToArray();
         var configuredRoots = roots.ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var profile = NormalizeKnownFolder(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
-        var desktop = NormalizeKnownFolder(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory));
-        var downloads = string.IsNullOrEmpty(profile) ? null : NormalizeKnownFolder(Path.Combine(profile, "Downloads"));
+        var profile = NormalizeKnownFolder(userProfile);
+        var desktop = NormalizeKnownFolder(desktopPath);
+        var downloads = NormalizeKnownFolder(downloadsPath);
         var claimed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var descriptors = new List<FileIndexPartitionDescriptor>();
 
@@ -110,7 +117,7 @@ internal sealed class FileIndexClientOptions
                 Maintenance.AutomaticRebuildGapSeconds);
     }
 
-    private static string? NormalizeKnownFolder(string path) => string.IsNullOrWhiteSpace(path)
+    private static string? NormalizeKnownFolder(string? path) => string.IsNullOrWhiteSpace(path)
         ? null : Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
 
     internal void Validate()
@@ -139,23 +146,50 @@ internal sealed class FileIndexClientOptions
     private static IReadOnlyList<string> CreateDefaultRoots()
     {
         var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var candidates = new[]
-        {
-            userProfile,
+        return CreateDefaultRoots(userProfile,
+        [
             Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
             Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
             Environment.GetFolderPath(Environment.SpecialFolder.MyPictures),
             Environment.GetFolderPath(Environment.SpecialFolder.MyMusic),
             Environment.GetFolderPath(Environment.SpecialFolder.MyVideos),
-            string.IsNullOrWhiteSpace(userProfile)
-                ? string.Empty
-                : Path.Combine(userProfile, "Downloads"),
-        };
+        ], GetDownloadsPath());
+    }
+
+    internal static IReadOnlyList<string> CreateDefaultRoots(
+        string userProfile, IEnumerable<string> knownFolders, string? downloads)
+    {
+        var candidates = new List<string> { userProfile };
+        candidates.AddRange(knownFolders);
+        if (!string.IsNullOrWhiteSpace(downloads)) candidates.Add(downloads);
         return candidates
             .Where(static path => !string.IsNullOrWhiteSpace(path))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
     }
+
+    internal static string? GetDownloadsPath()
+    {
+        // Downloads has no Environment.SpecialFolder value. Ask Windows for its
+        // current location, including user redirection, without creating a folder
+        // or guessing a fallback beneath the profile when resolution fails.
+        var folderId = new Guid("374DE290-123F-4565-9164-39C4925E467B");
+        var path = IntPtr.Zero;
+        try
+        {
+            return SHGetKnownFolderPath(in folderId, 0, IntPtr.Zero, out path) >= 0
+                ? Marshal.PtrToStringUni(path)
+                : null;
+        }
+        finally
+        {
+            if (path != IntPtr.Zero) Marshal.FreeCoTaskMem(path);
+        }
+    }
+
+    [DllImport("shell32.dll", ExactSpelling = true)]
+    private static extern int SHGetKnownFolderPath(
+        in Guid folderId, uint flags, IntPtr token, out IntPtr path);
 
     private static bool IsSameOrChild(string parent, string candidate)
     {

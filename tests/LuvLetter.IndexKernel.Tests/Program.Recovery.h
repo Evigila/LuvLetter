@@ -83,7 +83,12 @@ void TestPartitionedRecovery() {
     // should hide the exact base and Delta view that restart must recover.
     std::filesystem::rename(root, temporary.Path() / L"disconnected-root");
     {
-        PartitionedIndexStore store(data, silentLog);
+        std::atomic_bool unavailableReported = false;
+        PartitionedIndexStore store(data, [&](std::string_view event, std::string_view message) {
+            if (event == "root-unavailable" &&
+                message.find(WideToUtf8(root.native())) != std::string_view::npos &&
+                message.find("error=") != std::string_view::npos) unavailableReported.store(true);
+        });
         Expect(configure(store), L"restart should accept an unavailable configured root");
         const auto recovered = WaitForRecovery([&] {
             return statusOf(store).activity == IndexActivity::Failed &&
@@ -91,6 +96,7 @@ void TestPartitionedRecovery() {
                 store.Query(L"online-retained", 10).size() == 1;
         });
         Expect(recovered, L"restart should replay the unavailable partition while its online sibling remains usable");
+        Expect(unavailableReported.load(), L"unavailable roots should log their path and Win32 error without opt-in diagnostics");
         Expect(store.Query(L"base-retained", 10).size() == 1,
             L"unavailable-root reconciliation must retain the previous base");
         Expect(store.Query(L"base-deleted", 10).empty(),

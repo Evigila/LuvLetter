@@ -606,6 +606,13 @@ private:
                     options.progress = [&](const luvletter::indexing::IndexBuildProgress& progress) {
                         if (cancelBuild_.load()) return;
                         unavailable |= progress.rootUnavailable;
+                        if (progress.rootUnavailable) {
+                            LogPartition(*selected, "root-unavailable",
+                                "Configured root is unavailable | path=" +
+                                luvletter::indexing::WideToUtf8(progress.currentPath) +
+                                " | error=" + std::to_string(progress.errorCode) +
+                                " | previous-snapshot-and-delta=retained");
+                        }
                         const auto tick = GetTickCount64();
                         lastProgressTick_.store(tick);
                         if (progress.stage == luvletter::indexing::IndexBuildStage::Packing) {

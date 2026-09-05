@@ -8,6 +8,7 @@ internal static partial class Program
 {
     private static Task TestFileIndexPartitionConfiguration()
     {
+        VerifyDefaultFileIndexRoots();
         var options = new FileIndexClientOptions();
         var partitions = options.NormalizedPartitions();
         Assert.True(partitions.Count > 0);
@@ -84,6 +85,48 @@ internal static partial class Program
         Assert.True(reader.Complete);
         Assert.Equal((ushort)7, FileIndexProtocol.MajorVersion);
         return Task.CompletedTask;
+    }
+
+    private static void VerifyDefaultFileIndexRoots()
+    {
+        const string profile = @"C:\Users\TestUser";
+        const string redirectedDownloads = @"D:\Users\TestUser\Downloads";
+        var inferredDownloads = Path.Combine(profile, "Downloads");
+        var roots = FileIndexClientOptions.CreateDefaultRoots(profile,
+            [profile, "", profile, redirectedDownloads], redirectedDownloads);
+        Assert.SequenceEqual([profile, redirectedDownloads], roots,
+            "Default roots must use the resolved Downloads location and remove empty or duplicate entries.");
+        Assert.False(roots.Contains(inferredDownloads, StringComparer.OrdinalIgnoreCase),
+            "A redirected Downloads folder must not create an inferred partition under the user profile.");
+
+        var options = new FileIndexClientOptions { Roots = roots };
+        var partitions = options.NormalizedPartitions(profile, null, redirectedDownloads);
+        var downloadsPartition = partitions.Single(item => item.Root == redirectedDownloads);
+        Assert.Equal("filesystem:downloads", downloadsPartition.Id);
+        Assert.Equal(FileIndexMaintenanceTier.StartupCritical, downloadsPartition.Tier);
+        Assert.Equal(0, partitions.Single(item => item.Id == "filesystem:user-profile").DelegatedSubtrees.Length,
+            "Downloads on another drive must not be delegated from the profile partition.");
+
+        var nestedOptions = new FileIndexClientOptions
+        {
+            Roots = FileIndexClientOptions.CreateDefaultRoots(profile, [], inferredDownloads),
+        };
+        var nestedPartitions = nestedOptions.NormalizedPartitions(profile, null, inferredDownloads);
+        Assert.Equal(FileIndexMaintenanceTier.StartupCritical,
+            nestedPartitions.Single(item => item.Id == "filesystem:downloads").Tier);
+        Assert.SequenceEqual([inferredDownloads],
+            nestedPartitions.Single(item => item.Id == "filesystem:user-profile").DelegatedSubtrees,
+            "Downloads inside the profile must still be delegated to its dedicated partition.");
+
+        Assert.SequenceEqual([profile], FileIndexClientOptions.CreateDefaultRoots(profile, [], null),
+            "An unresolved Downloads folder must not generate a guessed path.");
+        Assert.SequenceEqual([profile], FileIndexClientOptions.CreateDefaultRoots(profile, [], ""));
+
+        var missingRoot = Path.Combine(Path.GetTempPath(), "FileIndex.Tests", Guid.NewGuid().ToString("N"));
+        Assert.False(Directory.Exists(missingRoot));
+        var explicitOptions = new FileIndexClientOptions { Roots = [missingRoot] };
+        Assert.Equal(missingRoot, explicitOptions.NormalizedPartitions(profile, null, redirectedDownloads).Single().Root,
+            "Explicitly configured roots must remain available for recovery when temporarily missing.");
     }
 
     private static Task TestFileIndexProgressProtocol()

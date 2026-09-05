@@ -6,6 +6,14 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 
 ## Unreleased
 
+### Fixed
+
+- Downloads discovery and partition classification now use the current Windows Known
+  Folder location, including redirection to another drive, instead of assuming a
+  Downloads directory beneath the user profile. Failed discovery does not invent a
+  fallback path. Explicitly configured unavailable roots still retain their previous
+  index and retry; ordinary logs now identify unavailable roots by path and Win32 error.
+
 ### Added
 
 - Added a performance and resident-memory audit, a two-process working-set/private-bytes
