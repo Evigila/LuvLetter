@@ -27,6 +27,9 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 
 ### Added
 
+- Typing or pasting a leading `/` in `Gen` now switches directly to `Cmd`. The visible
+  slash is treated as a mode prefix for command candidates and submission, and the edit
+  bypasses application and filesystem index queries from its first published revision.
 - Candidate rows now use Windows stock icons for ordinary files and folders and the
   resolved Shell icon for classic, shortcut, AppsFolder, and indexed executable
   applications. Resolution runs on a bounded STA worker with DPI-aware caching, stale

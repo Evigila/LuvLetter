@@ -68,6 +68,9 @@
     <ClInclude Include="windows\InputWindow.h">
       <Filter>Header Files\windows</Filter>
     </ClInclude>
+    <ClInclude Include="windows\InputModeBehavior.h">
+      <Filter>Header Files\windows</Filter>
+    </ClInclude>
     <ClInclude Include="windows\QuickActionsWindow.h">
       <Filter>Header Files\windows</Filter>
     </ClInclude>

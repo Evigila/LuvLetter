@@ -63,6 +63,7 @@ private:
 
 	void Reset();
 	void Submit();
+	void SetInputMode(LuvLetterInputMode mode);
 	void CycleInputMode();
 	void InsertText(const std::wstring& value);
 	void InsertCharacter(wchar_t value);

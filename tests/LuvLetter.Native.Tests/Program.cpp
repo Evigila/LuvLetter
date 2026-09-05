@@ -3,6 +3,7 @@
 #include "rendering/InputBoxAnimator.h"
 #include "rendering/SurfaceStyleDefaults.h"
 #include "windows/InputCandidateState.h"
+#include "windows/InputModeBehavior.h"
 #include "windows/MessageQueueEntry.h"
 
 #include <cmath>
@@ -81,6 +82,22 @@ namespace
 		AssertNear(0.0f, frame.opacity, "Initial opacity must be zero.");
 		AssertNear(settings.hiddenWidthScale, frame.widthScale, "Initial width must be constrained.");
 		AssertNear(settings.hiddenVerticalOffsetDip, frame.verticalOffsetDip, "Initial offset must be below the final position.");
+	}
+
+	void TestSlashCommandModeShortcut()
+	{
+		using ArkheideSystem::ResolveInputModeForText;
+
+		Assert(ResolveInputModeForText(LuvLetterInputModeGeneral, L"/settings")
+			== LuvLetterInputModeCommand, "A leading slash must switch General input to Command mode.");
+		Assert(ResolveInputModeForText(LuvLetterInputModeGeneral, L"settings")
+			== LuvLetterInputModeGeneral, "Ordinary General input must remain in General mode.");
+		Assert(ResolveInputModeForText(LuvLetterInputModeGeneral, L"")
+			== LuvLetterInputModeGeneral, "Empty input must remain in General mode.");
+		Assert(ResolveInputModeForText(LuvLetterInputModeAsk, L"/settings")
+			== LuvLetterInputModeAsk, "A leading slash must not override Ask mode.");
+		Assert(ResolveInputModeForText(LuvLetterInputModeCommand, L"settings")
+			== LuvLetterInputModeCommand, "Editing away the slash must not leave Command mode.");
 	}
 
 	void TestAbiContract()
@@ -499,6 +516,7 @@ int main()
 	const std::vector<std::pair<std::string, std::function<void()>>> tests
 	{
 		{ "Native ABI contract", TestAbiContract },
+		{ "Slash command mode shortcut", TestSlashCommandModeShortcut },
 		{ "Configuration typography sanitization", TestConfigurationTypographySanitization },
 		{ "Message activity timeline", TestMessageActivityTimeline },
 		{ "Candidate revision and default selection", TestCandidateRevisionAndDefaultSelection },

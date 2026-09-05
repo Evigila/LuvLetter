@@ -278,17 +278,31 @@ input text color. Rapid mode changes are queued in input order instead of restar
 visible transition. Popup dismissal finishes only the current Tag transition and drops
 queued presentation work so hiding remains bounded.
 
+While the editor is in `Gen`, inserting or pasting an ASCII `/` as the first character
+switches it directly to `Cmd`. Native publishes that edit only once with the resolved
+mode, so the candidate pipeline never starts a General index query for slash-prefixed
+input. The editor keeps the slash visible; command candidate matching and final dispatch
+remove exactly that one mode prefix. `Ask` is never overridden, and removing the slash
+after entering `Cmd` does not switch the mode back.
+
 Submitted text crosses the Native boundary as an `InputSubmission` containing both the
 text and its mode. `Ask` always produces an Echo response. `Cmd` always uses strict
 command dispatch, including the existing unknown-command diagnostic. `Gen` recognizes
 registered commands first, then invokes `IGeneralInputMatcher` extensions, and finally
 produces Echo when no matcher accepts the text.
 
+The built-in command registry currently contains `settings`, which opens Control Center,
+and `index.refresh`, which requests both filesystem and application index refreshes.
+External plugins can add or replace registrations through `PluginRegistrationContext`.
+Command names are case-insensitive, while arguments are passed through as unstructured
+text after the first whitespace separator.
+
 Real-time candidate production is separate from final submission. Each actual text or
 mode change increments an editor revision, immediately clears the old Native snapshot,
 and enters a capacity-one latest-wins pipeline. `Gen` merges application and file matches,
 fills remaining direct-result capacity with command prefixes, then appends the reserved Global
-Search row. `Ask` publishes no candidates. `Cmd` queries commands only. The default
+Search row. `Ask` publishes no candidates. `Cmd` queries registered application commands
+only and never enters the application or filesystem index paths. The default
 configuration allows five direct results and one Global Search row, while the limit is
 owned by `InputCandidateOptions` rather than Native rendering code.
 

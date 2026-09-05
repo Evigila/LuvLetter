@@ -2,6 +2,7 @@
 
 #include "configuration/NativeConfigurationSanitizer.h"
 #include "rendering/SurfaceStyleDefaults.h"
+#include "windows/InputModeBehavior.h"
 
 #include <imm.h>
 #include <windowsx.h>
@@ -692,6 +693,7 @@ void InputWindow::Reset()
 
 void InputWindow::PublishInputChanged()
 {
+	SetInputMode(ArkheideSystem::ResolveInputModeForText(inputMode_, text_));
 	++revision_;
 	if (revision_ == 0)
 	{
@@ -722,19 +724,30 @@ void InputWindow::Submit()
 
 void InputWindow::CycleInputMode()
 {
-	SynchronizeAnimation();
+	LuvLetterInputMode nextMode;
 	switch (inputMode_)
 	{
 	case LuvLetterInputModeGeneral:
-		inputMode_ = LuvLetterInputModeAsk;
+		nextMode = LuvLetterInputModeAsk;
 		break;
 	case LuvLetterInputModeAsk:
-		inputMode_ = LuvLetterInputModeCommand;
+		nextMode = LuvLetterInputModeCommand;
 		break;
 	default:
-		inputMode_ = LuvLetterInputModeGeneral;
+		nextMode = LuvLetterInputModeGeneral;
 		break;
 	}
+	SetInputMode(nextMode);
+	PublishInputChanged();
+	Invalidate();
+}
+
+void InputWindow::SetInputMode(LuvLetterInputMode mode)
+{
+	if (inputMode_ == mode) return;
+
+	SynchronizeAnimation();
+	inputMode_ = mode;
 	if (statusTagAnimator_.Current().IsAnimating())
 	{
 		pendingStatusTagModes_.push_back(inputMode_);
@@ -761,8 +774,6 @@ void InputWindow::CycleInputMode()
 			animationTimestamp_ = 0;
 		}
 	}
-	PublishInputChanged();
-	Invalidate();
 }
 
 void InputWindow::InsertText(const std::wstring& value)

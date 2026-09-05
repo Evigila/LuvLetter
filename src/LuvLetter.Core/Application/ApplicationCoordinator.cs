@@ -1,4 +1,5 @@
 using Microsoft.Extensions.Hosting;
+using ArkheideSystem;
 using LuvLetter.Core.Activation;
 using LuvLetter.Core.Commands;
 using LuvLetter.Core.Configuration;
@@ -190,7 +191,7 @@ public sealed class ApplicationCoordinator : IHostedService
                 Echo(submission.Text);
                 return;
             case InputMode.Command:
-                DispatchCommand(submission.Text);
+                DispatchCommand(CommandInputSyntax.RemoveModePrefix(submission.Text));
                 return;
             case InputMode.General:
                 HandleGeneralInput(submission.Text);

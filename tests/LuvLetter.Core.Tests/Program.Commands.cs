@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using ArkheideSystem;
 using LuvLetter.Core.Commands;
 
 namespace LuvLetter.Core.Tests;
@@ -7,6 +8,11 @@ internal static partial class Program
 {
     private static Task TestCommandDispatcher()
     {
+        Assert.Equal("settings", CommandInputSyntax.RemoveModePrefix("/settings"));
+        Assert.Equal("index.refresh now", CommandInputSyntax.RemoveModePrefix(" /index.refresh now "));
+        Assert.Equal("/settings", CommandInputSyntax.RemoveModePrefix("//settings"));
+        Assert.Equal(string.Empty, CommandInputSyntax.RemoveModePrefix("/"));
+
         using var dispatcher = new CommandDispatcher(capacity: 2);
         using var callbackStarted = new ManualResetEventSlim();
         using var releaseCallback = new ManualResetEventSlim();

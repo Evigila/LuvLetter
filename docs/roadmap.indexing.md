@@ -30,7 +30,8 @@ The following rules apply to every phase:
   cannot replace or activate the current candidate list.
 - `Gen` gives indexed filesystem candidates priority, then uses command candidates for
   remaining direct-result capacity. `Cmd` uses command candidates only, and `Ask` never
-  queries the filesystem index.
+  queries the filesystem index. A leading `/` entered or pasted in `Gen` resolves to
+  `Cmd` before the edit is published, so it also never starts an index query.
 - A non-empty new editor revision selects and highlights its first candidate. A
   same-revision index refresh preserves selection when the same stable candidate token
   remains present and falls back to the first candidate otherwise. When no candidates
@@ -398,7 +399,8 @@ candidates, persistence, or activation:
 16. Terminate the companion during a query and confirm supervision restarts it, stale
     results are rejected, and the current input refreshes after readiness returns.
 17. Exercise `Gen`, `Ask`, and `Cmd` with identical text and confirm their candidate and
-    submission rules remain isolated.
+    submission rules remain isolated. Type and paste `/settings` in `Gen`; confirm both
+    switch directly to `Cmd`, show command-only candidates, and perform no index query.
 18. Observe a large rebuild on battery and AC power and confirm Windows reports background
     processing behavior while input animation and keyboard navigation remain smooth.
 19. Start without a compatible snapshot and confirm `正在生成索引表` remains visible with

@@ -140,7 +140,7 @@ internal static partial class Program
                 nativeShell.CandidateSnapshots.Last(item => item.Revision == 2).Candidates.Count);
             Assert.Equal(1, fileIndex.Queries.Count);
 
-            nativeShell.RaiseInputChanged("b", InputMode.Command, revision: 3);
+            nativeShell.RaiseInputChanged("/b", InputMode.Command, revision: 3);
             Assert.True(
                 SpinWait.SpinUntil(
                     () => nativeShell.CandidateSnapshots.Any(item => item.Revision == 3),

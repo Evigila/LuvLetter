@@ -1,6 +1,7 @@
 using LuvLetter.Core.Application;
 using LuvLetter.Core.Commands;
 using LuvLetter.Core.Configuration;
+using LuvLetter.Core.Modules.Indexing;
 using LuvLetter.Core.Modules.QuickActions;
 using LuvLetter.Core.Modules.Settings;
 using LuvLetter.Core.NativeShell;
@@ -16,13 +17,14 @@ internal static partial class Program
         var activation = new FakeActivationGestureService();
         var nativeShell = new FakeNativeShell();
         var applicationShell = new FakeApplicationShell();
+        var indexRefreshRequester = new CountingIndexRefreshRequester();
         var matcher = new FakeGeneralInputMatcher(
             input => string.Equals(input, "file.txt", StringComparison.Ordinal));
         var coordinator = new ApplicationCoordinator(
             new FakeConfigurationStore(LuvLetterConfiguration.Default),
             commands,
             quickActions,
-            [new SettingsPlugin(applicationShell)],
+            [new SettingsPlugin(applicationShell), new IndexingPlugin(indexRefreshRequester)],
             [matcher],
             activation,
             nativeShell,
@@ -57,14 +59,14 @@ internal static partial class Program
             Assert.SequenceEqual(["file.txt", "plain question"], matcher.Inputs);
             Assert.Equal("Echo: plain question", nativeShell.EnqueuedMessages[^1]);
 
-            nativeShell.RaiseInputSubmitted("missing argument", InputMode.Command);
+            nativeShell.RaiseInputSubmitted("/missing argument", InputMode.Command);
             Assert.True(
                 SpinWait.SpinUntil(
                     () => nativeShell.EnqueuedMessages.Contains("Unknown command: missing"),
                     TimeSpan.FromSeconds(2)),
                 "Command mode did not preserve strict unknown-command reporting.");
 
-            nativeShell.RaiseInputSubmitted("settings", InputMode.Command);
+            nativeShell.RaiseInputSubmitted("/settings", InputMode.Command);
             Assert.True(
                 SpinWait.SpinUntil(
                     () => applicationShell.ShowSettingsCalls == 2,
@@ -74,10 +76,31 @@ internal static partial class Program
                 ["file.txt", "plain question"],
                 matcher.Inputs,
                 "Ask and Command modes must bypass General matchers.");
+
+            nativeShell.RaiseInputSubmitted("/index.refresh", InputMode.Command);
+            Assert.True(
+                SpinWait.SpinUntil(
+                    () => indexRefreshRequester.Requests == 1,
+                    TimeSpan.FromSeconds(2)),
+                "The slash shortcut did not execute the built-in index refresh command.");
+
+            nativeShell.RaiseInputSubmitted("/", InputMode.Command);
+            Assert.Equal(
+                "Command was not accepted: RejectedEmpty",
+                nativeShell.EnqueuedMessages[^1]);
         }
         finally
         {
             await coordinator.StopAsync(CancellationToken.None);
         }
+    }
+
+    private sealed class CountingIndexRefreshRequester : IIndexRefreshRequester
+    {
+        private int requests;
+
+        public int Requests => Volatile.Read(ref requests);
+
+        public void RequestRefresh() => Interlocked.Increment(ref requests);
     }
 }

@@ -1,4 +1,5 @@
 using System.Threading.Channels;
+using ArkheideSystem;
 using Microsoft.Extensions.Hosting;
 using LuvLetter.Core.Commands;
 using LuvLetter.Core.NativeShell;
@@ -511,7 +512,8 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
 
         if (change.Mode == InputMode.Command)
         {
-            Publish(BuildCommandCandidates(query, options.TotalCandidateCount), change.Revision);
+            var commandInput = CommandInputSyntax.RemoveModePrefix(query);
+            Publish(BuildCommandCandidates(commandInput, options.TotalCandidateCount), change.Revision);
             return;
         }
 
