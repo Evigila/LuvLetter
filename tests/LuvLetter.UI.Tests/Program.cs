@@ -2,6 +2,7 @@ using System.IO;
 using LuvLetter.Core.Configuration;
 using LuvLetter.Core.Hotkeys;
 using LuvLetter.Core.Modules.Settings;
+using LuvLetter.Platform.Diagnostics;
 using LuvLetter.View.Settings;
 using ArkheideSystem;
 
@@ -14,6 +15,9 @@ internal static class Program
     {
         try
         {
+            TestConsoleLogGating();
+            Console.WriteLine("PASS  Console logging opt-in and lazy formatting");
+
             var window = new SettingsWindow(new StubSettingsService());
             if (!string.Equals(
                     SurfaceStyleDefaults.FontFamily,
@@ -41,6 +45,39 @@ internal static class Program
             Console.Error.WriteLine("FAIL  Control Center XAML construction and typography");
             Console.Error.WriteLine(exception);
             return 1;
+        }
+    }
+
+    private static void TestConsoleLogGating()
+    {
+        var previousValue = Environment.GetEnvironmentVariable(ConsoleLog.EnvironmentVariableName);
+        var previousOutput = Console.Out;
+        try
+        {
+            Environment.SetEnvironmentVariable(ConsoleLog.EnvironmentVariableName, null);
+            ConsoleLog.Initialize();
+            var probe = new FormattingProbe();
+            ConsoleLog.WriteLine($"disabled={probe}");
+            if (probe.FormatCount != 0)
+            {
+                throw new InvalidOperationException("Disabled console logging formatted its message.");
+            }
+
+            using var output = new StringWriter();
+            Console.SetOut(output);
+            Environment.SetEnvironmentVariable(ConsoleLog.EnvironmentVariableName, "1");
+            ConsoleLog.Initialize();
+            ConsoleLog.WriteLine($"enabled={probe}");
+            if (probe.FormatCount != 1 || !output.ToString().Contains("enabled=probe", StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("Enabled console logging did not emit its formatted message.");
+            }
+        }
+        finally
+        {
+            Console.SetOut(previousOutput);
+            Environment.SetEnvironmentVariable(ConsoleLog.EnvironmentVariableName, previousValue);
+            ConsoleLog.Initialize();
         }
     }
 
@@ -124,6 +161,17 @@ internal static class Program
         finally
         {
             runner.Completed -= OnCompleted;
+        }
+    }
+
+    private sealed class FormattingProbe
+    {
+        internal int FormatCount { get; private set; }
+
+        public override string ToString()
+        {
+            FormatCount++;
+            return "probe";
         }
     }
 

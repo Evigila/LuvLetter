@@ -4,6 +4,7 @@ using System.IO.Pipes;
 using Microsoft.Extensions.Hosting;
 using LuvLetter.Core.Application;
 using LuvLetter.Core.Modules.Indexing;
+using LuvLetter.Platform.Diagnostics;
 
 namespace LuvLetter.Platform.Indexing;
 
@@ -51,7 +52,7 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IIndexRefresh
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
         if (!options.Maintenance.IsAvailable)
         {
-            Console.WriteLine("[Index][configuration-error] Manual refresh unavailable | state=configuration-invalid");
+            ConsoleLog.WriteLine("[Index][configuration-error] Manual refresh unavailable | state=configuration-invalid");
             return;
         }
         var requested = mode == IndexRefreshMode.Force ? 2 : 1;
@@ -76,7 +77,7 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IIndexRefresh
                 // A pending wake already covers this coalesced request.
             }
         }
-        Console.WriteLine(mode == IndexRefreshMode.Force
+        ConsoleLog.WriteLine(mode == IndexRefreshMode.Force
             ? "[Index][force] Force rebuild queued | state=awaiting-companion"
             : "[Index][manual] Reconciliation queued | state=awaiting-companion");
     }
@@ -247,11 +248,14 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IIndexRefresh
                 CreateNoWindow = true,
                 WindowStyle = ProcessWindowStyle.Hidden,
                 WorkingDirectory = AppContext.BaseDirectory,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                StandardOutputEncoding = System.Text.Encoding.UTF8,
-                StandardErrorEncoding = System.Text.Encoding.UTF8,
             };
+            if (ConsoleLog.IsEnabled)
+            {
+                startInfo.RedirectStandardOutput = true;
+                startInfo.RedirectStandardError = true;
+                startInfo.StandardOutputEncoding = System.Text.Encoding.UTF8;
+                startInfo.StandardErrorEncoding = System.Text.Encoding.UTF8;
+            }
             startInfo.ArgumentList.Add("--pipe");
             startInfo.ArgumentList.Add(pipeName);
             startInfo.ArgumentList.Add("--parent-pid");
@@ -266,16 +270,21 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IIndexRefresh
             }
             process = Process.Start(startInfo)
                 ?? throw new InvalidOperationException("The file-index companion did not start.");
-            process.OutputDataReceived += (_, output) =>
+            if (ConsoleLog.IsEnabled)
             {
-                if (output.Data is not null) Console.WriteLine($"{DateTimeOffset.Now:HH:mm:ss} {output.Data}");
-            };
-            process.ErrorDataReceived += (_, output) =>
-            {
-                if (output.Data is not null) Console.Error.WriteLine($"{DateTimeOffset.Now:HH:mm:ss} {output.Data}");
-            };
-            process.BeginOutputReadLine();
-            process.BeginErrorReadLine();
+                process.OutputDataReceived += (_, output) =>
+                {
+                    if (output.Data is not null)
+                        ConsoleLog.WriteLine($"{DateTimeOffset.Now:HH:mm:ss} {output.Data}");
+                };
+                process.ErrorDataReceived += (_, output) =>
+                {
+                    if (output.Data is not null)
+                        ConsoleLog.WriteError($"{DateTimeOffset.Now:HH:mm:ss} {output.Data}");
+                };
+                process.BeginOutputReadLine();
+                process.BeginErrorReadLine();
+            }
 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(options.ConnectionTimeout);

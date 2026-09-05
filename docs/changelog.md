@@ -8,6 +8,10 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 
 ### Fixed
 
+- Ordinary runtime logging is now an explicit console-session capability. Visual Studio
+  and packaged GUI launches no longer keep indexer stdout/stderr pipes, asynchronous line
+  readers, console formatting, or watcher-event message construction active by default;
+  the one-click console launcher opts in without changing persistent diagnostic logging.
 - Control Center now constructs its shared WPF font family as a typed object before
   loading XAML. Opening Quick Actions and pressing `1` no longer fails while assigning
   the shared typography string to `TextElement.FontFamily`.

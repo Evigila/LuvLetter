@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using LuvLetter.Platform.Diagnostics;
 
 namespace LuvLetter.Platform.Indexing;
 
@@ -164,7 +165,7 @@ internal sealed class FileIndexMaintenanceOptions
             or JsonException or ArgumentException or NotSupportedException)
         {
             // Falling back to an unrestricted scope could expose full-ignored entries.
-            Console.Error.WriteLine($"[Index][configuration-error] Indexing paused until maintenance configuration is fixed: {exception.Message}");
+            ConsoleLog.WriteError($"[Index][configuration-error] Indexing paused until maintenance configuration is fixed: {exception.Message}");
             return new FileIndexMaintenanceOptions { IsAvailable = false };
         }
     }
@@ -192,7 +193,7 @@ internal sealed class FileIndexMaintenanceOptions
             IgnoreRebuildCacheDirectories = caches,
         };
         upgraded.Validate();
-        Console.WriteLine("[Index][configuration] Previous default ignore lists upgraded in memory | user_file=unchanged");
+        ConsoleLog.WriteLine("[Index][configuration] Previous default ignore lists upgraded in memory | user_file=unchanged");
         return upgraded;
     }
 }

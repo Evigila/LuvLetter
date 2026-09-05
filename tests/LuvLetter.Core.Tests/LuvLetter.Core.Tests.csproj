@@ -10,6 +10,7 @@
   <ItemGroup>
     <ProjectReference Include="../../src/LuvLetter.Core/LuvLetter.Core.csproj" />
     <Compile Include="../../src/LuvLetter/Platform/Applications/ApplicationPartitionCache.cs" Link="Applications/ApplicationPartitionCache.cs" />
+    <Compile Include="../../src/LuvLetter/Platform/Diagnostics/ConsoleLog.cs" Link="Diagnostics/ConsoleLog.cs" />
     <Compile Include="../../src/LuvLetter/Platform/Indexing/FileIndexIgnoreDefaults.cs" Link="Indexing/FileIndexIgnoreDefaults.cs" />
     <Compile Include="../../src/LuvLetter/Platform/Indexing/FileIndexMaintenanceOptions.cs" Link="Indexing/FileIndexMaintenanceOptions.cs" />
     <Compile Include="../../src/LuvLetter/Platform/Indexing/FileIndexPartitionDescriptor.cs" Link="Indexing/FileIndexPartitionDescriptor.cs" />

@@ -1,6 +1,8 @@
 using LuvLetter.Hosting;
+using LuvLetter.Platform.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using WpfMessageBox = System.Windows.MessageBox;
 
 namespace LuvLetter;
@@ -10,8 +12,9 @@ internal static class Program
     [STAThread]
     public static void Main(string[] args)
     {
+        ConsoleLog.Initialize();
         // Match the companion's UTF-8 logs and the debug launcher's log readers.
-        if (Console.IsOutputRedirected || Console.IsErrorRedirected)
+        if (ConsoleLog.IsEnabled)
         {
             Console.OutputEncoding = new System.Text.UTF8Encoding(false);
         }
@@ -28,6 +31,7 @@ internal static class Program
         try
         {
             var builder = Host.CreateApplicationBuilder(args);
+            if (!ConsoleLog.IsEnabled) builder.Logging.ClearProviders();
             builder.Services.AddLuvLetter(application);
             host = builder.Build();
             var wpfLifetime = host.Services.GetRequiredService<WpfHostLifetime>();
@@ -36,7 +40,7 @@ internal static class Program
         }
         catch (Exception exception)
         {
-            Console.Error.WriteLine(exception);
+            ConsoleLog.WriteError(exception);
             WpfMessageBox.Show(
                 $"Cannot start LuvLetter.\n\n{exception.GetBaseException().Message}",
                 "LuvLetter"

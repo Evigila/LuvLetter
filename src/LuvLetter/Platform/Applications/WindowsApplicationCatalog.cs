@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using LuvLetter.Core.Application;
 using LuvLetter.Core.Modules.Indexing;
+using LuvLetter.Platform.Diagnostics;
 using LuvLetter.Platform.Indexing;
 using Microsoft.Extensions.Hosting;
 
@@ -146,7 +147,7 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
             Log(eventName, mode == IndexRefreshMode.Force
                 ? "Force rebuild queued | catalog=applications | partition=all-pending-startup | cooldown=bypassed"
                 : "Reconciliation queued | catalog=applications | partition=all-pending-startup");
-        else
+        else if (ConsoleLog.IsEnabled)
             foreach (var sourceId in queued)
                 Log(eventName, mode == IndexRefreshMode.Force
                     ? $"Force rebuild queued | catalog=applications | partition={SafeMessage(sourceId)} | cooldown=bypassed"
@@ -339,7 +340,8 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
                 Log("periodic", $"Automatic index rebuild | catalog=applications | partition={SafeMessage(sourceId)} | result=queued");
             foreach (var refresh in refreshes)
             {
-                LogPartition("applications", refresh.PartitionId, refresh.Cause, 0, "refresh-started");
+                if (ConsoleLog.IsEnabled)
+                    LogPartition("applications", refresh.PartitionId, refresh.Cause, 0, "refresh-started");
                 TrackJob(RefreshPartitionAsync(refresh, cancellationToken));
             }
             if (refreshes.Count != 0) continue;
@@ -409,8 +411,9 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
             }
         }
         if (publication is not null) Publish(publication);
-        LogPartition("applications", partitionId, "cache", stopwatch.ElapsedMilliseconds,
-            "cache-" + SafeMessage(cacheResult));
+        if (ConsoleLog.IsEnabled)
+            LogPartition("applications", partitionId, "cache", stopwatch.ElapsedMilliseconds,
+                "cache-" + SafeMessage(cacheResult));
         Wake();
     }
 
@@ -496,8 +499,9 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
 
         if (unchanged)
         {
-            LogPartition("applications", ticket.PartitionId, ticket.Cause, stopwatch.ElapsedMilliseconds,
-                "refresh-unchanged");
+            if (ConsoleLog.IsEnabled)
+                LogPartition("applications", ticket.PartitionId, ticket.Cause, stopwatch.ElapsedMilliseconds,
+                    "refresh-unchanged");
             Wake();
             return;
         }
@@ -536,8 +540,9 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
                 partition.State = partition.Dirty ? "dirty" : "ready";
             }
         }
-        LogPartition("applications", ticket.PartitionId, ticket.Cause, stopwatch.ElapsedMilliseconds,
-            persisted ? "refresh-committed" : "refresh-committed-cache-unavailable", persistenceError);
+        if (ConsoleLog.IsEnabled)
+            LogPartition("applications", ticket.PartitionId, ticket.Cause, stopwatch.ElapsedMilliseconds,
+                persisted ? "refresh-committed" : "refresh-committed-cache-unavailable", persistenceError);
         Wake();
     }
 
@@ -561,8 +566,9 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
             partition.Freshness = partition.HasUsableSnapshot ? "stale" : "unavailable";
             partition.State = partition.HasUsableSnapshot ? "stale-retry" : "failed-retry";
         }
-        LogPartition("applications", ticket.PartitionId, ticket.Cause, durationMilliseconds,
-            "refresh-failed-previous-snapshot-retained", reason);
+        if (ConsoleLog.IsEnabled)
+            LogPartition("applications", ticket.PartitionId, ticket.Cause, durationMilliseconds,
+                "refresh-failed-previous-snapshot-retained", reason);
         Wake();
     }
 
@@ -816,16 +822,19 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
             }
         }
 
-        if (refusal == "cooldown")
-            Log(recovery ? "watcher-recovery" : "cooldown-refused", (recovery
-                    ? "Application watcher recovery cooldown refused" : "File changed but cooldown refused")
-                + $" | catalog=applications | partition={SafeMessage(partitionId)} | path={SafeMessage(path)} | remaining_seconds={remainingSeconds}");
-        else if (refusal == "capacity")
-            Log("capacity-refused", $"Application rebuild request refused | catalog=applications | partition={SafeMessage(partitionId)} | reason=cooldown-map-capacity | path={SafeMessage(path)} | capacity={MaximumCooldownEntries} | fallback=periodic-discovery");
-        else
-            Log(recovery ? "watcher-recovery" : "file-change", recovery
-                ? $"Application watcher recovery queued | partition={SafeMessage(partitionId)} | path={SafeMessage(path)} | minimum_wait_seconds={remainingSeconds}"
-                : $"File changed triggered | catalog=applications | partition={SafeMessage(partitionId)} | result={queued} | path={SafeMessage(path)} | minimum_wait_seconds={remainingSeconds}");
+        if (ConsoleLog.IsEnabled)
+        {
+            if (refusal == "cooldown")
+                Log(recovery ? "watcher-recovery" : "cooldown-refused", (recovery
+                        ? "Application watcher recovery cooldown refused" : "File changed but cooldown refused")
+                    + $" | catalog=applications | partition={SafeMessage(partitionId)} | path={SafeMessage(path)} | remaining_seconds={remainingSeconds}");
+            else if (refusal == "capacity")
+                Log("capacity-refused", $"Application rebuild request refused | catalog=applications | partition={SafeMessage(partitionId)} | reason=cooldown-map-capacity | path={SafeMessage(path)} | capacity={MaximumCooldownEntries} | fallback=periodic-discovery");
+            else
+                Log(recovery ? "watcher-recovery" : "file-change", recovery
+                    ? $"Application watcher recovery queued | partition={SafeMessage(partitionId)} | path={SafeMessage(path)} | minimum_wait_seconds={remainingSeconds}"
+                    : $"File changed triggered | catalog=applications | partition={SafeMessage(partitionId)} | result={queued} | path={SafeMessage(path)} | minimum_wait_seconds={remainingSeconds}");
+        }
         if (queued is not null) Wake();
     }
 
@@ -882,6 +891,7 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
     private void LogPartition(string eventName, string partitionId, string cause,
         long durationMilliseconds, string result, string? reason = null)
     {
+        if (!ConsoleLog.IsEnabled) return;
         string message;
         lock (gate)
         {
@@ -1065,8 +1075,18 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
     private static string SafeMessage(string value) =>
         new(value.Take(512).Select(character => char.IsControl(character) ? ' ' : character).ToArray());
 
-    private static void Log(string eventName, string message) =>
-        Console.WriteLine($"[Index][{eventName}] {message}");
+    private static void Log(string eventName, string message)
+    {
+        if (ConsoleLog.IsEnabled) ConsoleLog.WriteLine($"[Index][{eventName}] {message}");
+    }
+
+    private static void Log(
+        string eventName,
+        ref ConsoleLogInterpolatedStringHandler message)
+    {
+        if (ConsoleLog.IsEnabled)
+            ConsoleLog.WriteLine($"[Index][{eventName}] {message.GetFormattedText()}");
+    }
 
     private sealed class ApplicationPartition(
         ApplicationPartitionDefinition definition,

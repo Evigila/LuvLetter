@@ -133,9 +133,22 @@ try {
     $standardErrorPath = Join-Path $logDirectory "launch-$launchStamp.stderr.log"
 
     $executable = Join-Path $outputDirectory 'LuvLetter.exe'
-    $launchedProcess = Start-Process -FilePath $executable -WorkingDirectory $outputDirectory `
-        -WindowStyle Hidden -PassThru `
-        -RedirectStandardOutput $standardOutputPath -RedirectStandardError $standardErrorPath
+    $consoleLogVariable = 'LUVLETTER_CONSOLE_LOG'
+    $previousConsoleLog = [Environment]::GetEnvironmentVariable(
+        $consoleLogVariable, [EnvironmentVariableTarget]::Process)
+    try {
+        # Console logging is an explicit launcher capability. The GUI, Visual Studio,
+        # and packaged executable stay silent unless their environment opts in.
+        [Environment]::SetEnvironmentVariable(
+            $consoleLogVariable, '1', [EnvironmentVariableTarget]::Process)
+        $launchedProcess = Start-Process -FilePath $executable -WorkingDirectory $outputDirectory `
+            -WindowStyle Hidden -PassThru `
+            -RedirectStandardOutput $standardOutputPath -RedirectStandardError $standardErrorPath
+    }
+    finally {
+        [Environment]::SetEnvironmentVariable(
+            $consoleLogVariable, $previousConsoleLog, [EnvironmentVariableTarget]::Process)
+    }
     # Retain the OS handle; never rediscover a process by its name or a reused PID.
     $null = $launchedProcess.Handle
     $standardOutputReader = [System.IO.StreamReader]::new(

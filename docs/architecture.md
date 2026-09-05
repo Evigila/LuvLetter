@@ -649,9 +649,22 @@ bounds the wait for in-flight discovery to two seconds.
 
 ### Index console events
 
-The debug launcher colors stable `[Index][event]` tags, independently of whether a line
-arrives on stdout or stderr. Native log lines are synchronized, redirected text uses
-UTF-8, and persisted logs contain plain text. Untagged diagnostics also default to gray.
+Runtime console logging is disabled by default. Set `LUVLETTER_CONSOLE_LOG=1` before
+process startup to enable the managed and native console event path. The debug launcher
+sets this switch only while creating its application child, then restores its own process
+environment. Visual Studio and packaged launches therefore stay silent unless their
+launch environment explicitly opts in.
+
+When the switch is disabled, managed interpolated log messages skip formatting, the
+application does not create stdout/stderr pipes or asynchronous readers for the indexer,
+the Generic Host removes its default logging providers, and the native indexer does not
+construct ordinary console messages. This switch is independent from the persistent
+diagnostic log described below.
+
+When enabled, the debug launcher colors stable `[Index][event]` tags, independently of
+whether a line arrives on stdout or stderr. Native log lines are synchronized, redirected
+text uses UTF-8, and persisted logs contain plain text. Untagged diagnostics also default
+to gray.
 
 | Event | Message | Console color |
 | --- | --- | --- |
@@ -714,6 +727,10 @@ The BAT entry point also forwards arguments, for example
 process-local execution-policy bypass and pauses after the debug session so diagnostics remain
 visible. Both entry points resolve paths from the script directory and can be called
 from another working directory, including when the repository path contains spaces.
+
+The launcher enables `LUVLETTER_CONSOLE_LOG=1` only for the application process it starts.
+Direct GUI launches do not pay for ordinary console message formatting, indexer output
+pipes, or asynchronous output readers.
 
 Exit any running LuvLetter instance from the system tray before launching again. The
 script refuses to rebuild while a process named `LuvLetter` is running, stops if the

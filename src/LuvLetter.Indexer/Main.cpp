@@ -37,6 +37,13 @@ namespace protocol = luvletter::indexing::protocol;
 
 constexpr std::uint32_t kMaximumQueryResults = 256;
 
+bool ConsoleLoggingEnabled() noexcept {
+    wchar_t value[2]{};
+    const auto length = GetEnvironmentVariableW(L"LUVLETTER_CONSOLE_LOG", value,
+        static_cast<DWORD>(std::size(value)));
+    return length == 1 && value[0] == L'1';
+}
+
 void LogIndex(const std::string_view event, const std::string_view message) {
     std::osyncstream(std::cout) << "[Index][" << event << "] " << message << std::endl;
 }
@@ -397,9 +404,14 @@ int Run(const Options& options) {
     }
 
     if (diagnosticLog) diagnosticLog->Write(L"pipe_connected");
+    luvletter::indexer::PartitionedIndexStore::Log consoleLog;
+    if (ConsoleLoggingEnabled()) {
+        consoleLog = [](const std::string_view event, const std::string_view message) {
+            LogIndex(event, message);
+        };
+    }
     luvletter::indexer::PartitionedIndexStore store(options.dataDirectory,
-        [](const std::string_view event, const std::string_view message) { LogIndex(event, message); },
-        diagnosticLog.get(), options.diagnosticLogPath);
+        std::move(consoleLog), diagnosticLog.get(), options.diagnosticLogPath);
     bool handshakeComplete = false;
     while (ParentIsAlive(parentProcess.Get())) {
         std::vector<std::byte> headerBytes(protocol::kHeaderSize);

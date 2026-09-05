@@ -183,10 +183,11 @@ private:
             if (cause == WatcherRecovery && !force) {
                 const auto evaluation = partition->policy.EvaluateUnknown(Clock::now());
                 if (evaluation.decision != RebuildDecision::Accepted) {
-                    LogPartition(*partition, evaluation.decision == RebuildDecision::Cooldown
-                        ? "cooldown-refused" : "capacity-refused",
-                        "Watcher recovery refused | remaining_seconds=" +
-                            std::to_string(evaluation.remainingCooldownSeconds.count()));
+                    LogPartitionLazy(*partition, evaluation.decision == RebuildDecision::Cooldown
+                        ? "cooldown-refused" : "capacity-refused", [&] {
+                            return "Watcher recovery refused | remaining_seconds=" +
+                                std::to_string(evaluation.remainingCooldownSeconds.count());
+                        });
                     continue;
                 }
             }
@@ -389,18 +390,24 @@ private:
                     summary.owner->pending = true;
                     summary.owner->causes |= FileChange;
                     if (summary.owner->dirtySince == Clock::time_point{}) summary.owner->dirtySince = now;
-                    LogPartition(*summary.owner, "file-change", "File changed triggered | result=queued-or-coalesced | count=" +
-                        std::to_string(summary.accepted));
+                    LogPartitionLazy(*summary.owner, "file-change", [&] {
+                        return "File changed triggered | result=queued-or-coalesced | count=" +
+                            std::to_string(summary.accepted);
+                    });
                 }
-                if (summary.ignored != 0) LogPartition(*summary.owner, "ignored",
-                    "File changed but rebuild ignored | count=" + std::to_string(summary.ignored));
-                if (summary.cooldown != 0) LogPartition(*summary.owner, "cooldown-refused",
-                    "File changed but cooldown refused | count=" + std::to_string(summary.cooldown) +
-                    " | remaining_seconds=" + std::to_string(summary.remainingCooldown.count()));
-                if (summary.capacity != 0) LogPartition(*summary.owner, "capacity-refused",
-                    "File changed but cooldown capacity refused | count=" + std::to_string(summary.capacity));
-                if (summary.invalid != 0) LogPartition(*summary.owner, "invalid-path",
-                    "File changed but path was invalid | count=" + std::to_string(summary.invalid));
+                if (summary.ignored != 0) LogPartitionLazy(*summary.owner, "ignored", [&] {
+                    return "File changed but rebuild ignored | count=" + std::to_string(summary.ignored);
+                });
+                if (summary.cooldown != 0) LogPartitionLazy(*summary.owner, "cooldown-refused", [&] {
+                    return "File changed but cooldown refused | count=" + std::to_string(summary.cooldown) +
+                        " | remaining_seconds=" + std::to_string(summary.remainingCooldown.count());
+                });
+                if (summary.capacity != 0) LogPartitionLazy(*summary.owner, "capacity-refused", [&] {
+                    return "File changed but cooldown capacity refused | count=" + std::to_string(summary.capacity);
+                });
+                if (summary.invalid != 0) LogPartitionLazy(*summary.owner, "invalid-path", [&] {
+                    return "File changed but path was invalid | count=" + std::to_string(summary.invalid);
+                });
             }
             if (published) UpdateStatusLocked();
         }
@@ -472,8 +479,11 @@ private:
         partition.journal = std::move(journal);
         partition.usable = true;
         ++statusGeneration_;
-        LogPartition(partition, "recovery", "Cache and complete journal batches published | journal_status=" +
-            std::to_string(static_cast<int>(recoveryStatus)) + " | batches=" + std::to_string(partition.batches.size()));
+        LogPartitionLazy(partition, "recovery", [&] {
+            return "Cache and complete journal batches published | journal_status=" +
+                std::to_string(static_cast<int>(recoveryStatus)) + " | batches=" +
+                std::to_string(partition.batches.size());
+        });
     }
 
     bool ActivateSnapshot(Partition& partition,
@@ -597,7 +607,9 @@ private:
             const auto started = Clock::now();
             lastProgressTick_.store(GetTickCount64());
             lastStallLogTick_.store(0);
-            LogPartition(*selected, compact ? "compaction" : "rebuild", "Partition maintenance started | causes=" + std::to_string(causes));
+            LogPartitionLazy(*selected, compact ? "compaction" : "rebuild", [&] {
+                return "Partition maintenance started | causes=" + std::to_string(causes);
+            });
             std::shared_ptr<const luvletter::indexing::IndexSnapshot> rebuilt;
             bool unavailable = false;
             std::uint64_t lastLog = 0;
@@ -614,11 +626,12 @@ private:
                         if (cancelBuild_.load()) return;
                         unavailable |= progress.rootUnavailable;
                         if (progress.rootUnavailable) {
-                            LogPartition(*selected, "root-unavailable",
-                                "Configured root is unavailable | path=" +
+                            LogPartitionLazy(*selected, "root-unavailable", [&] {
+                                return "Configured root is unavailable | path=" +
                                 luvletter::indexing::WideToUtf8(progress.currentPath) +
                                 " | error=" + std::to_string(progress.errorCode) +
-                                " | previous-snapshot-and-delta=retained");
+                                " | previous-snapshot-and-delta=retained";
+                            });
                         }
                         const auto tick = GetTickCount64();
                         lastProgressTick_.store(tick);
@@ -718,10 +731,23 @@ private:
         }
     }
 
-    void LogPartition(const Partition& partition, std::string_view event, const std::string& message) const {
-        log_(event, "partition=" + partition.descriptor.id + " | " + message);
+    [[nodiscard]] bool LoggingEnabled() const noexcept {
+        return static_cast<bool>(log_) || diagnostics_ != nullptr;
+    }
+
+    void LogPartition(const Partition& partition, std::string_view event, std::string_view message) const {
+        if (!LoggingEnabled()) return;
+        auto detail = std::string("partition=") + partition.descriptor.id + " | ";
+        detail.append(message);
+        if (log_) log_(event, detail);
         if (diagnostics_) diagnostics_->Write(luvletter::indexing::Utf8ToWide(event),
-            luvletter::indexing::Utf8ToWide("partition=" + partition.descriptor.id + " | " + message));
+            luvletter::indexing::Utf8ToWide(detail));
+    }
+
+    template<typename MessageFactory>
+    void LogPartitionLazy(const Partition& partition, std::string_view event, MessageFactory&& createMessage) const {
+        if (!LoggingEnabled()) return;
+        LogPartition(partition, event, std::forward<MessageFactory>(createMessage)());
     }
 
     const std::filesystem::path dataDirectory_;
