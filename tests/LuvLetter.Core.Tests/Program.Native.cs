@@ -42,8 +42,8 @@ internal static partial class Program
         AssertNativeLayout(
             assembly,
             "LuvLetter.Core.NativeShell.NativeInputCandidate",
-            40,
-            ["Token", "Kind", "IconKind", "PrimaryText", "SecondaryText", "IconSource"]);
+            48,
+            ["Token", "Kind", "IconKind", "Actions", "PrimaryText", "SecondaryText", "IconSource"]);
 
         return Task.CompletedTask;
     }
@@ -145,7 +145,7 @@ internal static partial class Program
         var service = new NativeShellService(nativeApi);
         try
         {
-            Assert.Equal(8U, nativeApi.AbiVersion);
+            Assert.Equal(10U, nativeApi.AbiVersion);
             Assert.Equal(1, nativeApi.CompatibilityChecks);
             Assert.NotNull(nativeApi.InputSubmittedCallback);
             Assert.NotNull(nativeApi.InputChangedCallback);
@@ -286,6 +286,7 @@ internal static partial class Program
             Assert.Equal(7UL, nativeApi.InputCandidates[0].Token);
             Assert.Equal(CandidateKind.File, nativeApi.InputCandidates[0].Kind);
             Assert.Equal(CandidateIconKind.Document, nativeApi.InputCandidates[0].IconKind);
+            Assert.Equal(CandidateActions.Open, nativeApi.InputCandidates[0].Actions);
             Assert.Equal("bbb.md", nativeApi.InputCandidates[0].Primary);
             Assert.Equal(@"C:\aaa\bbb.md", nativeApi.InputCandidates[0].IconSource);
             Assert.Equal("电源", nativeApi.InputCandidates[1].Primary);
@@ -293,6 +294,12 @@ internal static partial class Program
             Assert.True(
                 nativeApi.InputCandidateTextPointersWerePacked,
                 "Candidate text pointers must reference one contiguous UTF-16 payload.");
+
+            service.ReplaceCommandInput("/luv ");
+            Assert.Equal(1, nativeApi.ReplacedInputTexts.Count);
+            Assert.Equal("/luv ", nativeApi.ReplacedInputTexts[0].Text);
+            Assert.Equal("/luv ".Length, nativeApi.ReplacedInputTexts[0].Length);
+            Assert.Equal((int)InputMode.Command, nativeApi.ReplacedInputTexts[0].InputMode);
 
             var longSecondaryText = new string(
                 'x',

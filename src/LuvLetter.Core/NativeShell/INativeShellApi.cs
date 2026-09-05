@@ -16,6 +16,8 @@ internal interface INativeShellApi
 
     int SetInputCandidates(NativeInputCandidate[] items, int count, ulong revision);
 
+    int ReplaceInputBoxText(string text, int length, int inputMode);
+
     int ShowInputBox();
 
     int HideInputBox();

@@ -29,7 +29,9 @@ public static class PluginLoader
             warnings,
             disposedPlugins);
         var collectedPlugins = new List<CollectedPlugin>(plugins.Count);
-        var plannedCommands = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var plannedRoutes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var plannedExecutables = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var plannedLinks = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var plannedQuickActions = new HashSet<string>(StringComparer.Ordinal);
 
         try
@@ -56,7 +58,9 @@ public static class PluginLoader
                         batch,
                         commandRegistrar,
                         quickActionRegistrar,
-                        plannedCommands,
+                        plannedRoutes,
+                        plannedExecutables,
+                        plannedLinks,
                         plannedQuickActions,
                         out var validationError))
                 {
@@ -65,7 +69,12 @@ public static class PluginLoader
                     continue;
                 }
 
-                Reserve(batch, plannedCommands, plannedQuickActions);
+                Reserve(
+                    batch,
+                    plannedRoutes,
+                    plannedExecutables,
+                    plannedLinks,
+                    plannedQuickActions);
                 collectedPlugins.Add(new(plugin.Id, plugin.Instance, batch));
             }
 
@@ -276,19 +285,71 @@ public static class PluginLoader
         PluginRegistrationContext.Batch batch,
         ICommandRegistrar commandRegistrar,
         IQuickActionRegistrar quickActionRegistrar,
-        HashSet<string> plannedCommands,
+        HashSet<string> plannedRoutes,
+        HashSet<string> plannedExecutables,
+        HashSet<string> plannedLinks,
         HashSet<string> plannedQuickActions,
         out string error)
     {
+        var availableRoutes = new HashSet<string>(plannedRoutes, StringComparer.OrdinalIgnoreCase);
+        var availableExecutables = new HashSet<string>(
+            plannedExecutables,
+            StringComparer.OrdinalIgnoreCase);
+        var availableLinks = new HashSet<string>(plannedLinks, StringComparer.OrdinalIgnoreCase);
         foreach (var command in batch.Commands)
         {
+            var commandKey = CommandKey(command.Domain, command.Path);
             if (command.Mode == CommandRegistrationMode.RejectDuplicate
-                && (plannedCommands.Contains(command.Name)
-                    || commandRegistrar.IsRegistered(command.Name)))
+                && (availableRoutes.Contains(commandKey)
+                    || commandRegistrar.IsRegistered(command.Domain, command.Path)))
             {
-                error = $"command '{command.Name}' is already registered.";
+                error = $"command '{command.Domain} {command.Path}' is already registered.";
                 return false;
             }
+            availableRoutes.Add(commandKey);
+            availableExecutables.Add(commandKey);
+        }
+
+        foreach (var alias in batch.CommandAliases)
+        {
+            var sourceKey = CommandKey(alias.Domain, alias.Path);
+            var targetKey = CommandKey(alias.TargetDomain, alias.TargetPath);
+            if (availableRoutes.Contains(sourceKey)
+                || commandRegistrar.IsRegistered(alias.Domain, alias.Path))
+            {
+                error = $"command alias '{alias.Domain} {alias.Path}' is already registered.";
+                return false;
+            }
+            if (!availableExecutables.Contains(targetKey)
+                && !commandRegistrar.IsExecutable(alias.TargetDomain, alias.TargetPath))
+            {
+                error = $"command alias target '{alias.TargetDomain} {alias.TargetPath}' is not executable.";
+                return false;
+            }
+            availableRoutes.Add(sourceKey);
+            availableExecutables.Add(sourceKey);
+        }
+
+        foreach (var link in batch.CommandLinks)
+        {
+            var sourceKey = CommandKey(link.Domain, link.Path);
+            var targetKey = CommandKey(link.TargetDomain, link.TargetPath);
+            if (availableRoutes.Contains(sourceKey)
+                || commandRegistrar.IsRegistered(link.Domain, link.Path)
+                || HasDescendant(availableRoutes, sourceKey)
+                || HasLinkAncestor(availableLinks, sourceKey))
+            {
+                error = $"command link source '{link.Domain} {link.Path}' conflicts with another route.";
+                return false;
+            }
+            if (!HasPath(availableRoutes, targetKey)
+                && !commandRegistrar.HasPath(link.TargetDomain, link.TargetPath))
+            {
+                error = $"command link target '{link.TargetDomain} {link.TargetPath}' does not exist.";
+                return false;
+            }
+            availableRoutes.Add(sourceKey);
+            availableLinks.Add(sourceKey);
         }
 
         foreach (var quickAction in batch.QuickActions)
@@ -308,12 +369,31 @@ public static class PluginLoader
 
     private static void Reserve(
         PluginRegistrationContext.Batch batch,
-        HashSet<string> plannedCommands,
+        HashSet<string> plannedRoutes,
+        HashSet<string> plannedExecutables,
+        HashSet<string> plannedLinks,
         HashSet<string> plannedQuickActions)
     {
         foreach (var command in batch.Commands)
         {
-            plannedCommands.Add(command.Name);
+            var key = CommandKey(command.Domain, command.Path);
+            plannedRoutes.Add(key);
+            plannedExecutables.Add(key);
+            plannedLinks.Remove(key);
+        }
+
+        foreach (var alias in batch.CommandAliases)
+        {
+            var key = CommandKey(alias.Domain, alias.Path);
+            plannedRoutes.Add(key);
+            plannedExecutables.Add(key);
+        }
+
+        foreach (var link in batch.CommandLinks)
+        {
+            var key = CommandKey(link.Domain, link.Path);
+            plannedRoutes.Add(key);
+            plannedLinks.Add(key);
         }
 
         foreach (var quickAction in batch.QuickActions)
@@ -331,10 +411,43 @@ public static class PluginLoader
         {
             foreach (var command in plugin.Batch.Commands)
             {
-                if (!commandRegistrar.Register(command.Name, command.Handler, command.Mode))
+                if (!commandRegistrar.Register(
+                        command.Domain,
+                        command.Path,
+                        command.Handler,
+                        command.Mode))
                 {
                     throw new InvalidOperationException(
-                        $"Command '{command.Name}' from plugin '{plugin.Id}' was rejected during commit.");
+                        $"Command '{command.Domain} {command.Path}' from plugin '{plugin.Id}' "
+                        + "was rejected during commit.");
+                }
+            }
+
+            foreach (var alias in plugin.Batch.CommandAliases)
+            {
+                if (!commandRegistrar.RegisterAlias(
+                        alias.Domain,
+                        alias.Path,
+                        alias.TargetDomain,
+                        alias.TargetPath))
+                {
+                    throw new InvalidOperationException(
+                        $"Command alias '{alias.Domain} {alias.Path}' from plugin '{plugin.Id}' "
+                        + "was rejected during commit.");
+                }
+            }
+
+            foreach (var link in plugin.Batch.CommandLinks)
+            {
+                if (!commandRegistrar.RegisterLink(
+                        link.Domain,
+                        link.Path,
+                        link.TargetDomain,
+                        link.TargetPath))
+                {
+                    throw new InvalidOperationException(
+                        $"Command link '{link.Domain} {link.Path}' from plugin '{plugin.Id}' "
+                        + "was rejected during commit.");
                 }
             }
 
@@ -349,6 +462,18 @@ public static class PluginLoader
             }
         }
     }
+
+    private static string CommandKey(string domain, string path) => $"{domain}\0{path}";
+
+    private static bool HasPath(HashSet<string> routes, string targetKey) =>
+        routes.Contains(targetKey)
+        || routes.Any(route => route.StartsWith(targetKey + " ", StringComparison.OrdinalIgnoreCase));
+
+    private static bool HasDescendant(HashSet<string> routes, string sourceKey) =>
+        routes.Any(route => route.StartsWith(sourceKey + " ", StringComparison.OrdinalIgnoreCase));
+
+    private static bool HasLinkAncestor(HashSet<string> links, string sourceKey) =>
+        links.Any(link => sourceKey.StartsWith(link + " ", StringComparison.OrdinalIgnoreCase));
 
     private static void DisposeAll(
         IReadOnlyList<DiscoveredPlugin> plugins,

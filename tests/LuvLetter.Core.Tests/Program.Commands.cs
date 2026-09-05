@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Collections.Concurrent;
 using ArkheideSystem;
 using LuvLetter.Core.Commands;
 
@@ -12,6 +13,9 @@ internal static partial class Program
         Assert.Equal("index.refresh now", CommandInputSyntax.RemoveModePrefix(" /index.refresh now "));
         Assert.Equal("/settings", CommandInputSyntax.RemoveModePrefix("//settings"));
         Assert.Equal(string.Empty, CommandInputSyntax.RemoveModePrefix("/"));
+        Assert.Equal(
+            "luv ",
+            CommandInputSyntax.RemoveModePrefixForCompletion(" /luv "));
 
         using var dispatcher = new CommandDispatcher(capacity: 2);
         using var callbackStarted = new ManualResetEventSlim();
@@ -25,6 +29,7 @@ internal static partial class Program
 
         Assert.True(
             dispatcher.Register(
+                "tool",
                 "echo",
                 value =>
                 {
@@ -35,9 +40,16 @@ internal static partial class Program
                     Interlocked.Increment(ref completedCount);
                     callbackCompleted.Set();
                 }));
+        Assert.False(dispatcher.Register("tool", "echo", _ => { }));
+        Assert.True(dispatcher.Register("other", "echo", _ => { }));
+        Assert.SequenceEqual(["other", "tool"], dispatcher.RegisteredDomainsSnapshot());
+        Assert.SequenceEqual(["echo"], dispatcher.RegisteredPathsSnapshot("tool"));
+        Assert.True(dispatcher.IsRegisteredDomainInvocation("TOOL anything"));
+        Assert.True(dispatcher.IsRegisteredInvocation("tool ECHO value"));
+        Assert.False(dispatcher.IsRegisteredInvocation("tool missing"));
 
         var stopwatch = Stopwatch.StartNew();
-        var result = dispatcher.Dispatch("  EcHo\t alpha beta  ");
+        var result = dispatcher.Dispatch("  tool EcHo\t alpha beta  ");
         stopwatch.Stop();
 
         try
@@ -55,19 +67,22 @@ internal static partial class Program
                 "The command handler ran inline on the dispatching thread.");
 
             var captured = Assert.NotNull(invocation);
-            Assert.Equal("EcHo\t alpha beta", captured.Text);
-            Assert.Equal("EcHo", captured.CommandName);
+            Assert.Equal("tool EcHo\t alpha beta", captured.OriginalText);
+            Assert.Equal("tool echo alpha beta", captured.Text);
+            Assert.Equal("tool", captured.Domain);
+            Assert.Equal("echo", captured.InvokedPath);
+            Assert.Equal("echo", captured.CommandPath);
             Assert.Equal("alpha beta", captured.Arguments);
 
             Assert.Equal(
                 CommandDispatchResult.Accepted,
-                dispatcher.Dispatch("echo queued-one"));
+                dispatcher.Dispatch("tool echo queued-one"));
             Assert.Equal(
                 CommandDispatchResult.Accepted,
-                dispatcher.Dispatch("echo queued-two"));
+                dispatcher.Dispatch("tool echo queued-two"));
             Assert.Equal(
                 CommandDispatchResult.QueueFull,
-                dispatcher.Dispatch("echo rejected"));
+                dispatcher.Dispatch("tool echo rejected"));
         }
         finally
         {
@@ -85,11 +100,14 @@ internal static partial class Program
         Assert.Equal(
             CommandDispatchResult.RejectedEmpty,
             dispatcher.Dispatch(" \t\r\n "));
+        Assert.Equal(
+            CommandDispatchResult.RejectedIncomplete,
+            dispatcher.Dispatch("tool"));
 
         dispatcher.Dispose();
         Assert.Equal(
             CommandDispatchResult.Disposed,
-            dispatcher.Dispatch("echo after-dispose"));
+            dispatcher.Dispatch("tool echo after-dispose"));
 
         using var notificationDispatcher = new CommandDispatcher();
         using var failedRaised = new ManualResetEventSlim();
@@ -116,24 +134,96 @@ internal static partial class Program
 
         Assert.True(
             notificationDispatcher.Register(
+                "tool",
                 "fail",
                 _ => throw new InvalidOperationException("simulated command failure")));
         Assert.Equal(
             CommandDispatchResult.Accepted,
-            notificationDispatcher.Dispatch("fail now"));
+            notificationDispatcher.Dispatch("tool fail now"));
         Assert.True(
             failedRaised.Wait(TimeSpan.FromSeconds(5)),
             "A throwing command did not publish its failure.");
-        Assert.Equal("fail", Assert.NotNull(failedInvocation).CommandName);
+        Assert.Equal("fail", Assert.NotNull(failedInvocation).CommandPath);
         Assert.Equal("simulated command failure", Assert.NotNull(capturedException).Message);
 
         Assert.Equal(
             CommandDispatchResult.Accepted,
-            notificationDispatcher.Dispatch("missing argument"));
+            notificationDispatcher.Dispatch("tool missing argument"));
         Assert.True(
             unhandledRaised.Wait(TimeSpan.FromSeconds(5)),
             "The queue stopped after an event subscriber threw.");
-        Assert.Equal("missing", Assert.NotNull(unhandledInvocation).CommandName);
+        var capturedUnhandled = Assert.NotNull(unhandledInvocation);
+        Assert.Equal("missing argument", capturedUnhandled.CommandPath);
+        Assert.Equal("tool", capturedUnhandled.Domain);
+
+        using var routeDispatcher = new CommandDispatcher();
+        var routed = new ConcurrentQueue<CommandInvocation>();
+        using var routedCompleted = new CountdownEvent(3);
+        void Capture(CommandInvocation value)
+        {
+            routed.Enqueue(value);
+            routedCompleted.Signal();
+        }
+
+        Assert.True(routeDispatcher.Register("tool", "index refresh", Capture));
+        Assert.True(routeDispatcher.Register("tool", "branch child", Capture));
+        Assert.True(routeDispatcher.RegisterAlias(
+            "tool", "rebuild", "tool", "index refresh"));
+        Assert.True(routeDispatcher.RegisterLink(
+            "tool", "refreshindex", "tool", "index refresh"));
+        Assert.True(routeDispatcher.RegisterLink(
+            "tool", "short", "tool", "branch"));
+        Assert.False(routeDispatcher.RegisterLink(
+            "tool", "dangling", "tool", "absent"));
+        Assert.True(routeDispatcher.IsExecutable("tool", "rebuild"));
+        Assert.True(routeDispatcher.IsExecutable("tool", "refreshindex"));
+        Assert.True(routeDispatcher.HasPath("tool", "branch"));
+
+        Assert.Equal(
+            CommandDispatchResult.Accepted,
+            routeDispatcher.Dispatch("tool rebuild -f"));
+        Assert.Equal(
+            CommandDispatchResult.Accepted,
+            routeDispatcher.Dispatch("tool refreshindex --force"));
+        Assert.Equal(
+            CommandDispatchResult.Accepted,
+            routeDispatcher.Dispatch("tool short child value"));
+        Assert.True(
+            routedCompleted.Wait(TimeSpan.FromSeconds(5)),
+            "Alias and link routes did not complete.");
+        var routedItems = routed.ToArray();
+        Assert.SequenceEqual(
+            ["index refresh", "index refresh", "branch child"],
+            routedItems.Select(static item => item.CommandPath));
+        Assert.SequenceEqual(
+            ["rebuild", "refreshindex", "short"],
+            routedItems.Select(static item => item.InvokedPath));
+        Assert.SequenceEqual(
+            ["-f", "--force", "value"],
+            routedItems.Select(static item => item.Arguments));
+
+        var roots = routeDispatcher.Suggest("tool ", 10);
+        Assert.SequenceEqual(
+            ["branch", "index", "rebuild", "refreshindex", "short"],
+            roots.Select(static suggestion => suggestion.Label));
+        var index = routeDispatcher.Suggest("tool i", 10).Single();
+        Assert.Equal("index", index.Label);
+        Assert.False(index.CanExecute);
+        Assert.Equal("/tool index ", index.CompletionText);
+        var refresh = routeDispatcher.Suggest("tool index ", 10).Single();
+        Assert.Equal("refresh", refresh.Label);
+        Assert.True(refresh.CanExecute);
+        var linkedChild = routeDispatcher.Suggest("tool short ", 10).Single();
+        Assert.Equal("child", linkedChild.Label);
+        Assert.Equal("tool short child", linkedChild.ExecutionText);
+
+        using var cycleDispatcher = new CommandDispatcher();
+        Assert.True(cycleDispatcher.Register("tool", "target", _ => { }));
+        Assert.True(cycleDispatcher.RegisterLink("tool", "alias", "tool", "target"));
+        Assert.True(cycleDispatcher.Unregister("tool", "target"));
+        Assert.False(
+            cycleDispatcher.RegisterLink("tool", "target", "tool", "alias"),
+            "A command-link cycle must be rejected even after its original target is removed.");
 
         return Task.CompletedTask;
     }

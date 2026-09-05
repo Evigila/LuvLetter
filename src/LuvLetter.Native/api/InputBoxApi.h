@@ -12,7 +12,8 @@
 
 extern "C"
 {
-	inline constexpr uint32_t LUVLETTER_NATIVE_ABI_VERSION = 8;
+	inline constexpr uint32_t LUVLETTER_NATIVE_ABI_VERSION = 10;
+	inline constexpr int32_t LUVLETTER_NATIVE_MAX_INPUT_TEXT_LENGTH = 32768;
 	inline constexpr int32_t LUVLETTER_NATIVE_MAX_INPUT_CANDIDATES = 32;
 	inline constexpr uint32_t LUVLETTER_NATIVE_MAX_CANDIDATE_PRIMARY_LENGTH = 512;
 	inline constexpr uint32_t LUVLETTER_NATIVE_MAX_CANDIDATE_SECONDARY_LENGTH = 2048;
@@ -36,6 +37,15 @@ extern "C"
 	{
 		LuvLetterCandidateActionOpen = 0,
 		LuvLetterCandidateActionReveal = 1,
+		LuvLetterCandidateActionComplete = 2,
+	};
+
+	enum LuvLetterCandidateActions : int32_t
+	{
+		LuvLetterCandidateActionsNone = 0,
+		LuvLetterCandidateActionsOpen = 1 << 0,
+		LuvLetterCandidateActionsReveal = 1 << 1,
+		LuvLetterCandidateActionsComplete = 1 << 2,
 	};
 
 	enum LuvLetterCandidateIconKind : int32_t
@@ -120,6 +130,7 @@ extern "C"
 		uint64_t token;
 		int32_t kind;
 		int32_t iconKind;
+		int32_t actions;
 		const wchar_t* primaryText;
 		const wchar_t* secondaryText;
 		const wchar_t* iconSource;
@@ -160,6 +171,10 @@ extern "C"
 		const LuvLetterInputCandidate* items,
 		int32_t count,
 		uint64_t revision);
+	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ReplaceInputBoxText(
+		const wchar_t* text,
+		int32_t length,
+		int32_t inputMode);
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ShowInputBox();
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL HideInputBox();
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ToggleInputBox();
@@ -200,4 +215,4 @@ extern "C"
 static_assert(sizeof(LuvLetterInputBoxConfig) == 104);
 static_assert(sizeof(LuvLetterFeatureWindowConfig) == 88);
 static_assert(sizeof(LuvLetterFeatureItem) == 16);
-static_assert(sizeof(LuvLetterInputCandidate) == 40);
+static_assert(sizeof(LuvLetterInputCandidate) == 48);

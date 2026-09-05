@@ -23,9 +23,11 @@ internal static partial class Program
 
         using var commands = new CommandDispatcher();
         using var commandInvoked = new ManualResetEventSlim();
-        Assert.True(commands.Register("build", _ => commandInvoked.Set()));
-        Assert.True(commands.Register("beta", _ => { }));
-        Assert.True(commands.Register("zeta", _ => { }));
+        Assert.True(commands.Register("luv", "build", _ => commandInvoked.Set()));
+        Assert.True(commands.Register("luv", "beta", _ => { }));
+        Assert.True(commands.Register("luv", "index refresh", _ => { }));
+        Assert.True(commands.RegisterLink("luv", "refreshindex", "luv", "index refresh"));
+        Assert.True(commands.Register("luv", "zeta", _ => { }));
 
         var nativeShell = new FakeNativeShell();
         var fileIndex = new FakeFileIndexClient();
@@ -103,25 +105,22 @@ internal static partial class Program
                     TimeSpan.FromSeconds(2)),
                 "General input did not produce candidates.");
             var general = nativeShell.CandidateSnapshots.Last(item => item.Revision == 1).Candidates;
-            Assert.Equal(6, general.Count);
+            Assert.Equal(5, general.Count);
             Assert.SequenceEqual(
                 [
                     CandidateKind.File,
                     CandidateKind.File,
                     CandidateKind.File,
                     CandidateKind.File,
-                    CandidateKind.Command,
                     CandidateKind.GlobalSearch,
                 ],
                 general.Select(static item => item.Kind));
-            Assert.Equal("beta", general[4].PrimaryText);
             Assert.SequenceEqual(
                 [
                     CandidateIconKind.Document,
                     CandidateIconKind.Folder,
                     CandidateIconKind.Image,
                     CandidateIconKind.Archive,
-                    CandidateIconKind.Command,
                     CandidateIconKind.Search,
                 ],
                 general.Select(static item => item.IconKind));
@@ -140,40 +139,103 @@ internal static partial class Program
                 nativeShell.CandidateSnapshots.Last(item => item.Revision == 2).Candidates.Count);
             Assert.Equal(1, fileIndex.Queries.Count);
 
-            nativeShell.RaiseInputChanged("/b", InputMode.Command, revision: 3);
+            nativeShell.RaiseInputChanged(string.Empty, InputMode.Command, revision: 3);
             Assert.True(
                 SpinWait.SpinUntil(
                     () => nativeShell.CandidateSnapshots.Any(item => item.Revision == 3),
                     TimeSpan.FromSeconds(2)),
-                "Command input did not produce command candidates.");
-            var commandOnly = nativeShell.CandidateSnapshots.Last(item => item.Revision == 3).Candidates;
+                "Empty Command input did not produce command-domain candidates.");
+            var domains = nativeShell.CandidateSnapshots.Last(item => item.Revision == 3).Candidates;
+            Assert.SequenceEqual(["luv"], domains.Select(static item => item.PrimaryText));
+            Assert.Equal(CandidateActions.Complete, domains.Single().Actions);
+            nativeShell.RaiseCandidateActivated(
+                domains.Single().Token,
+                CandidateAction.Complete);
+            Assert.SequenceEqual(["/luv "], nativeShell.ReplacedCommandInputs);
+            Assert.Equal(0, nativeShell.HideCommandInputCalls);
+
+            nativeShell.RaiseInputChanged("/luv ", InputMode.Command, revision: 4);
+            Assert.True(
+                SpinWait.SpinUntil(
+                    () => nativeShell.CandidateSnapshots.Any(item => item.Revision == 4),
+                    TimeSpan.FromSeconds(2)),
+                "A completed domain did not produce its first command-path segments.");
+            var commandRoots = nativeShell.CandidateSnapshots.Last(item => item.Revision == 4).Candidates;
+            Assert.SequenceEqual(
+                ["beta", "build", "index", "refreshindex", "zeta"],
+                commandRoots.Select(static item => item.PrimaryText));
+            var index = commandRoots.Single(item => item.PrimaryText == "index");
+            Assert.Equal(CandidateActions.Complete, index.Actions);
+            Assert.True(commandRoots.Single(item => item.PrimaryText == "refreshindex")
+                .SecondaryText.StartsWith("Link", StringComparison.Ordinal));
+            nativeShell.RaiseCandidateActivated(index.Token, CandidateAction.Complete);
+            Assert.SequenceEqual(["/luv ", "/luv index "], nativeShell.ReplacedCommandInputs);
+
+            nativeShell.RaiseInputChanged("/luv index ", InputMode.Command, revision: 5);
+            Assert.True(
+                SpinWait.SpinUntil(
+                    () => nativeShell.CandidateSnapshots.Any(item => item.Revision == 5),
+                    TimeSpan.FromSeconds(2)),
+                "A command-path branch did not produce its child segment.");
+            var refresh = nativeShell.CandidateSnapshots.Last(item => item.Revision == 5)
+                .Candidates.Single();
+            Assert.Equal("refresh", refresh.PrimaryText);
+            Assert.Equal(
+                CandidateActions.Open | CandidateActions.Complete,
+                refresh.Actions);
+            nativeShell.RaiseCandidateActivated(refresh.Token, CandidateAction.Complete);
+            Assert.SequenceEqual(
+                ["/luv ", "/luv index ", "/luv index refresh "],
+                nativeShell.ReplacedCommandInputs);
+
+            nativeShell.RaiseInputChanged("/luv b", InputMode.Command, revision: 6);
+            Assert.True(
+                SpinWait.SpinUntil(
+                    () => nativeShell.CandidateSnapshots.Any(item => item.Revision == 6),
+                    TimeSpan.FromSeconds(2)),
+                "A registered command domain did not produce child commands.");
+            var commandOnly = nativeShell.CandidateSnapshots.Last(item => item.Revision == 6).Candidates;
             Assert.SequenceEqual(
                 [CandidateKind.Command, CandidateKind.Command],
                 commandOnly.Select(static item => item.Kind));
             Assert.SequenceEqual(
                 ["beta", "build"],
                 commandOnly.Select(static item => item.PrimaryText));
+            Assert.True(commandOnly.All(item => item.Actions
+                == (CandidateActions.Open | CandidateActions.Complete)));
             Assert.Equal(1, fileIndex.Queries.Count);
+            var build = commandOnly.Single(item => item.PrimaryText == "build");
+            nativeShell.RaiseCandidateActivated(build.Token, CandidateAction.Complete);
+            Assert.SequenceEqual(
+                ["/luv ", "/luv index ", "/luv index refresh ", "/luv build "],
+                nativeShell.ReplacedCommandInputs);
+            Assert.False(commandInvoked.IsSet, "Tab completion must not execute a command.");
+            Assert.Equal(0, nativeShell.HideCommandInputCalls);
+            nativeShell.RaiseCandidateActivated(build.Token, CandidateAction.Open);
+            Assert.True(
+                commandInvoked.Wait(TimeSpan.FromSeconds(2)),
+                "The selected scoped command candidate did not dispatch.");
+            Assert.Equal(1, nativeShell.HideCommandInputCalls);
 
             var delayed = new TaskCompletionSource<IReadOnlyList<FileIndexMatch>>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
             fileIndex.SetQuery((_, _, _, _) => new ValueTask<IReadOnlyList<FileIndexMatch>>(delayed.Task));
-            nativeShell.RaiseInputChanged("old", InputMode.General, revision: 4);
+            nativeShell.RaiseInputChanged("old", InputMode.General, revision: 7);
             Assert.True(
                 SpinWait.SpinUntil(
-                    () => fileIndex.Queries.Any(item => item.Revision == 4),
+                    () => fileIndex.Queries.Any(item => item.Revision == 7),
                     TimeSpan.FromSeconds(2)),
                 "The delayed revision did not start querying.");
-            nativeShell.RaiseInputChanged("new", InputMode.Ask, revision: 5);
+            nativeShell.RaiseInputChanged("new", InputMode.Ask, revision: 8);
             delayed.SetResult(
                 [new(9, FileSystemEntryKind.File, "old.txt", @"C:\old.txt")]);
             Assert.True(
                 SpinWait.SpinUntil(
-                    () => nativeShell.CandidateSnapshots.Any(item => item.Revision == 5),
+                    () => nativeShell.CandidateSnapshots.Any(item => item.Revision == 8),
                     TimeSpan.FromSeconds(2)),
                 "The latest revision was not published.");
             Assert.False(
-                nativeShell.CandidateSnapshots.Any(item => item.Revision == 4),
+                nativeShell.CandidateSnapshots.Any(item => item.Revision == 7),
                 "A stale file query overwrote the latest editor revision.");
 
             fileIndex.SetQuery(static (_, _, _, _) =>
@@ -184,35 +246,33 @@ internal static partial class Program
                     ]));
             // A changed source must invalidate the same-query cache before the new edit.
             fileIndex.RaiseIndexChanged();
-            nativeShell.RaiseInputChanged("b", InputMode.General, revision: 6);
+            nativeShell.RaiseInputChanged("b", InputMode.General, revision: 9);
             Assert.True(
                 SpinWait.SpinUntil(
-                    () => nativeShell.CandidateSnapshots.Any(item => item.Revision == 6),
+                    () => nativeShell.CandidateSnapshots.Any(item => item.Revision == 9),
                     TimeSpan.FromSeconds(2)),
                 "Activation candidates were not published.");
-            var revisionSixQueryCount = fileIndex.Queries.Count(
-                static item => item.Revision == 6);
+            var currentRevisionQueryCount = fileIndex.Queries.Count(
+                static item => item.Revision == 9);
             var initialRevisionSixCandidates = nativeShell.CandidateSnapshots
-                .Last(item => item.Revision == 6).Candidates;
+                .Last(item => item.Revision == 9).Candidates;
             fileIndex.RaiseIndexChanged();
             Assert.True(
                 SpinWait.SpinUntil(
-                    () => fileIndex.Queries.Count(item => item.Revision == 6)
-                        > revisionSixQueryCount,
+                    () => fileIndex.Queries.Count(item => item.Revision == 9)
+                        > currentRevisionQueryCount,
                     TimeSpan.FromSeconds(2)),
                 "An index generation change did not requery the current editor revision.");
             Assert.True(
                 SpinWait.SpinUntil(
-                    () => nativeShell.CandidateSnapshots.Count(item => item.Revision == 6) >= 2,
+                    () => nativeShell.CandidateSnapshots.Count(item => item.Revision == 9) >= 2,
                     TimeSpan.FromSeconds(2)),
                 "The refreshed index results were not republished.");
             var activationCandidates = nativeShell.CandidateSnapshots
-                .Last(item => item.Revision == 6).Candidates;
+                .Last(item => item.Revision == 9).Candidates;
             var fileCandidate = activationCandidates.First(item => item.Kind == CandidateKind.File);
             var directoryCandidate = activationCandidates.First(
                 item => item.Kind == CandidateKind.File && item.PrimaryText == "builds");
-            var commandCandidate = activationCandidates.First(
-                item => item.Kind == CandidateKind.Command && item.PrimaryText == "build");
             var globalCandidate = activationCandidates.First(
                 item => item.Kind == CandidateKind.GlobalSearch);
 
@@ -230,7 +290,7 @@ internal static partial class Program
             nativeShell.RaiseCandidateActivated(fileCandidate.Token, CandidateAction.Reveal);
             Assert.SequenceEqual([@"C:\aaa\bbb.md"], launcher.Revealed);
             Assert.SequenceEqual([FileSystemEntryKind.File], launcher.RevealedKinds);
-            Assert.Equal(1, nativeShell.HideCommandInputCalls);
+            Assert.Equal(2, nativeShell.HideCommandInputCalls);
             Assert.Equal(
                 0,
                 nativeShell.EnqueuedMessages.Count,
@@ -239,7 +299,7 @@ internal static partial class Program
             nativeShell.RaiseCandidateActivated(directoryCandidate.Token, CandidateAction.Open);
             Assert.SequenceEqual([@"C:\logs\builds"], launcher.Opened);
             Assert.SequenceEqual([FileSystemEntryKind.Directory], launcher.OpenedKinds);
-            Assert.Equal(2, nativeShell.HideCommandInputCalls);
+            Assert.Equal(3, nativeShell.HideCommandInputCalls);
 
             nativeShell.RaiseCandidateActivated(directoryCandidate.Token, CandidateAction.Reveal);
             Assert.SequenceEqual(
@@ -248,24 +308,18 @@ internal static partial class Program
             Assert.SequenceEqual(
                 [FileSystemEntryKind.File, FileSystemEntryKind.Directory],
                 launcher.RevealedKinds);
-            Assert.Equal(3, nativeShell.HideCommandInputCalls);
+            Assert.Equal(4, nativeShell.HideCommandInputCalls);
 
             launcher.OpenResult = false;
             nativeShell.RaiseCandidateActivated(directoryCandidate.Token, CandidateAction.Open);
             Assert.Equal(
-                3,
+                4,
                 nativeShell.HideCommandInputCalls,
                 "A missing indexed item must keep the input window open.");
             Assert.Equal(
                 @"The indexed item is no longer available: C:\logs\builds",
                 nativeShell.EnqueuedMessages[^1]);
             launcher.OpenResult = true;
-
-            nativeShell.RaiseCandidateActivated(commandCandidate.Token, CandidateAction.Open);
-            Assert.True(
-                commandInvoked.Wait(TimeSpan.FromSeconds(2)),
-                "The selected command candidate did not dispatch.");
-            Assert.Equal(4, nativeShell.HideCommandInputCalls);
 
             nativeShell.RaiseCandidateActivated(globalCandidate.Token, CandidateAction.Open);
             Assert.Equal("全局搜索功能尚未实现。", nativeShell.EnqueuedMessages[^1]);
@@ -292,17 +346,17 @@ internal static partial class Program
                     new(50, FileSystemEntryKind.File, "deep.txt", longFullPath),
                 ]));
             nativeShell.SetInputCandidatesResult = InputCandidateSetResult.Stale;
-            var revisionSevenSnapshotCount = nativeShell.CandidateSnapshots.Count(
-                static item => item.Revision == 7);
-            nativeShell.RaiseInputChanged("deep", InputMode.General, revision: 7);
+            var currentRevisionSnapshotCount = nativeShell.CandidateSnapshots.Count(
+                static item => item.Revision == 10);
+            nativeShell.RaiseInputChanged("deep", InputMode.General, revision: 10);
             Assert.True(
                 SpinWait.SpinUntil(
-                    () => nativeShell.CandidateSnapshots.Count(item => item.Revision == 7)
-                        > revisionSevenSnapshotCount,
+                    () => nativeShell.CandidateSnapshots.Count(item => item.Revision == 10)
+                        > currentRevisionSnapshotCount,
                     TimeSpan.FromSeconds(2)),
                 "The stale Native candidate update was not attempted.");
             var rejectedCandidate = nativeShell.CandidateSnapshots
-                .Last(item => item.Revision == 7)
+                .Last(item => item.Revision == 10)
                 .Candidates[0];
             var openedBeforeRejectedActivation = launcher.Opened.Count;
             nativeShell.RaiseCandidateActivated(rejectedCandidate.Token);
@@ -315,12 +369,12 @@ internal static partial class Program
             fileIndex.RaiseIndexChanged();
             Assert.True(
                 SpinWait.SpinUntil(
-                    () => nativeShell.CandidateSnapshots.Count(item => item.Revision == 7)
-                        >= revisionSevenSnapshotCount + 2,
+                    () => nativeShell.CandidateSnapshots.Count(item => item.Revision == 10)
+                        >= currentRevisionSnapshotCount + 2,
                     TimeSpan.FromSeconds(2)),
                 "The current revision was not republished after a stale Native rejection.");
             var acceptedCandidate = nativeShell.CandidateSnapshots
-                .Last(item => item.Revision == 7)
+                .Last(item => item.Revision == 10)
                 .Candidates[0];
             Assert.NotEqual(
                 rejectedCandidate.Token,

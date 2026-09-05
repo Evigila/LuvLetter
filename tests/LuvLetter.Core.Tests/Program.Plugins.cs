@@ -91,7 +91,7 @@ internal static partial class Program
             "failing",
             context =>
             {
-                context.RegisterCommand("partial", _ => { });
+                context.RegisterCommand("test", "partial", _ => { });
                 context.RegisterQuickAction("partial.action", "Partial", () => { });
                 throw new InvalidOperationException("planned registration failure");
             });
@@ -99,12 +99,16 @@ internal static partial class Program
             "healthy",
             context =>
             {
-                context.RegisterCommand("healthy", _ => { });
+                context.RegisterCommand("test", "healthy run", _ => { });
+                context.RegisterCommandAlias(
+                    "test", "well", "test", "healthy run");
+                context.RegisterCommandLink(
+                    "test", "go", "test", "healthy");
                 context.RegisterQuickAction("healthy.action", "Healthy", () => { });
             });
         var conflictingPlugin = new FakePlugin(
             "conflicting",
-            context => context.RegisterCommand("healthy", _ => { }));
+            context => context.RegisterCommand("test", "healthy run", _ => { }));
 
         using (var session = PluginLoader.Load(
         [
@@ -121,9 +125,11 @@ internal static partial class Program
             Assert.True(failingPlugin.IsDisposed);
             Assert.False(healthyPlugin.IsDisposed);
             Assert.True(conflictingPlugin.IsDisposed);
-            Assert.False(commandDispatcher.IsRegistered("partial"));
+            Assert.False(commandDispatcher.IsRegistered("test", "partial"));
             Assert.False(quickActionRegistry.IsRegistered("partial.action"));
-            Assert.True(commandDispatcher.IsRegistered("healthy"));
+            Assert.True(commandDispatcher.IsRegistered("test", "healthy run"));
+            Assert.True(commandDispatcher.IsExecutable("test", "well"));
+            Assert.True(commandDispatcher.IsExecutable("test", "go run"));
             Assert.True(quickActionRegistry.IsRegistered("healthy.action"));
         }
 
@@ -134,7 +140,7 @@ internal static partial class Program
     {
         var plugin = new FakePlugin(
             "fatal",
-            context => context.RegisterCommand("fatal", _ => { }));
+            context => context.RegisterCommand("test", "fatal", _ => { }));
         var commandRegistrar = new RejectingCommandRegistrar();
         var quickActionRegistry = new QuickActionRegistry();
 
@@ -165,10 +171,12 @@ internal static partial class Program
         public int RegisterCalls { get; private set; }
 
         public bool Register(
+            string commandDomain,
             string commandName,
             Action<CommandInvocation> handler,
             CommandRegistrationMode mode = CommandRegistrationMode.RejectDuplicate)
         {
+            _ = commandDomain;
             _ = commandName;
             _ = handler;
             _ = mode;
@@ -176,10 +184,27 @@ internal static partial class Program
             return false;
         }
 
-        public bool IsRegistered(string commandName)
+        public bool IsRegistered(string commandDomain, string commandName)
         {
+            _ = commandDomain;
             _ = commandName;
             return false;
         }
+
+        public bool RegisterAlias(
+            string aliasDomain,
+            string aliasPath,
+            string targetDomain,
+            string targetPath) => false;
+
+        public bool RegisterLink(
+            string sourceDomain,
+            string sourcePath,
+            string targetDomain,
+            string targetPath) => false;
+
+        public bool IsExecutable(string commandDomain, string commandPath) => false;
+
+        public bool HasPath(string commandDomain, string commandPath) => false;
     }
 }

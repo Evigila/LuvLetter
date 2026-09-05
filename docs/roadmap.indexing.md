@@ -28,14 +28,14 @@ The following rules apply to every phase:
   Publishing a generation is atomic from the query path's perspective.
 - Editor revisions remain authoritative. A result for an older text or mode revision
   cannot replace or activate the current candidate list.
-- `Gen` gives indexed filesystem candidates priority, then uses command candidates for
-  remaining direct-result capacity. `Cmd` uses command candidates only, and `Ask` never
+- `Gen` uses application and indexed filesystem candidates before Global Search. `Cmd`
+  uses registered command domains and one immediate command-path segment at a time, and `Ask` never
   queries the filesystem index. A leading `/` entered or pasted in `Gen` resolves to
   `Cmd` before the edit is published, so it also never starts an index query.
 - A non-empty new editor revision selects and highlights its first candidate. A
   same-revision index refresh preserves selection when the same stable candidate token
-  remains present and falls back to the first candidate otherwise. When no candidates
-  exist, Enter submits input and does not close the input.
+  remains present and falls back to the first candidate otherwise. Tab completes command
+  segments. Enter activates eligible rows and otherwise submits the current text.
 - Candidate capacity is policy owned by managed options, not a rendering constant. The
   current default is five direct results and one reserved Global Search row.
 - Full paths are reconstructed only for bounded results. Per-entry runtime storage must
@@ -97,7 +97,7 @@ Phase 2 introduced memory-only Delta state; Phase 3 adds durable change replay.
   Native ABI. Native renders Windows stock icons for ordinary files and folders and
   keeps lightweight built-in glyphs as the immediate and failure fallback.
 - Keep icon metadata bounded and deterministic. Application and indexed executable
-  candidates may carry one bounded Shell parsing source through Native ABI v8. A bounded
+  candidates may carry one bounded Shell parsing source through Native ABI v10. A bounded
   STA worker extracts exact-DPI icons asynchronously; candidate production and rendering
   never wait for Shell extraction, and thumbnails remain outside this phase.
 
@@ -152,7 +152,7 @@ No edit distance, token score, usage history, or pinyin score participates in Ph
 - Support a separate `FullIgnorePaths` list for exact files and directory subtrees.
   Exclude these paths before enumeration and live updates, and include the normalized
   exclusions in cache provenance so stale excluded results cannot reappear on startup.
-- Allow `index.refresh` to bypass automatic cooldowns and rebuild-ignore scopes while
+- Allow `/luv index refresh --force` to bypass automatic cooldowns and rebuild-ignore scopes while
   preserving full-ignore exclusions. A running scan
   completes before one coalesced manual follow-up begins.
 
@@ -197,7 +197,7 @@ No edit distance, token score, usage history, or pinyin score participates in Ph
   deterministic ranking, overlapping roots, v4 persistence, provenance mismatch,
   checksum corruption, Delta ordering, ancestor tombstones, rebuild-cutoff pruning, and
   live create/rename/delete notifications.
-- Core and Native suites cover LLIX v7 activity/progress decoding, Native ABI v8, icon categories and sources,
+- Core and Native suites cover LLIX v8 activity/progress decoding, Native ABI v10, icon categories and sources,
   default and same-revision selection, persistent message timelines, stale revision
   rejection, and file/folder activation success or failure.
 
@@ -383,9 +383,10 @@ candidates, persistence, or activation:
    receive an icon from an older query. Temporarily include an inaccessible or deleted
    application target and confirm its row keeps the lightweight fallback glyph.
 11. Confirm a non-empty candidate list starts with its first row visibly selected, Down
-    moves to the second row, Up returns to the first, and Enter activates the highlighted
-    row. With no candidates, confirm Enter submits normally and Escape follows the
-    ordinary input-hide path.
+    moves to the second row, and Up returns to the first. In `Cmd`, confirm Tab completes
+    the selected domain or path segment without execution; Enter executes eligible rows
+    and submits the current text for non-executable branches or an empty list. Confirm
+    Escape follows the ordinary input-hide path.
 12. Confirm Enter opens a selected file or folder and closes InputWindow only on success;
    confirm Shift+Enter reveals the selected item in its containing location.
 13. Delete or replace a selected item before activation and confirm validation reports a
@@ -399,8 +400,9 @@ candidates, persistence, or activation:
 16. Terminate the companion during a query and confirm supervision restarts it, stale
     results are rejected, and the current input refreshes after readiness returns.
 17. Exercise `Gen`, `Ask`, and `Cmd` with identical text and confirm their candidate and
-    submission rules remain isolated. Type and paste `/settings` in `Gen`; confirm both
-    switch directly to `Cmd`, show command-only candidates, and perform no index query.
+    submission rules remain isolated. Type and paste `/luv settings` in `Gen`; confirm
+    both switch directly to `Cmd`, show the `luv` domain, and perform no index query.
+    Press Tab and confirm the first-level `luv` command paths appear.
 18. Observe a large rebuild on battery and AC power and confirm Windows reports background
     processing behavior while input animation and keyboard navigation remain smooth.
 19. Start without a compatible snapshot and confirm `正在生成索引表` remains visible with
@@ -430,7 +432,7 @@ candidates, persistence, or activation:
 26. Rename the same disposable directory back and forth within sixty seconds. Confirm
     each normalized path is accepted at most once during its cooldown; later suppressed
     events do not postpone eligibility beyond the original deadline.
-27. Enter `index.refresh` in `Cmd` during cooldown and confirm the debug log records a
+27. Enter `/luv index refresh --force` in `Cmd` during cooldown and confirm the debug log records a
     manual scan without waiting for the automatic deadline. Repeat while scanning and
     confirm requests merge into one follow-up with no simultaneous scan.
 28. Supply an invalid maintenance interval, wildcard full-ignore path, or malformed JSON,
@@ -451,7 +453,7 @@ candidates, persistence, or activation:
 32. Launch with `start.bat`. Rename a disposable populated directory outside ignore scopes
     to trigger gray `File changed triggered`, then repeat the same path during cooldown
     to observe red `File changed but cooldown refused` with remaining seconds. Run
-    `index.refresh` for green `Force rebuild queued`. Confirm startup, cache, scan
+    `/luv index refresh --force` for green `Force rebuild queued`. Confirm startup, cache, scan
     completion, and ordinary stderr diagnostics are gray.
 33. Observe green `Automatic index rebuild` at the six-minute deadlines measured from
     configuration. Issue a manual refresh between deadlines and confirm it does not

@@ -32,7 +32,7 @@ Configure portable roots in
 
 Use absolute paths; environment variables are expanded. Settings are read once per
 launch. Invalid application settings pause this catalog with a console diagnostic.
-Correct the file and restart; `index.refresh` does not reload configuration.
+Correct the file and restart; `/luv index refresh` does not reload configuration.
 
 ## Matching and ranking
 
@@ -63,8 +63,8 @@ advantage. Each source currently retrieves up to 64 matches before ranking; futu
 history-aware retrieval must also address items outside that pool.
 
 The default remains five direct results plus one reserved Global Search row. `Gen`
-merges applications and files, then fills unused direct slots with commands. `Cmd`
-remains commands-only; `Ask` has no candidates. Application publication refreshes
+merges applications and files. `Cmd` presents registered command domains and then the
+selected domain's commands; `Ask` has no candidates. Application publication refreshes
 unchanged input. On a new revision, available applications can appear while the file
 query completes; same-revision refresh preserves surviving activation tokens.
 
@@ -73,7 +73,7 @@ query completes; same-revision refresh preserves surviving activation tokens.
 Core owns application contracts, name matching, ranking, and activation decisions.
 Windows owns discovery, persistence, and launch adapters. Native renders its existing
 file row with an executable glyph and opaque token through Native ABI v7. Filesystem
-recovery uses snapshot v4; LLIX v7 carries partition descriptors and progress independently
+recovery uses snapshot v4; LLIX v8 carries partition descriptors and progress independently
 of application activation.
 
 Entries have stable source IDs and explicit launch descriptors. Display text is never
@@ -134,7 +134,7 @@ Maintenance shares the file-index configuration: each application source has a s
 periodic deadline and a 60-second automatic gap by default, with bounded per-path cooldown
 for Start Menu events. Failed sources retain dirty state and retry after 1, 2, 4, then at
 most 6 minutes. Start Menu changes target only their owning source; registrations,
-AppsFolder, system entries, and portable roots refresh periodically. `index.refresh`
+AppsFolder, system entries, and portable roots refresh periodically. `/luv index refresh`
 requests all application and file partitions and bypasses automatic cooldown.
 
 Dispatch is bounded globally and by source category. Shell metadata and all other
@@ -170,7 +170,7 @@ the existing cause colors and identify `catalog=applications`.
    Confirm the healthy addition is cached and the unavailable source retains old entries.
    Activating an unavailable target must report failure without closing input.
 9. Repeatedly change a disposable Start Menu shortcut. Confirm ignored changes never
-   enter cooldown; other events provide trigger/cooldown context. Run `index.refresh`
+   enter cooldown; other events provide trigger/cooldown context. Run `/luv index refresh --force`
    in `Cmd` and confirm both catalogs report forced work in green.
 10. Full-ignore a disposable shortcut or application path, restart, and verify cached and
     fresh results exclude it. Ordinary ignore must retain search coverage.

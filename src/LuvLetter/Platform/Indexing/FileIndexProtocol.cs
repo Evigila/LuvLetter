@@ -15,6 +15,7 @@ internal enum FileIndexMessageType : ushort
     Shutdown = 7,
     Error = 8,
     Refresh = 9,
+    Reconcile = 10,
 }
 
 internal readonly record struct FileIndexFrame(
@@ -54,7 +55,7 @@ internal enum FileIndexActivity : byte
 internal static class FileIndexProtocol
 {
     internal const uint Magic = 0x58494C4C;
-    internal const ushort MajorVersion = 7;
+    internal const ushort MajorVersion = 8;
     internal const int HeaderSize = 20;
     internal const int MaximumPayloadLength = 1024 * 1024;
 

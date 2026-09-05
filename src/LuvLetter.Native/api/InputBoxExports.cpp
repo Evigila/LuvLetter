@@ -153,6 +153,15 @@ int LUVLETTER_NATIVE_CALL SetInputCandidates(
 	}
 }
 
+int LUVLETTER_NATIVE_CALL ReplaceInputBoxText(
+	const wchar_t* text,
+	int32_t length,
+	int32_t inputMode)
+{
+	try { return NativeShellHost::Instance().ReplaceInputText(text, length, inputMode); }
+	catch (...) { return E_FAIL; }
+}
+
 int LUVLETTER_NATIVE_CALL EnqueueMessage(const wchar_t* text, int32_t length)
 {
 	try { return NativeShellHost::Instance().EnqueueMessage(text, length); }

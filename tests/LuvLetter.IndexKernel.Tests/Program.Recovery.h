@@ -126,5 +126,5 @@ void TestPartitionedRecovery() {
         Expect(store.Query(L"online-retained", 10).size() == 1,
             L"an invalid generation must not prevent another partition from loading");
     }
-    Expect(validStatus, L"every observed queued, working, ready, or failed status must round-trip over LLIX v7");
+    Expect(validStatus, L"every observed queued, working, ready, or failed status must round-trip over LLIX v8");
 }

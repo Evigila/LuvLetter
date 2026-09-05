@@ -28,6 +28,8 @@ public interface INativeShell
         IReadOnlyList<InputCandidate> candidates,
         ulong revision);
 
+    void ReplaceCommandInput(string text);
+
     void ToggleCommandInput();
 
     void HideCommandInput();

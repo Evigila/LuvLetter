@@ -110,7 +110,9 @@ namespace
 			"All native popup surfaces must use the shared Microsoft YaHei UI family.");
 		AssertNear(20.0f, LuvLetterNative::SurfaceLineHeightDip,
 			"Shared line height must leave Microsoft YaHei UI glyphs unclipped.");
-		Assert(LUVLETTER_NATIVE_ABI_VERSION == 8, "Native ABI must expose candidate icon sources.");
+		Assert(LUVLETTER_NATIVE_ABI_VERSION == 10, "Native ABI must expose candidate completion actions.");
+		Assert(LUVLETTER_NATIVE_MAX_INPUT_TEXT_LENGTH == 32768,
+			"Native ABI must retain the input text limit.");
 		Assert(LUVLETTER_NATIVE_MAX_INPUT_CANDIDATES == 32,
 			"Native ABI must retain the managed candidate-capacity contract.");
 		Assert(LUVLETTER_NATIVE_MAX_CANDIDATE_PRIMARY_LENGTH == 512,
@@ -120,18 +122,20 @@ namespace
 		Assert(sizeof(LuvLetterInputBoxConfig) == 104, "Input config ABI size changed unexpectedly.");
 		Assert(sizeof(LuvLetterFeatureWindowConfig) == 88, "Quick Actions config ABI size changed unexpectedly.");
 		Assert(sizeof(LuvLetterFeatureItem) == 16, "Quick Action item ABI size changed unexpectedly.");
-		Assert(sizeof(LuvLetterInputCandidate) == 40, "Input candidate ABI size changed unexpectedly.");
+		Assert(sizeof(LuvLetterInputCandidate) == 48, "Input candidate ABI size changed unexpectedly.");
 		Assert(offsetof(LuvLetterInputCandidate, token) == 0, "Candidate token offset changed.");
 		Assert(offsetof(LuvLetterInputCandidate, kind) == 8, "Candidate kind offset changed.");
 		Assert(offsetof(LuvLetterInputCandidate, iconKind) == 12, "Candidate icon kind offset changed.");
-		Assert(offsetof(LuvLetterInputCandidate, primaryText) == 16, "Candidate primary text offset changed.");
-		Assert(offsetof(LuvLetterInputCandidate, secondaryText) == 24, "Candidate secondary text offset changed.");
-		Assert(offsetof(LuvLetterInputCandidate, iconSource) == 32, "Candidate icon source offset changed.");
+		Assert(offsetof(LuvLetterInputCandidate, actions) == 16, "Candidate action mask offset changed.");
+		Assert(offsetof(LuvLetterInputCandidate, primaryText) == 24, "Candidate primary text offset changed.");
+		Assert(offsetof(LuvLetterInputCandidate, secondaryText) == 32, "Candidate secondary text offset changed.");
+		Assert(offsetof(LuvLetterInputCandidate, iconSource) == 40, "Candidate icon source offset changed.");
 		Assert(LuvLetterCandidateKindFile == 1, "File candidate kind changed unexpectedly.");
 		Assert(LuvLetterCandidateKindCommand == 2, "Command candidate kind changed unexpectedly.");
 		Assert(LuvLetterCandidateKindGlobalSearch == 3, "Global Search candidate kind changed unexpectedly.");
 		Assert(LuvLetterCandidateActionOpen == 0, "Open candidate action changed unexpectedly.");
 		Assert(LuvLetterCandidateActionReveal == 1, "Reveal candidate action changed unexpectedly.");
+		Assert(LuvLetterCandidateActionComplete == 2, "Complete candidate action changed unexpectedly.");
 		Assert(LuvLetterCandidateIconKindGenericFile == 1, "Generic file icon kind changed unexpectedly.");
 		Assert(LuvLetterCandidateIconKindFolder == 2, "Folder icon kind changed unexpectedly.");
 		Assert(LuvLetterCandidateIconKindImage == 3, "Image icon kind changed unexpectedly.");
@@ -219,9 +223,11 @@ namespace
 		return {
 			InputCandidateItem{
 				11, LuvLetterCandidateKindFile, LuvLetterCandidateIconKindDocument,
+				LuvLetterCandidateActionsOpen | LuvLetterCandidateActionsReveal,
 				L"bbb.md", L"C:\\aaa", L"C:\\aaa\\bbb.md" },
 			InputCandidateItem{
 				22, LuvLetterCandidateKindCommand, LuvLetterCandidateIconKindCommand,
+				LuvLetterCandidateActionsOpen | LuvLetterCandidateActionsComplete,
 				L"build", L"Command" },
 		};
 	}
@@ -261,9 +267,15 @@ namespace
 			"Enter must activate a selected candidate.");
 		Assert(activation.token == 22 && activation.action == LuvLetterCandidateActionOpen,
 			"Enter must route the selected token with the Open action.");
+		Assert(state.TryActivate(LuvLetterCandidateActionComplete, activation),
+			"Tab must complete a selected command candidate.");
+		Assert(activation.token == 22 && activation.action == LuvLetterCandidateActionComplete,
+			"Tab must route the selected token with the Complete action.");
 
 		Assert(state.MoveSelection(-1), "Up must return to the first candidate.");
 		Assert(state.SelectedIndex() == 0, "Up from the second candidate must select the first candidate.");
+		Assert(!state.TryActivate(LuvLetterCandidateActionComplete, activation),
+			"Tab must not complete a file candidate.");
 		Assert(state.TryActivate(LuvLetterCandidateActionReveal, activation),
 			"Shift+Enter must activate a selected candidate.");
 		Assert(activation.token == 11 && activation.action == LuvLetterCandidateActionReveal,

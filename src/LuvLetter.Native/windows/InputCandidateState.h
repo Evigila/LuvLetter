@@ -14,6 +14,7 @@ struct InputCandidateItem final
 	uint64_t token = 0;
 	LuvLetterCandidateKind kind = LuvLetterCandidateKindFile;
 	LuvLetterCandidateIconKind iconKind = LuvLetterCandidateIconKindNone;
+	int32_t actions = LuvLetterCandidateActionsOpen;
 	std::wstring primaryText;
 	std::wstring secondaryText;
 	std::wstring iconSource;
@@ -107,6 +108,18 @@ public:
 		InputCandidateActivation& activation) const noexcept
 	{
 		if (!selectedIndex_.has_value() || *selectedIndex_ >= items_.size())
+		{
+			return false;
+		}
+		const auto required = action == LuvLetterCandidateActionOpen
+			? LuvLetterCandidateActionsOpen
+			: action == LuvLetterCandidateActionReveal
+				? LuvLetterCandidateActionsReveal
+				: action == LuvLetterCandidateActionComplete
+					? LuvLetterCandidateActionsComplete
+					: LuvLetterCandidateActionsNone;
+		if (required == LuvLetterCandidateActionsNone
+			|| (items_[*selectedIndex_].actions & required) == 0)
 		{
 			return false;
 		}

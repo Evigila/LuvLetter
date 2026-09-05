@@ -130,7 +130,11 @@ void TestProtocolHeaderRoundTrip() {
     const auto encoded = EncodeHeader(expected);
     FrameHeader actual{};
     Expect(encoded.size() == kHeaderSize, L"protocol header must remain exactly 20 bytes");
-    Expect(kMajorVersion == 7, L"partition descriptors and progress require LLIX protocol major version 7");
+    Expect(kMajorVersion == 8, L"manual and forced refresh require LLIX protocol major version 8");
+    Expect(static_cast<std::uint16_t>(MessageType::Refresh) == 9,
+        L"forced refresh must retain its frame value");
+    Expect(static_cast<std::uint16_t>(MessageType::Reconcile) == 10,
+        L"normal reconciliation must have a distinct frame value");
     Expect(DecodeHeader(encoded, actual), L"protocol header should decode");
     Expect(actual.magic == expected.magic && actual.majorVersion == expected.majorVersion &&
         actual.type == expected.type && actual.payloadLength == expected.payloadLength &&

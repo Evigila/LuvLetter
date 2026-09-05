@@ -12,6 +12,7 @@ internal static partial class Program
     private static async Task TestApplicationCoordinatorLifecycle()
     {
         using var commands = new CommandDispatcher();
+        var systemCommands = new FakeSystemCommandRunner();
         var quickActions = new QuickActionRegistry();
         var activation = new FakeActivationGestureService();
         var nativeShell = new FakeNativeShell();
@@ -19,6 +20,7 @@ internal static partial class Program
         var coordinator = new ApplicationCoordinator(
             new FakeConfigurationStore(LuvLetterConfiguration.Default),
             commands,
+            systemCommands,
             quickActions,
             [new SettingsPlugin(applicationShell)],
             [],

@@ -447,6 +447,7 @@ int Run(const Options& options) {
             }
             break;
         case protocol::MessageType::Refresh:
+        case protocol::MessageType::Reconcile:
         case protocol::MessageType::Status:
             if (!payload.empty()) {
                 if (!SendError(pipe.Get(), parentProcess.Get(), header.requestId, "Status/Refresh payload must be empty.")) {
@@ -455,7 +456,8 @@ int Run(const Options& options) {
                 break;
             }
             {
-                if (header.type == protocol::MessageType::Refresh) store.RequestRefresh();
+                if (header.type == protocol::MessageType::Refresh) store.RequestRefresh(true);
+                else if (header.type == protocol::MessageType::Reconcile) store.RequestRefresh(false);
                 const auto statusPayload = protocol::EncodeStatus(store.Status());
                 if (!SendFrame(
                         pipe.Get(),

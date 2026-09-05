@@ -22,7 +22,7 @@ namespace
 	constexpr UINT_PTR AnimationTimerId = 2;
 	constexpr UINT CaretBlinkMs = 530;
 	constexpr UINT AnimationFrameMs = 16;
-	constexpr size_t MaxInputCharacters = 32768;
+	constexpr size_t MaxInputCharacters = LUVLETTER_NATIVE_MAX_INPUT_TEXT_LENGTH;
 	constexpr size_t HistoryCapacity = 100;
 	constexpr float MaxTextLayoutHeight = 16777216.0f;
 	constexpr int64_t MaxSurfacePixels = 16LL * 1024LL * 1024LL;
@@ -689,6 +689,31 @@ void InputWindow::Reset()
 	verticalOffset_ = 0.0f;
 	ResetHistoryNavigation();
 	PublishInputChanged();
+}
+
+void InputWindow::ReplaceText(std::wstring value, LuvLetterInputMode mode)
+{
+	if (value.size() > MaxInputCharacters)
+	{
+		value.resize(MaxInputCharacters);
+		if (!value.empty() && IsHighSurrogate(value.back()))
+		{
+			value.pop_back();
+		}
+	}
+
+	text_ = std::move(value);
+	textLayout_.Reset();
+	caretIndex_ = text_.size();
+	selectionAnchor_ = caretIndex_;
+	mouseSelecting_ = false;
+	verticalOffset_ = 0.0f;
+	ResetHistoryNavigation();
+	SetInputMode(mode);
+	PublishInputChanged();
+	UpdateResponsiveHeight();
+	EnsureCaretVisible();
+	Invalidate();
 }
 
 void InputWindow::PublishInputChanged()
@@ -1792,6 +1817,14 @@ bool InputWindow::HandleKeyDown(WPARAM wParam, LPARAM keyData)
 	if (MatchesHotkey(wParam, config_.cancelVirtualKey, config_.cancelModifiers))
 	{
 		Hide();
+		return true;
+	}
+	if (wParam == VK_TAB && modifiers == 0)
+	{
+		if (activateCandidate_)
+		{
+			activateCandidate_(static_cast<int32_t>(LuvLetterCandidateActionComplete));
+		}
 		return true;
 	}
 	if (wParam == VK_RETURN && !controlDown && !hasSystemModifier

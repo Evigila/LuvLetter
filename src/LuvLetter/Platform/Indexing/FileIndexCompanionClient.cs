@@ -42,15 +42,30 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IIndexRefresh
 
     public FileIndexRuntimeState CurrentState => Volatile.Read(ref currentState);
 
-    public void RequestRefresh()
+    public void RequestRefresh(IndexRefreshMode mode)
     {
+        if (!Enum.IsDefined(mode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode));
+        }
         ObjectDisposedException.ThrowIf(Volatile.Read(ref disposed) != 0, this);
         if (!options.Maintenance.IsAvailable)
         {
-            Console.WriteLine("[Index][configuration-error] Force refresh unavailable | state=configuration-invalid");
+            Console.WriteLine("[Index][configuration-error] Manual refresh unavailable | state=configuration-invalid");
             return;
         }
-        if (Interlocked.Exchange(ref refreshRequested, 1) == 0)
+        var requested = mode == IndexRefreshMode.Force ? 2 : 1;
+        var previous = Volatile.Read(ref refreshRequested);
+        while (previous < requested)
+        {
+            var observed = Interlocked.CompareExchange(ref refreshRequested, requested, previous);
+            if (observed == previous)
+            {
+                break;
+            }
+            previous = observed;
+        }
+        if (previous == 0)
         {
             try
             {
@@ -61,7 +76,9 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IIndexRefresh
                 // A pending wake already covers this coalesced request.
             }
         }
-        Console.WriteLine("[Index][force] Force rebuild queued | state=awaiting-companion");
+        Console.WriteLine(mode == IndexRefreshMode.Force
+            ? "[Index][force] Force rebuild queued | state=awaiting-companion"
+            : "[Index][manual] Reconciliation queued | state=awaiting-companion");
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -319,14 +336,30 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IIndexRefresh
         {
             while (!pollingToken.IsCancellationRequested)
             {
-                var forceRefresh = Interlocked.Exchange(ref refreshRequested, 0) != 0;
+                var pendingRefresh = Interlocked.Exchange(ref refreshRequested, 0);
                 var status = await session.QueryStatusAsync(
                     NextRequestId(),
-                    forceRefresh,
+                    pendingRefresh == 0
+                        ? null
+                        : pendingRefresh == 2
+                            ? IndexRefreshMode.Force
+                            : IndexRefreshMode.Normal,
                     pollingToken).ConfigureAwait(false);
                 if (status is null)
                 {
-                    if (forceRefresh) Interlocked.Exchange(ref refreshRequested, 1);
+                    if (pendingRefresh != 0)
+                    {
+                        var pendingCurrent = Volatile.Read(ref refreshRequested);
+                        while (pendingCurrent < pendingRefresh)
+                        {
+                            var observed = Interlocked.CompareExchange(
+                                ref refreshRequested,
+                                pendingRefresh,
+                                pendingCurrent);
+                            if (observed == pendingCurrent) break;
+                            pendingCurrent = observed;
+                        }
+                    }
                     return;
                 }
 
@@ -537,7 +570,7 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IIndexRefresh
 
         internal async ValueTask<FileIndexStatus?> QueryStatusAsync(
             ulong requestId,
-            bool forceRefresh,
+            IndexRefreshMode? refreshMode,
             CancellationToken cancellationToken)
         {
             using var callerCancellation = CancellationTokenSource.CreateLinkedTokenSource(
@@ -564,7 +597,12 @@ internal sealed class FileIndexCompanionClient : IFileIndexClient, IIndexRefresh
                 timeout.CancelAfter(queryTimeout);
                 await FileIndexProtocol.WriteFrameAsync(
                     pipe,
-                    forceRefresh ? FileIndexMessageType.Refresh : FileIndexMessageType.Status,
+                    refreshMode switch
+                    {
+                        IndexRefreshMode.Force => FileIndexMessageType.Refresh,
+                        IndexRefreshMode.Normal => FileIndexMessageType.Reconcile,
+                        _ => FileIndexMessageType.Status,
+                    },
                     requestId,
                     [],
                     timeout.Token).ConfigureAwait(false);

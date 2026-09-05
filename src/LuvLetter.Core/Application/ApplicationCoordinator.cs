@@ -16,6 +16,7 @@ public sealed class ApplicationCoordinator : IHostedService
 {
     private readonly ILuvLetterConfigurationStore configurationStore;
     private readonly CommandDispatcher commandDispatcher;
+    private readonly ISystemCommandRunner systemCommandRunner;
     private readonly QuickActionRegistry quickActions;
     private readonly IReadOnlyList<ILuvLetterPlugin> builtInPlugins;
     private readonly IReadOnlyList<IGeneralInputMatcher> generalInputMatchers;
@@ -23,6 +24,8 @@ public sealed class ApplicationCoordinator : IHostedService
     private readonly INativeShell nativeShell;
     private readonly IApplicationShell applicationShell;
     private PluginSession? pluginSession;
+    private readonly object commandActivitiesLock = new();
+    private readonly Dictionary<long, IMessageActivity> commandActivities = [];
     private int started;
     private int stopping;
     private bool eventsSubscribed;
@@ -30,6 +33,7 @@ public sealed class ApplicationCoordinator : IHostedService
     public ApplicationCoordinator(
         ILuvLetterConfigurationStore configurationStore,
         CommandDispatcher commandDispatcher,
+        ISystemCommandRunner systemCommandRunner,
         QuickActionRegistry quickActions,
         IEnumerable<ILuvLetterPlugin> builtInPlugins,
         IEnumerable<IGeneralInputMatcher> generalInputMatchers,
@@ -39,6 +43,7 @@ public sealed class ApplicationCoordinator : IHostedService
     {
         this.configurationStore = configurationStore;
         this.commandDispatcher = commandDispatcher;
+        this.systemCommandRunner = systemCommandRunner;
         this.quickActions = quickActions;
         this.builtInPlugins = builtInPlugins.ToArray();
         this.generalInputMatchers = generalInputMatchers.ToArray();
@@ -125,6 +130,8 @@ public sealed class ApplicationCoordinator : IHostedService
         quickActions.Changed += HandleQuickActionsChanged;
         commandDispatcher.Unhandled += HandleUnhandledCommand;
         commandDispatcher.Failed += HandleFailedCommand;
+        systemCommandRunner.Started += HandleSystemCommandStarted;
+        systemCommandRunner.Completed += HandleSystemCommandCompleted;
         activationGestures.CommandInputRequested += HandleCommandInputRequested;
         activationGestures.PopupsDismissRequested += HandlePopupsDismissRequested;
         activationGestures.QuickActionsRequested += HandleQuickActionsRequested;
@@ -145,6 +152,8 @@ public sealed class ApplicationCoordinator : IHostedService
         activationGestures.PopupsDismissRequested -= HandlePopupsDismissRequested;
         commandDispatcher.Failed -= HandleFailedCommand;
         commandDispatcher.Unhandled -= HandleUnhandledCommand;
+        systemCommandRunner.Completed -= HandleSystemCommandCompleted;
+        systemCommandRunner.Started -= HandleSystemCommandStarted;
         quickActions.Changed -= HandleQuickActionsChanged;
         nativeShell.QuickActionActivated -= HandleQuickActionActivated;
         nativeShell.QuickActionUnavailable -= HandleQuickActionUnavailable;
@@ -163,6 +172,7 @@ public sealed class ApplicationCoordinator : IHostedService
         UnsubscribeEvents();
         TryNativeAction(nativeShell.HideQuickActions, "hide quick actions");
         TryNativeAction(nativeShell.HideCommandInput, "hide the command input");
+        DisposeCommandActivities();
 
         try
         {
@@ -191,7 +201,7 @@ public sealed class ApplicationCoordinator : IHostedService
                 Echo(submission.Text);
                 return;
             case InputMode.Command:
-                DispatchCommand(CommandInputSyntax.RemoveModePrefix(submission.Text));
+                RouteCommand(CommandInputSyntax.RemoveModePrefix(submission.Text));
                 return;
             case InputMode.General:
                 HandleGeneralInput(submission.Text);
@@ -236,6 +246,21 @@ public sealed class ApplicationCoordinator : IHostedService
         }
     }
 
+    private void RouteCommand(string commandText)
+    {
+        if (commandText.Length == 0 || commandDispatcher.IsRegisteredDomainInvocation(commandText))
+        {
+            DispatchCommand(commandText);
+            return;
+        }
+
+        var result = systemCommandRunner.TryEnqueue(commandText);
+        if (result.Status != SystemCommandQueueStatus.Accepted)
+        {
+            ReportStatus($"Windows command was not accepted: {result.Status}");
+        }
+    }
+
     private void Echo(string input) => ReportStatus($"Echo: {input}");
 
     private void HandleQuickActionActivated(string quickActionId)
@@ -277,11 +302,124 @@ public sealed class ApplicationCoordinator : IHostedService
     }
 
     private void HandleUnhandledCommand(CommandInvocation invocation) =>
-        ReportStatus($"Unknown command: {invocation.CommandName}");
+        ReportStatus($"Unknown command: {invocation.QualifiedName}");
 
     private void HandleFailedCommand(CommandInvocation invocation, Exception exception) =>
         ReportStatus(
-            $"Command '{invocation.CommandName}' failed: {exception.Message}");
+            $"Command '{invocation.QualifiedName}' failed: {exception.Message}");
+
+    private void HandleSystemCommandStarted(SystemCommandStarted command)
+    {
+        IMessageActivity? activity = null;
+        try
+        {
+            activity = nativeShell.BeginMessageActivity(
+                $"正在运行：{Truncate(command.CommandText, 240)}");
+            lock (commandActivitiesLock)
+            {
+                commandActivities[command.RequestId] = activity;
+            }
+        }
+        catch (Exception exception)
+        {
+            activity?.Dispose();
+            applicationShell.ReportStatus(
+                $"Cannot present Windows command activity: {exception.Message}");
+        }
+    }
+
+    private void HandleSystemCommandCompleted(SystemCommandCompleted command)
+    {
+        IMessageActivity? activity;
+        lock (commandActivitiesLock)
+        {
+            commandActivities.Remove(command.RequestId, out activity);
+        }
+
+        var message = FormatSystemCommandResult(command);
+        if (activity is null)
+        {
+            ReportStatus(message);
+            return;
+        }
+
+        try
+        {
+            activity.Complete(message);
+        }
+        catch (Exception exception)
+        {
+            applicationShell.ReportStatus(
+                $"Cannot present Windows command result: {exception.Message}");
+        }
+        finally
+        {
+            activity.Dispose();
+        }
+    }
+
+    private void DisposeCommandActivities()
+    {
+        IMessageActivity[] activities;
+        lock (commandActivitiesLock)
+        {
+            activities = commandActivities.Values.ToArray();
+            commandActivities.Clear();
+        }
+        foreach (var activity in activities)
+        {
+            activity.Dispose();
+        }
+    }
+
+    private static string FormatSystemCommandResult(SystemCommandCompleted command)
+    {
+        if (command.Cancelled)
+        {
+            return "Windows command was cancelled.";
+        }
+        if (command.TimedOut)
+        {
+            return "Windows command timed out and was terminated.";
+        }
+
+        var output = CleanProcessOutput(command.StandardOutput);
+        var error = CleanProcessOutput(command.StandardError);
+        var content = command.ExitCode == 0
+            ? string.Join(Environment.NewLine, new[] { output, error }.Where(static value => value.Length > 0))
+            : string.Join(Environment.NewLine, new[] { error, output }.Where(static value => value.Length > 0));
+        if (content.Length == 0)
+        {
+            content = command.ExitCode == 0
+                ? "Windows command completed."
+                : "Windows command failed.";
+        }
+        if (command.ExitCode is { } exitCode && exitCode != 0)
+        {
+            content = $"Exit code {exitCode}{Environment.NewLine}{content}";
+        }
+        if (command.OutputTruncated)
+        {
+            content += $"{Environment.NewLine}… output truncated";
+        }
+        return Truncate(content, 4000);
+    }
+
+    private static string CleanProcessOutput(string value)
+    {
+        var builder = new System.Text.StringBuilder(value.Length);
+        foreach (var character in value.Trim())
+        {
+            if (character is '\r' or '\n' or '\t' || !char.IsControl(character))
+            {
+                builder.Append(character);
+            }
+        }
+        return builder.ToString();
+    }
+
+    private static string Truncate(string value, int maximumLength) =>
+        value.Length <= maximumLength ? value : value[..(maximumLength - 1)] + "…";
 
     private void HandleCommandInputRequested(object? sender, EventArgs eventArgs)
     {

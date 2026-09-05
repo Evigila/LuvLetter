@@ -31,6 +31,8 @@ Windows implementations through `IApplicationShell`, `IActivationGestureService`
 - `Platform/Applications`: background STA discovery and activation for Start Menu,
   App Paths, packaged applications, and configured portable roots; independently
   persisted application catalog and maintenance.
+- `Platform/Commands`: bounded Windows command execution through hidden `cmd.exe`
+  processes, including output capture and a session working directory.
 - `Platform/Tray`: notification-area UI and settings-view lifetime.
 - `Hosting`: Generic Host registrations and the WPF-specific `IHostLifetime`.
 - `Program`: the STA/single-instance entry point. It builds and starts the Host, delegates
@@ -40,13 +42,14 @@ Windows implementations through `IApplicationShell`, `IActivationGestureService`
 
 - `Application/ApplicationCoordinator`: the primary business coordinator. It applies the
   initial configuration, loads built-in and external plugins, synchronizes Quick
-  Actions, subscribes runtime events, starts gestures, routes General/Ask/Command input,
-  and performs idempotent shutdown. General mode first recognizes registered commands,
+  Actions, subscribes runtime events, starts gestures, routes General/Ask/Command input
+  and Windows command results, and performs idempotent shutdown. General mode first
+  recognizes registered commands,
   then offers the text to ordered `IGeneralInputMatcher` implementations before falling
   back to an Echo response.
 - `Application/InputCandidateCoordinator`: a separate hosted input pipeline. It consumes
-  only the latest editor revision, ranks application and file candidates, fills command
-  candidates according to the active mode, owns activation tokens, and rejects stale
+  only the latest editor revision, ranks application and file candidates, presents
+  command domains and their commands in `Cmd`, owns activation tokens, and rejects stale
   results before Native display. Application and file publication revisions are tracked
   independently, so a source-only refresh can reuse the unaffected half of the current
   query. Application contracts and the injectable ranking policy live alongside it;
@@ -58,7 +61,8 @@ Windows implementations through `IApplicationShell`, `IActivationGestureService`
   registry, and activation results.
 - `Plugins`: dynamic assembly discovery and lifetime ownership. External extensions
   implement `ILuvLetterPlugin`; the default directory is `plugins`.
-- `Commands`: bounded, serial command registration and dispatch.
+- `Commands`: domain-scoped, bounded, serial command registration and dispatch, plus
+  the platform command-runner boundary.
 - `Activation`: the deterministic global-shortcut state machine and platform port.
 - `Configuration`: immutable models, schema migration, normalization, JSON persistence,
   and current-snapshot ownership.
@@ -286,23 +290,45 @@ remove exactly that one mode prefix. `Ask` is never overridden, and removing the
 after entering `Cmd` does not switch the mode back.
 
 Submitted text crosses the Native boundary as an `InputSubmission` containing both the
-text and its mode. `Ask` always produces an Echo response. `Cmd` always uses strict
-command dispatch, including the existing unknown-command diagnostic. `Gen` recognizes
-registered commands first, then invokes `IGeneralInputMatcher` extensions, and finally
+text and its mode. `Ask` always produces an Echo response. `Cmd` removes one optional
+leading `/` and compares the first token against the registered command-domain table.
+A matching domain stays inside the application dispatcher, including unknown-command
+diagnostics for an invalid child command. A non-matching domain sends the complete text
+to the bounded Windows command runner. `Gen` recognizes a complete registered
+command path first, then invokes `IGeneralInputMatcher` extensions, and finally
 produces Echo when no matcher accepts the text.
 
-The built-in command registry currently contains `settings`, which opens Control Center,
-and `index.refresh`, which requests both filesystem and application index refreshes.
-External plugins can add or replace registrations through `PluginRegistrationContext`.
-Command names are case-insensitive, while arguments are passed through as unstructured
-text after the first whitespace separator.
+The built-in `luv` domain currently contains `settings`, which opens Control Center,
+and `index refresh`, which requests both filesystem and application index refreshes.
+Their canonical forms are `/luv settings` and `/luv index refresh`. The latter performs
+a normal reconciliation; `-f` or `--force` requests every partition immediately and
+bypasses its automatic gap. `/luv refreshindex` is a link to `luv index refresh`.
+
+External plugins register an explicit domain and one-or-more-segment path through
+`PluginRegistrationContext`. An alias attaches another path directly to the same command
+definition. A link rewrites a path prefix before resolution, so a link from `z` to `a b`
+makes `z c` resolve as `a b c`. Link sources cannot overlap a concrete subtree, targets
+must exist, and resolution detects repeated links and excessive chains. Comparisons are
+case-insensitive. The longest executable path wins and the remaining original text is
+passed through as unstructured arguments.
+
+Windows commands run serially in hidden `cmd.exe /D /U /S /C` child processes. Standard
+output and error are drained concurrently into bounded buffers, then summarized in the
+message queue. Each command has a two-minute limit and the active process tree is
+terminated during shutdown or timeout. Standalone `cd` and `chdir` commands update the
+runner's working directory for later submissions. Other shell state such as environment
+variables, `pushd`, and `doskey` is process-local; a future interactive terminal surface
+would require a persistent ConPTY session.
 
 Real-time candidate production is separate from final submission. Each actual text or
 mode change increments an editor revision, immediately clears the old Native snapshot,
 and enters a capacity-one latest-wins pipeline. `Gen` merges application and file matches,
-fills remaining direct-result capacity with command prefixes, then appends the reserved Global
-Search row. `Ask` publishes no candidates. `Cmd` queries registered application commands
-only and never enters the application or filesystem index paths. The default
+then appends the reserved Global Search row. `Ask` publishes no candidates. Empty `Cmd`
+shows registered domains only. Command candidates then expose one immediate path segment
+at a time, including alias and link routes. Tab completes the selected segment and keeps
+the input open. Enter executes an executable candidate; when the selected row represents
+only a domain or branch, it falls through to ordinary text submission. `Cmd` never enters
+application or filesystem index paths. The default
 configuration allows five direct results and one Global Search row, while the limit is
 owned by `InputCandidateOptions` rather than Native rendering code.
 
@@ -323,11 +349,11 @@ Catalog changes requery unchanged input without discarding surviving selection t
 A non-empty new editor revision selects and visibly highlights its first candidate. A
 same-revision index refresh reuses stable candidate tokens and preserves the selected
 token when it still exists; if that token disappears, selection falls back to the first
-candidate. Up or Down moves the selection. Enter opens the selected application, file, or folder;
-Shift+Enter reveals it in Explorer. A successful filesystem or command activation closes
-InputWindow, while Enter when no candidates exist follows ordinary submission and does
-not close it. Global Search currently reports its reserved status through the message
-queue and keeps the input open.
+candidate. Up or Down moves the selection. Tab completes command candidates. Enter opens
+or executes an eligible selection, while Shift+Enter reveals files and classic applications
+in Explorer. A successful filesystem or command activation closes InputWindow. If the
+selection does not support Enter, the current text is submitted normally. Global Search
+currently reports its reserved status through the message queue and keeps the input open.
 
 Catalog application activation is asynchronous and single-flight. A successful late
 completion cannot hide input from a newer editor revision. Classic applications retain
@@ -580,13 +606,15 @@ reconciliation age, not a guarantee that event-driven maintenance waits that lon
 temporary filename can bypass a different filename's cooldown; noisy directory scopes
 belong in the ignore list.
 
-The built-in `index.refresh` command in `Gen` or `Cmd` requests both filesystem and
-application catalogs. Filesystem refresh fans out across enabled partitions regardless of
-rebuild-ignore, cooldown, and automatic-gap rules. Full-ignore exclusions still apply.
+The built-in `/luv index refresh` command requests normal reconciliation from both
+filesystem and application catalogs while retaining each partition's automatic gap.
+Adding `-f` or `--force`, including through `/luv refreshindex`, fans out across enabled
+partitions and bypasses cooldown and automatic-gap rules. Full-ignore exclusions still apply.
 If a partition scan is already running, one follow-up request is coalesced rather than
-cancelling or overlapping it. LLIX v7
-carries maintenance settings with root configuration and acknowledges `Refresh` with a
-status response. Disconnected manual requests wait for the next companion connection.
+cancelling or overlapping it. LLIX v8 distinguishes `Reconcile` from forced `Refresh`,
+carries maintenance settings with root configuration, and acknowledges both with a status
+response. Disconnected manual requests wait for the next companion connection, and a
+pending normal request can be upgraded to force without being downgraded afterward.
 
 ### Application catalog maintenance
 
@@ -612,7 +640,7 @@ freshness without increasing generation, rewriting cache, or publishing `Changed
 
 Every source shares the six-minute maximum age and 60-second cooldown defaults. Start Menu
 watchers coalesce changes into their owning source; other sources refresh periodically or
-on `index.refresh`. Failures retry locally after 1, 2, 4, then at most 6 minutes.
+on `/luv index refresh`. Failures retry locally after 1, 2, 4, then at most 6 minutes.
 Known full/ordinary ignores run before cooldown; full ignores also filter cached entries
 and activation targets. Watcher errors request recovery and recreate the watcher with
 backoff. Two fixed discovery STA workers and one activation STA worker bound thread count;

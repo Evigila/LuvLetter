@@ -13,6 +13,7 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
     private const int MaximumQuickActionCount = 4096;
     private const int MaximumCandidateCount = InputCandidateOptions.MaximumCandidateCount;
     private const int MaximumCallbackTextLength = 1_048_576;
+    private const int MaximumInputTextLength = 32768;
     private const int MaximumQuickActionLabelLength = 96;
     private const int MaximumCandidatePrimaryTextLength = InputCandidatePresentation.MaximumPrimaryTextLength;
     private const int MaximumCandidateSecondaryTextLength = InputCandidatePresentation.MaximumSecondaryTextLength;
@@ -223,10 +224,14 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
                 var candidate = candidates[index];
                 if (candidate.Token == 0
                     || !Enum.IsDefined(candidate.Kind)
-                    || !Enum.IsDefined(candidate.IconKind))
+                    || !Enum.IsDefined(candidate.IconKind)
+                    || candidate.Actions == CandidateActions.None
+                    || (candidate.Actions & ~(CandidateActions.Open
+                        | CandidateActions.Reveal
+                        | CandidateActions.Complete)) != 0)
                 {
                     throw new ArgumentException(
-                        "Candidates must have a non-zero token, defined kind, and defined icon kind.",
+                        "Candidates must have a non-zero token, valid kind, icon, and actions.",
                         nameof(candidates));
                 }
 
@@ -272,6 +277,7 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
                         Token = candidate.Token,
                         Kind = (int)candidate.Kind,
                         IconKind = (int)candidate.IconKind,
+                        Actions = (int)candidate.Actions,
                         PrimaryText = PackText(
                             candidate.PrimaryText,
                             primaryTextLengths[index],
@@ -311,6 +317,25 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
                 nativeItems.AsSpan(0, candidates.Count).Clear();
                 ArrayPool<NativeInputCandidate>.Shared.Return(nativeItems);
             }
+        }
+    }
+
+    public void ReplaceCommandInput(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        if (text.Length > MaximumInputTextLength || text.IndexOf('\0') >= 0)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(text),
+                "Command input is too long or contains a null character.");
+        }
+
+        lock (operationSyncRoot)
+        {
+            ThrowIfDisposed();
+            ThrowIfFailed(
+                nativeApi.ReplaceInputBoxText(text, text.Length, (int)InputMode.Command),
+                "ReplaceInputBoxText");
         }
     }
 

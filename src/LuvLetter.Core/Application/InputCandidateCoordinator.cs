@@ -408,7 +408,8 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         if (Volatile.Read(ref started) == 0
             || activation.Token == 0
             || !Volatile.Read(ref activeTargets).TryGetValue(activation.Token, out var target)
-            || !IsLatest(target.Revision))
+            || !IsLatest(target.Revision)
+            || !SupportsAction(target.Actions, activation.Action))
         {
             return;
         }
@@ -422,13 +423,23 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         switch (target.Kind)
         {
             case CandidateKind.File:
-                if (target.EntryKind is { } entryKind)
+                if (target.EntryKind is { } entryKind
+                    && target.ExecutionText is not null)
                 {
-                    ActivateFileSystemEntry(target.Value, entryKind, activation.Action);
+                    ActivateFileSystemEntry(target.ExecutionText, entryKind, activation.Action);
                 }
                 break;
             case CandidateKind.Command:
-                ActivateCommand(target.Value);
+                if (activation.Action == CandidateAction.Complete
+                    && target.CompletionText is not null)
+                {
+                    ReplaceCommandInput(target.CompletionText);
+                }
+                else if (activation.Action == CandidateAction.Open
+                    && target.ExecutionText is not null)
+                {
+                    ActivateCommand(target.ExecutionText);
+                }
                 break;
             case CandidateKind.GlobalSearch:
                 ReportStatus(options.GlobalSearchUnavailableMessage);
@@ -504,7 +515,7 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         }
 
         var query = change.Text.Trim();
-        if (query.Length == 0 || change.Mode == InputMode.Ask)
+        if (change.Mode == InputMode.Ask)
         {
             Publish([], change.Revision);
             return;
@@ -512,12 +523,12 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
 
         if (change.Mode == InputMode.Command)
         {
-            var commandInput = CommandInputSyntax.RemoveModePrefix(query);
+            var commandInput = CommandInputSyntax.RemoveModePrefixForCompletion(change.Text);
             Publish(BuildCommandCandidates(commandInput, options.TotalCandidateCount), change.Revision);
             return;
         }
 
-        if (change.Mode != InputMode.General)
+        if (change.Mode != InputMode.General || query.Length == 0)
         {
             Publish([], change.Revision);
             return;
@@ -681,12 +692,6 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
             .Select(item => item.Spec).DistinctBy(spec => spec.Identity, StringComparer.OrdinalIgnoreCase)
             .Take(directLimit));
 
-        var commandCapacity = directLimit - candidates.Count;
-        if (commandCapacity > 0)
-        {
-            candidates.AddRange(BuildCommandCandidates(query, commandCapacity));
-        }
-
         if (candidates.Count < options.TotalCandidateCount)
         {
             candidates.Add(new CandidateSpec(
@@ -729,28 +734,24 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
 
     private IReadOnlyList<CandidateSpec> BuildCommandCandidates(string input, int limit)
     {
-        if (limit <= 0)
-        {
-            return [];
-        }
-
-        var commandPrefix = CommandPrefix(input);
-        if (commandPrefix.Length == 0)
-        {
-            return [];
-        }
-
-        return commandDispatcher.RegisteredNamesSnapshot()
-            .Where(name => name.StartsWith(commandPrefix, StringComparison.OrdinalIgnoreCase))
-            .Take(limit)
-            .Select(name => new CandidateSpec(
+        return commandDispatcher.Suggest(input, limit)
+            .Select(suggestion => new CandidateSpec(
                 CandidateKind.Command,
                 CandidateIconKind.Command,
-                name,
-                options.CommandDescription,
-                ReplaceCommandPrefix(input, name),
+                suggestion.Label,
+                suggestion.Kind switch
+                {
+                    CommandRouteKind.Domain => options.CommandDomainDescription,
+                    CommandRouteKind.Alias => $"Alias · {suggestion.TargetPath}",
+                    CommandRouteKind.Link => $"Link → {suggestion.TargetPath}",
+                    _ => options.CommandDescription,
+                },
+                suggestion.ExecutionText,
                 null,
-                $"command:{name}"))
+                $"command:{suggestion.Kind}:{suggestion.ExecutionText}",
+                CompletionText: suggestion.CompletionText,
+                Actions: CandidateActions.Complete
+                    | (suggestion.CanExecute ? CandidateActions.Open : CandidateActions.None)))
             .ToArray();
     }
 
@@ -775,14 +776,23 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
             var token = reusableTokens.TryGetValue(spec.Identity, out var reusableToken)
                 ? reusableToken
                 : NextToken();
+            var actions = spec.Actions ?? DefaultActions(spec.Kind);
             candidates[index] = new InputCandidate(
                 token,
                 spec.Kind,
                 spec.IconKind,
                 InputCandidatePresentation.NormalizePrimaryText(spec.PrimaryText),
                 InputCandidatePresentation.NormalizeSecondaryText(spec.SecondaryText),
-                spec.IconSource);
-            targets.Add(token, new CandidateTarget(spec.Kind, spec.Value, spec.EntryKind, spec.ApplicationId, revision));
+                spec.IconSource,
+                actions);
+            targets.Add(token, new CandidateTarget(
+                spec.Kind,
+                spec.ExecutionText,
+                spec.CompletionText,
+                spec.EntryKind,
+                spec.ApplicationId,
+                revision,
+                actions));
             identityTokens.Add(spec.Identity, token);
         }
 
@@ -920,22 +930,6 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         }
     }
 
-    private static string CommandPrefix(string input)
-    {
-        var trimmed = input.AsSpan().TrimStart();
-        var separator = IndexOfWhitespace(trimmed);
-        return (separator < 0 ? trimmed : trimmed[..separator]).ToString();
-    }
-
-    private static string ReplaceCommandPrefix(string input, string commandName)
-    {
-        var trimmed = input.AsSpan().Trim();
-        var separator = IndexOfWhitespace(trimmed);
-        return separator < 0
-            ? commandName
-            : string.Concat(commandName, trimmed[separator..]);
-    }
-
     private static string ParentPath(string fullPath)
     {
         try
@@ -969,16 +963,51 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         CandidateIconKind IconKind,
         string PrimaryText,
         string SecondaryText,
-        string Value,
+        string? ExecutionText,
         FileSystemEntryKind? EntryKind,
         string Identity,
         string? IconSource = null,
-        string? ApplicationId = null);
+        string? ApplicationId = null,
+        string? CompletionText = null,
+        CandidateActions? Actions = null);
 
     private readonly record struct CandidateTarget(
         CandidateKind Kind,
-        string Value,
+        string? ExecutionText,
+        string? CompletionText,
         FileSystemEntryKind? EntryKind,
         string? ApplicationId,
-        ulong Revision);
+        ulong Revision,
+        CandidateActions Actions);
+
+    private static CandidateActions DefaultActions(CandidateKind kind) => kind switch
+    {
+        CandidateKind.File => CandidateActions.Open | CandidateActions.Reveal,
+        CandidateKind.GlobalSearch => CandidateActions.Open,
+        _ => CandidateActions.None,
+    };
+
+    private static bool SupportsAction(CandidateActions actions, CandidateAction action)
+    {
+        var required = action switch
+        {
+            CandidateAction.Open => CandidateActions.Open,
+            CandidateAction.Reveal => CandidateActions.Reveal,
+            CandidateAction.Complete => CandidateActions.Complete,
+            _ => CandidateActions.None,
+        };
+        return required != CandidateActions.None && (actions & required) != 0;
+    }
+
+    private void ReplaceCommandInput(string commandText)
+    {
+        try
+        {
+            nativeShell.ReplaceCommandInput(commandText);
+        }
+        catch (Exception exception)
+        {
+            ReportStatus($"Cannot complete command path: {exception.Message}");
+        }
+    }
 }

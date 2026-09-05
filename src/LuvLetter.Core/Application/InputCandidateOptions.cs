@@ -18,6 +18,8 @@ public sealed class InputCandidateOptions
 
     public string CommandDescription { get; init; } = "Command";
 
+    public string CommandDomainDescription { get; init; } = "Command domain";
+
     public string GlobalSearchLabel { get; init; } = "Global Search";
 
     public string GlobalSearchDescription { get; init; } = "Search all indexed files";
@@ -37,6 +39,7 @@ public sealed class InputCandidateOptions
             TotalCandidateCount,
             MaximumCandidateCount);
         ArgumentException.ThrowIfNullOrWhiteSpace(CommandDescription);
+        ArgumentException.ThrowIfNullOrWhiteSpace(CommandDomainDescription);
         ArgumentException.ThrowIfNullOrWhiteSpace(GlobalSearchLabel);
         ArgumentException.ThrowIfNullOrWhiteSpace(GlobalSearchDescription);
         ArgumentException.ThrowIfNullOrWhiteSpace(GlobalSearchUnavailableMessage);

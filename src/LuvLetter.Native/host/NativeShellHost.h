@@ -31,6 +31,7 @@ public:
 		const LuvLetterInputCandidate* items,
 		int32_t count,
 		uint64_t revision);
+	HRESULT ReplaceInputText(const wchar_t* text, int32_t length, int32_t inputMode);
 	HRESULT Show();
 	HRESULT Hide();
 	HRESULT Toggle();

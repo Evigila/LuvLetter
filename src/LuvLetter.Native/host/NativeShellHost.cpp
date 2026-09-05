@@ -40,6 +40,7 @@ namespace
 		SetInputCallback,
 		SetInputChangedCallback,
 		SetInputCandidates,
+		ReplaceInputText,
 		SetCandidateCallback,
 		ShowInput,
 		HideInput,
@@ -131,6 +132,8 @@ struct NativeShellHost::HostRequest
 	LuvLetterFeatureWindowConfig quickActionsConfig{};
 	std::vector<QuickActionItem> quickActions;
 	std::vector<InputCandidateItem> inputCandidates;
+	std::wstring inputText;
+	int32_t inputMode = LuvLetterInputModeGeneral;
 	std::wstring message;
 	uint64_t messageActivityToken = 0;
 	bool retainFinalMessage = false;
@@ -445,7 +448,11 @@ HRESULT NativeShellHost::SetInputCandidates(
 				|| source.kind < LuvLetterCandidateKindFile
 				|| source.kind > LuvLetterCandidateKindGlobalSearch
 				|| source.iconKind < LuvLetterCandidateIconKindNone
-				|| source.iconKind > LuvLetterCandidateIconKindSearch)
+				|| source.iconKind > LuvLetterCandidateIconKindSearch
+				|| source.actions == LuvLetterCandidateActionsNone
+				|| (source.actions & ~(LuvLetterCandidateActionsOpen
+					| LuvLetterCandidateActionsReveal
+					| LuvLetterCandidateActionsComplete)) != 0)
 			{
 				request->Release();
 				return E_INVALIDARG;
@@ -464,6 +471,7 @@ HRESULT NativeShellHost::SetInputCandidates(
 			item.token = source.token;
 			item.kind = static_cast<LuvLetterCandidateKind>(source.kind);
 			item.iconKind = static_cast<LuvLetterCandidateIconKind>(source.iconKind);
+			item.actions = source.actions;
 			item.primaryText.assign(source.primaryText, primaryLength);
 			if (source.secondaryText != nullptr)
 			{
@@ -498,6 +506,35 @@ HRESULT NativeShellHost::SetInputCandidates(
 		return E_OUTOFMEMORY;
 	}
 
+	return DispatchRequest(request, true);
+}
+
+HRESULT NativeShellHost::ReplaceInputText(
+	const wchar_t* text,
+	int32_t length,
+	int32_t inputMode)
+{
+	if (text == nullptr
+		|| length < 0
+		|| length > LUVLETTER_NATIVE_MAX_INPUT_TEXT_LENGTH
+		|| inputMode < LuvLetterInputModeGeneral
+		|| inputMode > LuvLetterInputModeCommand)
+	{
+		return E_INVALIDARG;
+	}
+
+	auto* request = new (std::nothrow) HostRequest(RequestKind::ReplaceInputText, true);
+	if (request == nullptr) return E_OUTOFMEMORY;
+	try
+	{
+		request->inputText.assign(text, static_cast<size_t>(length));
+		request->inputMode = inputMode;
+	}
+	catch (...)
+	{
+		request->Release();
+		return E_OUTOFMEMORY;
+	}
 	return DispatchRequest(request, true);
 }
 
@@ -776,6 +813,11 @@ HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 			inputWindow_->IsVisible())
 			? S_OK
 			: S_FALSE;
+	case RequestKind::ReplaceInputText:
+		inputWindow_->ReplaceText(
+			std::move(request.inputText),
+			static_cast<LuvLetterInputMode>(request.inputMode));
+		return S_OK;
 	case RequestKind::ShowInput:
 	{
 		CapturePreviousForegroundWindow();

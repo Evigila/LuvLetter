@@ -26,6 +26,16 @@ public enum CandidateAction
 {
     Open = 0,
     Reveal = 1,
+    Complete = 2,
+}
+
+[Flags]
+public enum CandidateActions
+{
+    None = 0,
+    Open = 1 << 0,
+    Reveal = 1 << 1,
+    Complete = 1 << 2,
 }
 
 public enum InputCandidateSetResult
@@ -49,7 +59,8 @@ public sealed record InputCandidate(
     CandidateIconKind IconKind,
     string PrimaryText,
     string SecondaryText,
-    string? IconSource = null);
+    string? IconSource = null,
+    CandidateActions Actions = CandidateActions.Open);
 
 internal static class InputCandidatePresentation
 {

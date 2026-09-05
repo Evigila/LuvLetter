@@ -10,7 +10,7 @@
 namespace luvletter::indexing::protocol {
 
 inline constexpr std::uint32_t kMagic = 0x58494C4C;
-inline constexpr std::uint16_t kMajorVersion = 7;
+inline constexpr std::uint16_t kMajorVersion = 8;
 inline constexpr std::uint32_t kHeaderSize = 20;
 inline constexpr std::uint32_t kMaximumPayloadSize = 1U * 1024U * 1024U;
 
@@ -24,6 +24,7 @@ enum class MessageType : std::uint16_t {
     Shutdown = 7,
     Error = 8,
     Refresh = 9,
+    Reconcile = 10,
 };
 
 struct FrameHeader final {

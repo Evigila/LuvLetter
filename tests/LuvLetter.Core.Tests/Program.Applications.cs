@@ -76,7 +76,7 @@ internal static partial class Program
     private static async Task TestApplicationCandidateMerge()
     {
         using var commands = new CommandDispatcher();
-        Assert.True(commands.Register("micro.command", _ => { }));
+        Assert.True(commands.Register("tool", "micro.command", _ => { }));
         var shell = new FakeNativeShell();
         var files = ApplicationTestFileIndex();
         var fileLauncher = new FakeFileCandidateLauncher();
@@ -98,7 +98,6 @@ internal static partial class Program
                 candidate.IconKind == CandidateIconKind.Executable));
             Assert.NotEqual(first[0].Token, first[1].Token,
                 "Distinct app identities must survive merge even when their names are identical.");
-            Assert.True(first.Any(candidate => candidate.Kind == CandidateKind.Command));
             Assert.Equal(CandidateKind.GlobalSearch, first[^1].Kind);
 
             var priorQueries = apps.QueryCount;
@@ -216,7 +215,7 @@ internal static partial class Program
     private static async Task TestApplicationCandidateIsolation()
     {
         using var commands = new CommandDispatcher();
-        Assert.True(commands.Register("micro.command", _ => { }));
+        Assert.True(commands.Register("tool", "micro.command", _ => { }));
         var shell = new FakeNativeShell();
         var files = ApplicationTestFileIndex();
         var apps = new TestApplicationCatalog(TestApplication("todo", "Microsoft To Do"));
@@ -231,19 +230,16 @@ internal static partial class Program
             var appFailure = await WaitApplicationSnapshotAsync(shell, 1);
             Assert.True(appFailure.Any(candidate => candidate.PrimaryText == "micro"),
                 "Application discovery failure must not erase successful file candidates.");
-            Assert.True(appFailure.Any(candidate => candidate.Kind == CandidateKind.Command));
             apps.FailQueries = false;
             files.SetQuery(static (_, _, _, _) => throw new IOException("File index unavailable."));
             files.RaiseIndexChanged();
             shell.RaiseInputChanged("micro", revision: 2);
             var fileFailure = await WaitApplicationSnapshotAsync(shell, 2);
             var appToken = fileFailure.Single(candidate => candidate.PrimaryText == "Microsoft To Do").Token;
-            Assert.True(fileFailure.Any(candidate => candidate.Kind == CandidateKind.Command),
-                "File index failure must preserve independent apps and commands.");
 
             var appQueries = apps.QueryCount;
             var fileQueries = files.Queries.Count;
-            shell.RaiseInputChanged("micro", InputMode.Command, revision: 3);
+            shell.RaiseInputChanged("/tool micro", InputMode.Command, revision: 3);
             var commandsOnly = await WaitApplicationSnapshotAsync(shell, 3);
             Assert.True(commandsOnly.Count != 0 && commandsOnly.All(candidate => candidate.Kind == CandidateKind.Command));
             shell.RaiseCandidateActivated(appToken);

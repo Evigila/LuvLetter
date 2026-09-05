@@ -298,7 +298,7 @@ optimization. FileSystemWatcher plus targeted periodic reconciliation remains av
 for other filesystems, network roots, removable media, and unavailable journals.
 
 Internal `RefreshPartition(PartitionId, cause, force)` is required in the first
-partition release. The public `index.refresh` fans out a force request to every enabled
+partition release. The public `/luv index refresh --force` command fans out a force request to every enabled
 partition. Force bypasses ordinary ignore, cooldown, and automatic gap; it still honors
 full ignore, ownership, lane limits, and one-active-build per partition. A targeted source
 retry never becomes a refresh of all healthy partitions.
@@ -433,7 +433,7 @@ or optional network/removable coverage are future acceptance gates:
 - adding/removing a nested active scope without duplicate or missing results;
 - junction/reparse cycles and an explicit reparse root;
 - network disconnect/reconnect and removable drive-letter change;
-- force one partition internally and force all through `index.refresh`;
+- force one partition internally and force all through `/luv index refresh --force`;
 - broad reconciliation while StartupCritical search and activation remain responsive;
 - equal matches across tiers using the same ranking, including a usage-boosted file;
 - application/file records sharing an executable but retaining distinct launch semantics;

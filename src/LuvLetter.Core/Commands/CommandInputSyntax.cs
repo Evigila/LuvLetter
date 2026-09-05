@@ -14,4 +14,17 @@ internal static class CommandInputSyntax
 
         return normalized.ToString();
     }
+
+    internal static string RemoveModePrefixForCompletion(string input)
+    {
+        ArgumentNullException.ThrowIfNull(input);
+
+        var normalized = input.AsSpan().TrimStart();
+        if (!normalized.IsEmpty && normalized[0] == '/')
+        {
+            normalized = normalized[1..].TrimStart();
+        }
+
+        return normalized.ToString();
+    }
 }

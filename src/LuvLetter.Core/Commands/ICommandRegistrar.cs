@@ -6,9 +6,26 @@ namespace LuvLetter.Core.Commands;
 public interface ICommandRegistrar
 {
     bool Register(
-        string commandName,
+        string commandDomain,
+        string commandPath,
         Action<CommandInvocation> handler,
         CommandRegistrationMode mode = CommandRegistrationMode.RejectDuplicate);
 
-    bool IsRegistered(string commandName);
+    bool RegisterAlias(
+        string aliasDomain,
+        string aliasPath,
+        string targetDomain,
+        string targetPath);
+
+    bool RegisterLink(
+        string sourceDomain,
+        string sourcePath,
+        string targetDomain,
+        string targetPath);
+
+    bool IsRegistered(string commandDomain, string commandPath);
+
+    bool IsExecutable(string commandDomain, string commandPath);
+
+    bool HasPath(string commandDomain, string commandPath);
 }

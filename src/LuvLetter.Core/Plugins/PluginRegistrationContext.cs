@@ -9,47 +9,96 @@ namespace LuvLetter.Core.Plugins;
 public sealed class PluginRegistrationContext
 {
     private readonly List<PendingCommand> commands = [];
+    private readonly List<PendingCommandAlias> commandAliases = [];
+    private readonly List<PendingCommandLink> commandLinks = [];
     private readonly List<PendingQuickAction> quickActions = [];
     private bool completed;
 
     internal PluginRegistrationContext() { }
 
     public void RegisterCommand(
-        string commandName,
+        string commandDomain,
+        string commandPath,
         Action<CommandInvocation> handler,
         CommandRegistrationMode mode = CommandRegistrationMode.RejectDuplicate)
     {
         ThrowIfCompleted();
-        ArgumentException.ThrowIfNullOrWhiteSpace(commandName);
+        var normalizedDomain = CommandDispatcher.NormalizeDomain(
+            commandDomain,
+            nameof(commandDomain));
+        var normalizedPath = CommandDispatcher.NormalizePath(commandPath, nameof(commandPath));
         ArgumentNullException.ThrowIfNull(handler);
         ValidateMode(mode);
 
-        var normalizedName = commandName.Trim();
-        if (normalizedName.Any(char.IsWhiteSpace))
-        {
-            throw new ArgumentException(
-                "A command name cannot contain whitespace.",
-                nameof(commandName));
-        }
-
         var existingIndex = commands.FindIndex(
             registration => string.Equals(
-                registration.Name,
-                normalizedName,
+                registration.Domain,
+                normalizedDomain,
+                StringComparison.OrdinalIgnoreCase)
+                && string.Equals(
+                registration.Path,
+                normalizedPath,
                 StringComparison.OrdinalIgnoreCase));
         if (existingIndex >= 0)
         {
             if (mode == CommandRegistrationMode.RejectDuplicate)
             {
                 throw new InvalidOperationException(
-                    $"Command '{normalizedName}' is already registered by this plugin.");
+                    $"Command '{normalizedDomain} {normalizedPath}' is already registered by this plugin.");
             }
 
-            commands[existingIndex] = new(normalizedName, handler, mode);
+            commands[existingIndex] = new(normalizedDomain, normalizedPath, handler, mode);
             return;
         }
 
-        commands.Add(new(normalizedName, handler, mode));
+        EnsureRouteAvailable(normalizedDomain, normalizedPath);
+        commands.Add(new(normalizedDomain, normalizedPath, handler, mode));
+    }
+
+    public void RegisterCommandAlias(
+        string aliasDomain,
+        string aliasPath,
+        string targetDomain,
+        string targetPath)
+    {
+        ThrowIfCompleted();
+        var normalizedAliasDomain = CommandDispatcher.NormalizeDomain(
+            aliasDomain,
+            nameof(aliasDomain));
+        var normalizedAliasPath = CommandDispatcher.NormalizePath(aliasPath, nameof(aliasPath));
+        var normalizedTargetDomain = CommandDispatcher.NormalizeDomain(
+            targetDomain,
+            nameof(targetDomain));
+        var normalizedTargetPath = CommandDispatcher.NormalizePath(targetPath, nameof(targetPath));
+        EnsureRouteAvailable(normalizedAliasDomain, normalizedAliasPath);
+        commandAliases.Add(new(
+            normalizedAliasDomain,
+            normalizedAliasPath,
+            normalizedTargetDomain,
+            normalizedTargetPath));
+    }
+
+    public void RegisterCommandLink(
+        string sourceDomain,
+        string sourcePath,
+        string targetDomain,
+        string targetPath)
+    {
+        ThrowIfCompleted();
+        var normalizedSourceDomain = CommandDispatcher.NormalizeDomain(
+            sourceDomain,
+            nameof(sourceDomain));
+        var normalizedSourcePath = CommandDispatcher.NormalizePath(sourcePath, nameof(sourcePath));
+        var normalizedTargetDomain = CommandDispatcher.NormalizeDomain(
+            targetDomain,
+            nameof(targetDomain));
+        var normalizedTargetPath = CommandDispatcher.NormalizePath(targetPath, nameof(targetPath));
+        EnsureRouteAvailable(normalizedSourceDomain, normalizedSourcePath);
+        commandLinks.Add(new(
+            normalizedSourceDomain,
+            normalizedSourcePath,
+            normalizedTargetDomain,
+            normalizedTargetPath));
     }
 
     public void RegisterQuickAction(
@@ -70,7 +119,11 @@ public sealed class PluginRegistrationContext
     {
         ThrowIfCompleted();
         completed = true;
-        return new(commands.ToArray(), quickActions.ToArray());
+        return new(
+            commands.ToArray(),
+            commandAliases.ToArray(),
+            commandLinks.ToArray(),
+            quickActions.ToArray());
     }
 
     private void AddQuickAction(
@@ -125,10 +178,42 @@ public sealed class PluginRegistrationContext
         }
     }
 
+    private void EnsureRouteAvailable(string domain, string path)
+    {
+        if (commands.Any(command => SameRoute(command.Domain, command.Path, domain, path))
+            || commandAliases.Any(alias => SameRoute(alias.Domain, alias.Path, domain, path))
+            || commandLinks.Any(link => SameRoute(link.Domain, link.Path, domain, path)))
+        {
+            throw new InvalidOperationException(
+                $"Command route '{domain} {path}' is already registered by this plugin.");
+        }
+    }
+
+    private static bool SameRoute(
+        string leftDomain,
+        string leftPath,
+        string rightDomain,
+        string rightPath) =>
+        string.Equals(leftDomain, rightDomain, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(leftPath, rightPath, StringComparison.OrdinalIgnoreCase);
+
     internal readonly record struct PendingCommand(
-        string Name,
+        string Domain,
+        string Path,
         Action<CommandInvocation> Handler,
         CommandRegistrationMode Mode);
+
+    internal readonly record struct PendingCommandAlias(
+        string Domain,
+        string Path,
+        string TargetDomain,
+        string TargetPath);
+
+    internal readonly record struct PendingCommandLink(
+        string Domain,
+        string Path,
+        string TargetDomain,
+        string TargetPath);
 
     internal readonly record struct PendingQuickAction(
         QuickActionDefinition Definition,
@@ -136,5 +221,7 @@ public sealed class PluginRegistrationContext
 
     internal readonly record struct Batch(
         IReadOnlyList<PendingCommand> Commands,
+        IReadOnlyList<PendingCommandAlias> CommandAliases,
+        IReadOnlyList<PendingCommandLink> CommandLinks,
         IReadOnlyList<PendingQuickAction> QuickActions);
 }

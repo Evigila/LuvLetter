@@ -75,7 +75,7 @@ internal static partial class Program
         Assert.Equal(75U, reader.UInt32());
         Assert.Equal(1U, reader.UInt32());
         Assert.Equal(@"C:\Data\Desktop", reader.String());
-        Assert.Equal(61U, reader.UInt32(), "Global cooldown follows all partition descriptors in LLIX v7.");
+        Assert.Equal(61U, reader.UInt32(), "Global cooldown follows all partition descriptors in LLIX v8.");
         Assert.Equal(1U, reader.UInt32());
         Assert.Equal(@"C:\Ignored", reader.String());
         Assert.Equal(1U, reader.UInt32());
@@ -83,7 +83,9 @@ internal static partial class Program
         Assert.Equal(1U, reader.UInt32());
         Assert.Equal(@"C:\Secret", reader.String());
         Assert.True(reader.Complete);
-        Assert.Equal((ushort)7, FileIndexProtocol.MajorVersion);
+        Assert.Equal((ushort)8, FileIndexProtocol.MajorVersion);
+        Assert.Equal((ushort)9, (ushort)FileIndexMessageType.Refresh);
+        Assert.Equal((ushort)10, (ushort)FileIndexMessageType.Reconcile);
         return Task.CompletedTask;
     }
 

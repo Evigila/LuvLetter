@@ -7,9 +7,9 @@ internal sealed class ApplicationIndexRefreshRequester(
     FileIndexCompanionClient files,
     WindowsApplicationCatalog applications) : IIndexRefreshRequester
 {
-    public void RequestRefresh()
+    public void RequestRefresh(IndexRefreshMode mode)
     {
-        files.RequestRefresh();
-        applications.RequestRefresh();
+        files.RequestRefresh(mode);
+        applications.RequestRefresh(mode);
     }
 }

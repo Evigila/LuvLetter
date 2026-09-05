@@ -170,7 +170,9 @@ public:
         return status_;
     }
 
-    void RequestRefresh() { RequestRefresh(std::nullopt, true, Forced); }
+    void RequestRefresh(const bool force) {
+        RequestRefresh(std::nullopt, force, force ? Forced : Manual);
+    }
 
 private:
     // Internal target for watcher recovery and retry; null targets all partitions.
@@ -192,8 +194,13 @@ private:
             partition->forced |= force;
             partition->causes |= cause;
             if (partition->dirtySince == Clock::time_point{}) partition->dirtySince = Clock::now();
-            LogPartition(*partition, force ? "force" : "watcher-recovery", force
-                ? "Force rebuild queued | cooldown=bypassed" : "Watcher recovery queued");
+            const auto eventName = force ? "force" : cause == Manual ? "manual" : "watcher-recovery";
+            const auto message = force
+                ? "Force rebuild queued | cooldown=bypassed"
+                : cause == Manual
+                    ? "Reconciliation queued"
+                    : "Watcher recovery queued";
+            LogPartition(*partition, eventName, message);
         }
         UpdateStatusLocked();
         changed_.notify_all();
@@ -201,7 +208,7 @@ private:
 
     using Clock = std::chrono::steady_clock;
     enum Cause : std::uint32_t { Startup = 1, FileChange = 2, Periodic = 4, Forced = 8,
-        WatcherRecovery = 16, Retry = 32, Compaction = 64 };
+        WatcherRecovery = 16, Retry = 32, Compaction = 64, Manual = 128 };
     struct Partition final {
         IndexPartitionDescriptor descriptor;
         std::filesystem::path cachePath;

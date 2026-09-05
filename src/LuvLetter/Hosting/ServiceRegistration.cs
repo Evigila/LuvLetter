@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using ArkheideSystem;
 using LuvLetter.Core.Activation;
 using LuvLetter.Core.Commands;
 using LuvLetter.Core.Configuration;
@@ -31,6 +32,11 @@ internal static class ServiceRegistration
         services.AddSingleton<ILuvLetterConfigurationStore>(
             provider => provider.GetRequiredService<LuvLetterConfigurationStore>());
         services.AddSingleton<CommandDispatcher>();
+        services.AddSingleton<WindowsCommandRunner>();
+        services.AddSingleton<ISystemCommandRunner>(
+            provider => provider.GetRequiredService<WindowsCommandRunner>());
+        services.AddHostedService(
+            provider => provider.GetRequiredService<WindowsCommandRunner>());
         services.AddSingleton<QuickActionRegistry>();
         services.AddSingleton(new InputCandidateOptions());
         services.AddSingleton(new CandidateRankingOptions());

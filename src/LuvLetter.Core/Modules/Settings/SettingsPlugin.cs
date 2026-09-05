@@ -11,7 +11,7 @@ public sealed class SettingsPlugin(IApplicationShell applicationShell) : ILuvLet
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        context.RegisterCommand("settings", _ => applicationShell.ShowSettings());
+        context.RegisterCommand("luv", "settings", _ => applicationShell.ShowSettings());
         context.RegisterQuickAction(
             "settings.open",
             "Control Center",

@@ -3,6 +3,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using LuvLetter.Core.Application;
+using LuvLetter.Core.Modules.Indexing;
 using LuvLetter.Platform.Indexing;
 using Microsoft.Extensions.Hosting;
 
@@ -106,8 +107,14 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
         // A Shell/COM enumeration can outlive bounded host shutdown. Keep its token and wake handle valid.
     }
 
-    public void RequestRefresh()
+    public void RequestRefresh() => RequestRefresh(IndexRefreshMode.Normal);
+
+    public void RequestRefresh(IndexRefreshMode mode)
     {
+        if (!Enum.IsDefined(mode))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode));
+        }
         string[] queued;
         lock (gate)
         {
@@ -118,19 +125,32 @@ internal sealed class WindowsApplicationCatalog : IApplicationCatalog, IHostedSe
             }
             if (partitions.Count == 0)
             {
-                forceAllPending = true;
+                forceAllPending |= mode == IndexRefreshMode.Force;
                 queued = [];
             }
             else
             {
-                queued = partitions.Values.Select(ForceLocked).ToArray();
+                queued = partitions.Values.Select(partition =>
+                {
+                    if (mode == IndexRefreshMode.Force)
+                    {
+                        return ForceLocked(partition);
+                    }
+                    MarkDirtyLocked(partition, "manual", force: false);
+                    return partition.SourceId;
+                }).ToArray();
             }
         }
+        var eventName = mode == IndexRefreshMode.Force ? "force" : "manual";
         if (queued.Length == 0)
-            Log("force", "Force rebuild queued | catalog=applications | partition=all-pending-startup | cooldown=bypassed");
+            Log(eventName, mode == IndexRefreshMode.Force
+                ? "Force rebuild queued | catalog=applications | partition=all-pending-startup | cooldown=bypassed"
+                : "Reconciliation queued | catalog=applications | partition=all-pending-startup");
         else
             foreach (var sourceId in queued)
-                Log("force", $"Force rebuild queued | catalog=applications | partition={SafeMessage(sourceId)} | cooldown=bypassed");
+                Log(eventName, mode == IndexRefreshMode.Force
+                    ? $"Force rebuild queued | catalog=applications | partition={SafeMessage(sourceId)} | cooldown=bypassed"
+                    : $"Reconciliation queued | catalog=applications | partition={SafeMessage(sourceId)}");
         Wake();
     }
 

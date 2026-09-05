@@ -73,6 +73,7 @@ internal struct NativeInputCandidate
     public ulong Token;
     public int Kind;
     public int IconKind;
+    public int Actions;
     public IntPtr PrimaryText;
     public IntPtr SecondaryText;
     public IntPtr IconSource;
@@ -104,7 +105,7 @@ internal delegate void NativeCandidateActivatedCallback(
 
 internal sealed class NativeShellApi : INativeShellApi
 {
-    private const uint CurrentAbiVersion = 8;
+    private const uint CurrentAbiVersion = 10;
 
     internal static INativeShellApi Instance { get; } = new NativeShellApi();
 
@@ -166,6 +167,17 @@ internal sealed class NativeShellApi : INativeShellApi
             [In] NativeInputCandidate[] items,
             int count,
             ulong revision);
+
+        [DllImport(
+            "LuvLetter.Native.dll",
+            EntryPoint = "ReplaceInputBoxText",
+            ExactSpelling = true,
+            CharSet = CharSet.Unicode,
+            CallingConvention = CallingConvention.StdCall)]
+        internal static extern int ReplaceInputBoxText(
+            [MarshalAs(UnmanagedType.LPWStr)] string text,
+            int length,
+            int inputMode);
 
         [DllImport(
             "LuvLetter.Native.dll",
@@ -330,6 +342,9 @@ internal sealed class NativeShellApi : INativeShellApi
         ulong revision) =>
         NativeMethods.SetInputCandidates(items, count, revision);
 
+    public int ReplaceInputBoxText(string text, int length, int inputMode) =>
+        NativeMethods.ReplaceInputBoxText(text, length, inputMode);
+
     public int ShowInputBox() => NativeMethods.ShowInputBox();
 
     public int HideInputBox() => NativeMethods.HideInputBox();
@@ -385,7 +400,7 @@ internal sealed class NativeShellApi : INativeShellApi
         EnsureSize<NativeInputBoxConfig>(104);
         EnsureSize<NativeFeatureWindowConfig>(88);
         EnsureSize<NativeFeatureItem>(16);
-        EnsureSize<NativeInputCandidate>(40);
+        EnsureSize<NativeInputCandidate>(48);
     }
 
     private static void EnsureSize<T>(int expected)

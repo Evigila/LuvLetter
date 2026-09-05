@@ -27,6 +27,22 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 
 ### Added
 
+- Added explicit command domains and multi-segment command paths. Empty `Cmd` lists
+  domains and each completed segment reveals only its immediate children. Built-in
+  commands are now `/luv settings` and `/luv index refresh`.
+- Added command aliases and prefix links. Aliases share one command definition; links
+  rewrite a source prefix before resolving the remaining path. `/luv refreshindex` links
+  to `/luv index refresh`.
+- Tab now completes the selected command segment without executing it. Enter executes
+  eligible candidates or submits the current text when the selected domain or branch is
+  not executable.
+- Split manual index maintenance into normal and forced modes. `/luv index refresh`
+  observes partition gaps, while `-f` and `--force` bypass them across file and application
+  partitions. LLIX v8 distinguishes normal `Reconcile` from forced `Refresh` frames.
+- Added a bounded serial Windows command runner for Cmd input whose first token does not
+  match a registered domain. It invokes hidden `cmd.exe`, captures bounded stdout and
+  stderr for the message queue, enforces a two-minute timeout, and preserves standalone
+  `cd` working-directory changes.
 - Typing or pasting a leading `/` in `Gen` now switches directly to `Cmd`. The visible
   slash is treated as a mode prefix for command candidates and submission, and the edit
   bypasses application and filesystem index queries from its first published revision.
@@ -77,7 +93,7 @@ reserved product capabilities. Architectural ownership and dependency rules rema
   stdout/stderr logs under `%LocalAppData%\LuvLetter\Logs`.
 - Added editable index-maintenance settings with a six-minute periodic refresh,
   directory scopes that suppress rebuild triggers while retaining search, and a bounded
-  one-minute per-path trigger cooldown. Added `index.refresh` to force a full scan.
+  one-minute per-path trigger cooldown. Added the index refresh command to force a full scan.
 - Added default rebuild-ignore rules for version-control metadata, developer dependencies,
   build output, virtual environments, and package caches. Exact directory-name matching
   works across workspace locations; older configuration files receive defaults for new
@@ -115,9 +131,9 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 - Added explicit index lifecycle feedback. Initial construction reports
   `正在生成索引表`, background maintenance reports `正在更新索引`, and successful
   publication completes the activity with `索引已就绪`.
-- Added command-name candidates from the registered command snapshot. `Gen` gives direct
-  search results priority and uses commands as remaining direct matches; `Cmd` shows commands
-  only; `Ask` shows no candidates.
+- Added hierarchical command candidates from registered domain and command snapshots.
+  `Cmd` shows domains first and commands after a valid domain; `Gen` remains application
+  and file search with Global Search, while `Ask` shows no candidates.
 - Added editor revisions and latest-wins query delivery so slow results from older input
   cannot replace or activate the current candidate list.
 - Added index-generation status refresh. The current input is queried again automatically
@@ -175,7 +191,7 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 - Upgraded LLIX to v7, combining partition IDs, roots, delegated subtrees, maintenance
   tiers, maximum ages, and automatic gaps with work-stage, percentage, estimate, and
   discovered-entry status fields. Persisted snapshots use schema v4; Native ABI remains v7.
-- Extended `index.refresh` to request both file and application catalogs. Existing ignore,
+- Extended the index refresh command to request both file and application catalogs. Existing ignore,
   cooldown, full-exclusion, and console-color semantics also apply to application events.
 - Rank a bounded pool of up to 64 matches per source before taking visible results;
   keep the default five direct results and one Global Search row. Application publication
@@ -213,8 +229,11 @@ reserved product capabilities. Architectural ownership and dependency rules rema
   unfocused, and hide when visible and focused.
 - The focus indicator now synchronizes immediately after activation instead of waiting
   for the next text or caret update.
-- `Cmd` mode preserves strict command behavior and reports unknown commands through the
-  message queue; `Ask` bypasses command matching entirely.
+- `Cmd` keeps matched registered domains inside the application dispatcher and reports
+  unknown child commands through the message queue; unmatched domains run as Windows
+  commands. `Ask` bypasses command matching entirely.
+- Native ABI version 10 adds command-editor text replacement and explicit candidate action
+  capabilities so Tab completion and Enter execution remain independent.
 - Native ABI version 7 adds token-based persistent message activity operations while
   retaining the candidate icon categories from version 6 and the revisioned input,
   activation, and selected-mode contracts introduced in version 5.

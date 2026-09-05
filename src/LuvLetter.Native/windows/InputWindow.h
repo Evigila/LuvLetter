@@ -40,6 +40,7 @@ public:
 	bool IsVisible() const noexcept { return visible_; }
 	bool HasKeyboardFocus() const noexcept;
 	uint64_t CurrentRevision() const noexcept { return revision_; }
+	void ReplaceText(std::wstring value, LuvLetterInputMode mode);
 	void SetPreviousForegroundWindow(HWND window) noexcept { previousForegroundHwnd_ = window; }
 	void RefreshFocusVisuals();
 	HWND WindowHandle() const noexcept { return hwnd_; }

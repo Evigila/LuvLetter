@@ -6,12 +6,13 @@ using LuvLetter.Core.Modules.QuickActions;
 using LuvLetter.Core.NativeShell;
 using LuvLetter.Core.Application;
 using LuvLetter.Core.Plugins;
+using ArkheideSystem;
 
 namespace LuvLetter.Core.Tests;
 
 internal sealed class FakeNativeShellApi : INativeShellApi
 {
-    public uint AbiVersion => 8;
+    public uint AbiVersion => 10;
 
     public int CompatibilityChecks { get; private set; }
 
@@ -33,6 +34,7 @@ internal sealed class FakeNativeShellApi : INativeShellApi
         ulong Token,
         CandidateKind Kind,
         CandidateIconKind IconKind,
+        CandidateActions Actions,
         string Primary,
         string Secondary,
         string? IconSource)>
@@ -45,6 +47,8 @@ internal sealed class FakeNativeShellApi : INativeShellApi
     public int SetFeatureItemsResult { get; set; }
 
     public int SetInputCandidatesResult { get; set; }
+
+    public int ReplaceInputBoxTextResult { get; set; }
 
     public int ToggleInputBoxResult { get; set; }
 
@@ -71,6 +75,8 @@ internal sealed class FakeNativeShellApi : INativeShellApi
     public int HideQuickActionsCalls { get; private set; }
 
     public List<(string Text, int Length)> EnqueuedMessages { get; } = [];
+
+    public List<(string Text, int Length, int InputMode)> ReplacedInputTexts { get; } = [];
 
     public List<(ulong Token, string Text, int Length)> BegunMessageActivities { get; } = [];
 
@@ -178,7 +184,14 @@ internal sealed class FakeNativeShellApi : INativeShellApi
 
     public int SetInputCandidates(NativeInputCandidate[] items, int count, ulong revision)
     {
-        var copied = new (ulong, CandidateKind, CandidateIconKind, string, string, string?)[count];
+        var copied = new (
+            ulong,
+            CandidateKind,
+            CandidateIconKind,
+            CandidateActions,
+            string,
+            string,
+            string?)[count];
         var expectedTextPointer = count == 0 ? IntPtr.Zero : items[0].PrimaryText;
         var textPointersWerePacked = true;
         for (var index = 0; index < count; index++)
@@ -207,6 +220,7 @@ internal sealed class FakeNativeShellApi : INativeShellApi
                 items[index].Token,
                 (CandidateKind)items[index].Kind,
                 (CandidateIconKind)items[index].IconKind,
+                (CandidateActions)items[index].Actions,
                 primary,
                 secondary,
                 iconSource);
@@ -216,6 +230,12 @@ internal sealed class FakeNativeShellApi : INativeShellApi
         InputCandidateRevision = revision;
         InputCandidateTextPointersWerePacked = textPointersWerePacked;
         return SetInputCandidatesResult;
+    }
+
+    public int ReplaceInputBoxText(string text, int length, int inputMode)
+    {
+        ReplacedInputTexts.Add((text, length, inputMode));
+        return ReplaceInputBoxTextResult;
     }
 
     public int EnqueueMessage(string text, int length)
@@ -415,6 +435,8 @@ internal sealed class FakeNativeShell : INativeShell
 
     public int HidePopupsCalls { get; private set; }
 
+    public List<string> ReplacedCommandInputs { get; } = [];
+
     public InputCandidateSetResult SetInputCandidatesResult { get; set; } =
         InputCandidateSetResult.Accepted;
 
@@ -437,6 +459,8 @@ internal sealed class FakeNativeShell : INativeShell
         CandidateSnapshots.Add((candidates.ToArray(), revision));
         return SetInputCandidatesResult;
     }
+
+    public void ReplaceCommandInput(string text) => ReplacedCommandInputs.Add(text);
 
     public void ToggleCommandInput() => ToggleCommandInputCalls++;
 
@@ -503,6 +527,36 @@ internal sealed class FakeNativeShell : INativeShell
             }
         }
     }
+}
+
+internal sealed class FakeSystemCommandRunner : ISystemCommandRunner
+{
+    private long nextRequestId;
+
+    public event Action<SystemCommandStarted>? Started;
+
+    public event Action<SystemCommandCompleted>? Completed;
+
+    public SystemCommandQueueStatus NextStatus { get; set; } = SystemCommandQueueStatus.Accepted;
+
+    public List<(long RequestId, string CommandText)> Requests { get; } = [];
+
+    public SystemCommandEnqueueResult TryEnqueue(string commandText)
+    {
+        if (NextStatus != SystemCommandQueueStatus.Accepted)
+        {
+            return new(NextStatus, 0);
+        }
+
+        var requestId = Interlocked.Increment(ref nextRequestId);
+        Requests.Add((requestId, commandText));
+        return new(SystemCommandQueueStatus.Accepted, requestId);
+    }
+
+    public void RaiseStarted(long requestId, string commandText) =>
+        Started?.Invoke(new(requestId, commandText));
+
+    public void RaiseCompleted(SystemCommandCompleted result) => Completed?.Invoke(result);
 }
 
 internal sealed class FakeApplicationShell : IApplicationShell
