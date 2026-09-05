@@ -16,6 +16,7 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
     private const int MaximumQuickActionLabelLength = 96;
     private const int MaximumCandidatePrimaryTextLength = InputCandidatePresentation.MaximumPrimaryTextLength;
     private const int MaximumCandidateSecondaryTextLength = InputCandidatePresentation.MaximumSecondaryTextLength;
+    private const int MaximumCandidateIconSourceLength = InputCandidatePresentation.MaximumIconSourceLength;
     private const int MaximumMessageLength = 4096;
     private const int MaximumPendingNotifications = 128;
 
@@ -215,6 +216,7 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
 
             Span<int> primaryTextLengths = stackalloc int[candidates.Count];
             Span<int> secondaryTextLengths = stackalloc int[candidates.Count];
+            Span<int> iconSourceLengths = stackalloc int[candidates.Count];
             var packedTextLength = 0;
             for (var index = 0; index < candidates.Count; index++)
             {
@@ -234,10 +236,14 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
                 secondaryTextLengths[index] = GetPackedTextLength(
                     candidate.SecondaryText,
                     MaximumCandidateSecondaryTextLength);
+                iconSourceLengths[index] = GetPackedTextLength(
+                    candidate.IconSource,
+                    MaximumCandidateIconSourceLength);
                 packedTextLength = checked(
                     packedTextLength
                     + primaryTextLengths[index] + 1
-                    + secondaryTextLengths[index] + 1);
+                    + secondaryTextLengths[index] + 1
+                    + (iconSourceLengths[index] == 0 ? 0 : iconSourceLengths[index] + 1));
             }
 
             var packedText = ArrayPool<char>.Shared.Rent(packedTextLength);
@@ -278,10 +284,18 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
                             packedText,
                             packedTextPointer,
                             ref packedTextOffset),
+                        IconSource = iconSourceLengths[index] == 0
+                            ? IntPtr.Zero
+                            : PackText(
+                                candidate.IconSource,
+                                iconSourceLengths[index],
+                                packedText,
+                                packedTextPointer,
+                                ref packedTextOffset),
                     };
                 }
 
-                // The native host copies every pointed-to string before this synchronous
+                // The native host copies every pointed-to text and icon-source string before this synchronous
                 // call returns, so the pooled buffer can be unpinned immediately afterward.
                 return ParseCandidateSetResult(
                     nativeApi.SetInputCandidates(nativeItems, candidates.Count, revision));

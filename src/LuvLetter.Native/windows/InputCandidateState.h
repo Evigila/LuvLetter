@@ -16,6 +16,7 @@ struct InputCandidateItem final
 	LuvLetterCandidateIconKind iconKind = LuvLetterCandidateIconKindNone;
 	std::wstring primaryText;
 	std::wstring secondaryText;
+	std::wstring iconSource;
 };
 
 struct InputCandidateActivation final

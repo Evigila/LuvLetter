@@ -154,6 +154,65 @@ internal static partial class Program
         }
     }
 
+    private static async Task TestApplicationCandidateIconSources()
+    {
+        using var commands = new CommandDispatcher();
+        var shell = new FakeNativeShell();
+        var files = new FakeFileIndexClient();
+        files.SetQuery(static (_, _, _, _) =>
+            ValueTask.FromResult<IReadOnlyList<FileIndexMatch>>([]));
+        var apps = new TestApplicationCatalog(
+            new("01", "Icon Shortcut", [], ApplicationLaunchKind.Shortcut,
+                @"C:\Menu\Shortcut.lnk", ExecutablePath: @"C:\Apps\Shortcut.exe"),
+            new("02", "Icon Executable", [], ApplicationLaunchKind.Executable,
+                @"C:\Apps\Executable.exe", ExecutablePath: @"C:\Apps\Executable.exe"),
+            new("03", "Icon Registered", [], ApplicationLaunchKind.RegisteredExecutable,
+                "Registered.exe", ExecutablePath: @"C:\Apps\Registered.exe"),
+            new("04", "Icon Packaged", [], ApplicationLaunchKind.Packaged,
+                "Package_family!App", ExecutablePath: @"C:\Protected\App.exe"),
+            new("05", "Icon Shell Item", [], ApplicationLaunchKind.ShellItem,
+                @"shell:AppsFolder\Shell_family!App"),
+            new("06", "Icon Settings", [], ApplicationLaunchKind.SettingsUri,
+                "ms-settings:display"),
+            new("07", "Icon Control Panel", [], ApplicationLaunchKind.ControlPanel,
+                "Microsoft.System", ExecutablePath: @"C:\Windows\System32\control.exe"),
+            new("08", "Icon Invalid", [], ApplicationLaunchKind.ShellItem,
+                new string('x', InputCandidatePresentation.MaximumIconSourceLength + 1)));
+        using var coordinator = new InputCandidateCoordinator(
+            shell,
+            files,
+            new FakeFileCandidateLauncher(),
+            commands,
+            new InputCandidateOptions { FileCandidateCount = 10, TotalCandidateCount = 11 },
+            apps,
+            new TestApplicationLauncher());
+        await coordinator.StartAsync(CancellationToken.None);
+        try
+        {
+            shell.RaiseInputChanged("Icon", revision: 1);
+            var candidates = await WaitApplicationSnapshotAsync(
+                shell,
+                1,
+                predicate: items => items.Count(item => item.PrimaryText.StartsWith("Icon ",
+                    StringComparison.Ordinal)) == 8);
+            var sources = candidates
+                .Where(candidate => candidate.PrimaryText.StartsWith("Icon ", StringComparison.Ordinal))
+                .ToDictionary(candidate => candidate.PrimaryText, candidate => candidate.IconSource);
+            Assert.Equal(@"C:\Menu\Shortcut.lnk", sources["Icon Shortcut"]);
+            Assert.Equal(@"C:\Apps\Executable.exe", sources["Icon Executable"]);
+            Assert.Equal(@"C:\Apps\Registered.exe", sources["Icon Registered"]);
+            Assert.Equal(@"shell:AppsFolder\Package_family!App", sources["Icon Packaged"]);
+            Assert.Equal(@"shell:AppsFolder\Shell_family!App", sources["Icon Shell Item"]);
+            Assert.True(sources["Icon Settings"] is null);
+            Assert.Equal(@"C:\Windows\System32\control.exe", sources["Icon Control Panel"]);
+            Assert.True(sources["Icon Invalid"] is null);
+        }
+        finally
+        {
+            await coordinator.StopAsync(CancellationToken.None);
+        }
+    }
+
     private static async Task TestApplicationCandidateIsolation()
     {
         using var commands = new CommandDispatcher();
@@ -315,6 +374,9 @@ internal static partial class Program
             Assert.SequenceEqual(["microtool.exe", "micro", "microlink.lnk"],
                 candidates.Take(3).Select(candidate => candidate.PrimaryText));
             Assert.Equal(CandidateIconKind.Executable, candidates[0].IconKind);
+            Assert.Equal(@"C:\Portable\microtool.exe", candidates[0].IconSource);
+            Assert.True(candidates[1].IconSource is null);
+            Assert.True(candidates[2].IconSource is null);
             shell.RaiseCandidateActivated(candidates[0].Token);
             Assert.SequenceEqual([@"C:\Portable\microtool.exe"], launcher.Opened,
                 "A standalone executable must retain its filesystem activation target.");

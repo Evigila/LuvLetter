@@ -87,16 +87,18 @@ Phase 2 introduced memory-only Delta state; Phase 3 adds durable change replay.
 - Continue honoring cancellation between directories and bounded enumeration batches so
   reconfiguration and shutdown remain responsive.
 
-### Folder candidates and lightweight type icons
+### Folder candidates and native type icons
 
 - Index directory names as first-class candidates with stable identifiers and lazily
   reconstructed paths. Root containers themselves are configuration scope, not ordinary
   search results unless explicitly requested later.
 - Carry a small candidate-kind and icon-category value across the index protocol and
-  Native ABI. Native renders lightweight built-in glyphs for folders and common file
-  categories; candidate production must not synchronously extract shell icons.
-- Keep icon metadata bounded and deterministic. Shell thumbnails, executable icon
-  extraction, and per-path image caches are outside this phase.
+  Native ABI. Native renders Windows stock icons for ordinary files and folders and
+  keeps lightweight built-in glyphs as the immediate and failure fallback.
+- Keep icon metadata bounded and deterministic. Application and indexed executable
+  candidates may carry one bounded Shell parsing source through Native ABI v8. A bounded
+  STA worker extracts exact-DPI icons asynchronously; candidate production and rendering
+  never wait for Shell extraction, and thumbnails remain outside this phase.
 
 ### Deterministic ranking
 
@@ -194,7 +196,7 @@ No edit distance, token score, usage history, or pinyin score participates in Ph
   deterministic ranking, overlapping roots, v4 persistence, provenance mismatch,
   checksum corruption, Delta ordering, ancestor tombstones, rebuild-cutoff pruning, and
   live create/rename/delete notifications.
-- Core and Native suites cover LLIX v7 activity/progress decoding, Native ABI v7, icon categories,
+- Core and Native suites cover LLIX v7 activity/progress decoding, Native ABI v8, icon categories and sources,
   default and same-revision selection, persistent message timelines, stale revision
   rejection, and file/folder activation success or failure.
 
@@ -373,8 +375,12 @@ candidates, persistence, or activation:
    ordering.
 9. Confirm exact display-name results precede exact stem results, which precede prefix
    results, and repeat the query after restart to confirm deterministic ordering.
-10. Confirm file and folder rows have lightweight type glyphs without focus loss, shell
-   icon extraction pauses, or candidate-window activation.
+10. Confirm ordinary files use the Windows stock file icon, folders use the Windows
+   stock folder icon, and classic, shortcut, indexed executable, and packaged applications
+   use their own Shell icons. Repeat at 100%, 150%, and 200% display scale; type rapidly
+   while icons resolve and confirm focus, selection, and candidate refresh never pause or
+   receive an icon from an older query. Temporarily include an inaccessible or deleted
+   application target and confirm its row keeps the lightweight fallback glyph.
 11. Confirm a non-empty candidate list starts with its first row visibly selected, Down
     moves to the second row, Up returns to the first, and Enter activates the highlighted
     row. With no candidates, confirm Enter submits normally and Escape follows the

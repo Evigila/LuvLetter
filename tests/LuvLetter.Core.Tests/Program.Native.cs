@@ -42,8 +42,8 @@ internal static partial class Program
         AssertNativeLayout(
             assembly,
             "LuvLetter.Core.NativeShell.NativeInputCandidate",
-            32,
-            ["Token", "Kind", "IconKind", "PrimaryText", "SecondaryText"]);
+            40,
+            ["Token", "Kind", "IconKind", "PrimaryText", "SecondaryText", "IconSource"]);
 
         return Task.CompletedTask;
     }
@@ -145,7 +145,7 @@ internal static partial class Program
         var service = new NativeShellService(nativeApi);
         try
         {
-            Assert.Equal(7U, nativeApi.AbiVersion);
+            Assert.Equal(8U, nativeApi.AbiVersion);
             Assert.Equal(1, nativeApi.CompatibilityChecks);
             Assert.NotNull(nativeApi.InputSubmittedCallback);
             Assert.NotNull(nativeApi.InputChangedCallback);
@@ -271,7 +271,8 @@ internal static partial class Program
                     CandidateKind.File,
                     CandidateIconKind.Document,
                     "bbb.md",
-                    @"C:\aaa"),
+                    @"C:\aaa",
+                    @"C:\aaa\bbb.md"),
                 new InputCandidate(
                     8,
                     CandidateKind.Command,
@@ -286,7 +287,9 @@ internal static partial class Program
             Assert.Equal(CandidateKind.File, nativeApi.InputCandidates[0].Kind);
             Assert.Equal(CandidateIconKind.Document, nativeApi.InputCandidates[0].IconKind);
             Assert.Equal("bbb.md", nativeApi.InputCandidates[0].Primary);
+            Assert.Equal(@"C:\aaa\bbb.md", nativeApi.InputCandidates[0].IconSource);
             Assert.Equal("电源", nativeApi.InputCandidates[1].Primary);
+            Assert.True(nativeApi.InputCandidates[1].IconSource is null);
             Assert.True(
                 nativeApi.InputCandidateTextPointersWerePacked,
                 "Candidate text pointers must reference one contiguous UTF-16 payload.");
@@ -300,7 +303,9 @@ internal static partial class Program
                 CandidateKind.File,
                 CandidateIconKind.GenericFile,
                 "long-path.txt",
-                longSecondaryText);
+                longSecondaryText,
+                new string('i', InputCandidatePresentation.MaximumIconSourceLength - 1)
+                    + "\U0001F642-tail");
             Assert.Equal(
                 InputCandidateSetResult.Accepted,
                 service.SetInputCandidates([longTextCandidate], revision: 43));
@@ -308,6 +313,10 @@ internal static partial class Program
                 InputCandidatePresentation.MaximumSecondaryTextLength - 1,
                 nativeApi.InputCandidates[0].Secondary.Length,
                 "Candidate presentation truncation split a UTF-16 surrogate pair.");
+            Assert.Equal(
+                InputCandidatePresentation.MaximumIconSourceLength - 1,
+                nativeApi.InputCandidates[0].IconSource?.Length,
+                "Candidate icon-source truncation split a UTF-16 surrogate pair.");
             Assert.True(
                 ReferenceEquals(longSecondaryText, longTextCandidate.SecondaryText),
                 "ABI presentation truncation must not replace the Core activation value.");

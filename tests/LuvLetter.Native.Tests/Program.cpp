@@ -6,6 +6,7 @@
 #include "windows/MessageQueueEntry.h"
 
 #include <cmath>
+#include <cstddef>
 #include <functional>
 #include <iostream>
 #include <limits>
@@ -92,7 +93,7 @@ namespace
 			"All native popup surfaces must use the shared Microsoft YaHei UI family.");
 		AssertNear(20.0f, LuvLetterNative::SurfaceLineHeightDip,
 			"Shared line height must leave Microsoft YaHei UI glyphs unclipped.");
-		Assert(LUVLETTER_NATIVE_ABI_VERSION == 7, "Native ABI must expose message activities.");
+		Assert(LUVLETTER_NATIVE_ABI_VERSION == 8, "Native ABI must expose candidate icon sources.");
 		Assert(LUVLETTER_NATIVE_MAX_INPUT_CANDIDATES == 32,
 			"Native ABI must retain the managed candidate-capacity contract.");
 		Assert(LUVLETTER_NATIVE_MAX_CANDIDATE_PRIMARY_LENGTH == 512,
@@ -102,7 +103,13 @@ namespace
 		Assert(sizeof(LuvLetterInputBoxConfig) == 104, "Input config ABI size changed unexpectedly.");
 		Assert(sizeof(LuvLetterFeatureWindowConfig) == 88, "Quick Actions config ABI size changed unexpectedly.");
 		Assert(sizeof(LuvLetterFeatureItem) == 16, "Quick Action item ABI size changed unexpectedly.");
-		Assert(sizeof(LuvLetterInputCandidate) == 32, "Input candidate ABI size changed unexpectedly.");
+		Assert(sizeof(LuvLetterInputCandidate) == 40, "Input candidate ABI size changed unexpectedly.");
+		Assert(offsetof(LuvLetterInputCandidate, token) == 0, "Candidate token offset changed.");
+		Assert(offsetof(LuvLetterInputCandidate, kind) == 8, "Candidate kind offset changed.");
+		Assert(offsetof(LuvLetterInputCandidate, iconKind) == 12, "Candidate icon kind offset changed.");
+		Assert(offsetof(LuvLetterInputCandidate, primaryText) == 16, "Candidate primary text offset changed.");
+		Assert(offsetof(LuvLetterInputCandidate, secondaryText) == 24, "Candidate secondary text offset changed.");
+		Assert(offsetof(LuvLetterInputCandidate, iconSource) == 32, "Candidate icon source offset changed.");
 		Assert(LuvLetterCandidateKindFile == 1, "File candidate kind changed unexpectedly.");
 		Assert(LuvLetterCandidateKindCommand == 2, "Command candidate kind changed unexpectedly.");
 		Assert(LuvLetterCandidateKindGlobalSearch == 3, "Global Search candidate kind changed unexpectedly.");
@@ -195,7 +202,7 @@ namespace
 		return {
 			InputCandidateItem{
 				11, LuvLetterCandidateKindFile, LuvLetterCandidateIconKindDocument,
-				L"bbb.md", L"C:\\aaa" },
+				L"bbb.md", L"C:\\aaa", L"C:\\aaa\\bbb.md" },
 			InputCandidateItem{
 				22, LuvLetterCandidateKindCommand, LuvLetterCandidateIconKindCommand,
 				L"build", L"Command" },
@@ -208,6 +215,8 @@ namespace
 		Assert(state.Apply(CreateCandidateItems(), 7, 7), "Current candidate revision must be accepted.");
 		Assert(state.Revision() == 7, "Accepted candidate revision must be retained.");
 		Assert(state.Items().size() == 2, "Accepted candidates must be retained.");
+		Assert(state.Items()[0].iconSource == L"C:\\aaa\\bbb.md",
+			"Accepted candidates must retain their copied Shell icon source.");
 		Assert(state.SelectedIndex() == 0, "New candidates must select the first activatable item.");
 
 		InputCandidateActivation activation{};

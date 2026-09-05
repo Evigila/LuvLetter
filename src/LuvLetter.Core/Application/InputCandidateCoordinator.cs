@@ -627,7 +627,8 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
             if (string.IsNullOrWhiteSpace(entry.Id) || string.IsNullOrWhiteSpace(entry.DisplayName)) continue;
             var identity = $"app:{entry.Id}";
             var spec = new CandidateSpec(CandidateKind.File, CandidateIconKind.Executable,
-                entry.DisplayName, ApplicationDescription(entry), entry.LaunchTarget, null, identity, entry.Id);
+                entry.DisplayName, ApplicationDescription(entry), entry.LaunchTarget, null, identity,
+                IconSourceForApplication(entry), entry.Id);
             ranked.Add((spec, rankingPolicy.Score(new CandidateRankingContext(
                 identity, query, SearchCandidateSource.Application, match.MatchScore))));
 
@@ -665,7 +666,8 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
                 isExecutable ? $"应用程序 · {ParentPath(file.FullPath)}" : ParentPath(file.FullPath),
                 file.FullPath,
                 file.EntryKind,
-                identity);
+                identity,
+                isExecutable ? InputCandidatePresentation.NormalizeIconSource(file.FullPath) : null);
             ranked.Add((spec, rankingPolicy.Score(new CandidateRankingContext(
                 identity, query, isExecutable ? SearchCandidateSource.Application
                     : file.EntryKind == FileSystemEntryKind.Directory ? SearchCandidateSource.Directory : SearchCandidateSource.File,
@@ -704,6 +706,24 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
                 ? string.IsNullOrWhiteSpace(entry.Arguments) ? $"应用程序 · {entry.LaunchTarget}"
                     : $"应用程序 · {entry.Arguments} · {entry.LaunchTarget}"
             : $"应用程序 · {entry.ExecutablePath ?? entry.LaunchTarget}";
+
+    private static string? IconSourceForApplication(ApplicationEntry entry)
+    {
+        var source = entry.LaunchKind switch
+        {
+            ApplicationLaunchKind.Shortcut => entry.LaunchTarget,
+            ApplicationLaunchKind.Executable => entry.ExecutablePath ?? entry.LaunchTarget,
+            ApplicationLaunchKind.RegisteredExecutable => entry.ExecutablePath,
+            ApplicationLaunchKind.Packaged => entry.LaunchTarget.StartsWith(
+                    "shell:AppsFolder\\", StringComparison.OrdinalIgnoreCase)
+                ? entry.LaunchTarget
+                : "shell:AppsFolder\\" + entry.LaunchTarget,
+            ApplicationLaunchKind.ShellItem => entry.LaunchTarget,
+            ApplicationLaunchKind.SettingsUri or ApplicationLaunchKind.ControlPanel => entry.ExecutablePath,
+            _ => null,
+        };
+        return InputCandidatePresentation.NormalizeIconSource(source);
+    }
 
     private IReadOnlyList<CandidateSpec> BuildCommandCandidates(string input, int limit)
     {
@@ -758,7 +778,8 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
                 spec.Kind,
                 spec.IconKind,
                 InputCandidatePresentation.NormalizePrimaryText(spec.PrimaryText),
-                InputCandidatePresentation.NormalizeSecondaryText(spec.SecondaryText));
+                InputCandidatePresentation.NormalizeSecondaryText(spec.SecondaryText),
+                spec.IconSource);
             targets.Add(token, new CandidateTarget(spec.Kind, spec.Value, spec.EntryKind, spec.ApplicationId, revision));
             identityTokens.Add(spec.Identity, token);
         }
@@ -949,6 +970,7 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         string Value,
         FileSystemEntryKind? EntryKind,
         string Identity,
+        string? IconSource = null,
         string? ApplicationId = null);
 
     private readonly record struct CandidateTarget(

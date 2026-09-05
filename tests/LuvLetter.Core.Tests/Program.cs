@@ -30,6 +30,7 @@ internal static partial class Program
         ("Application partition cache fallback", TestApplicationPartitionCacheFallback),
         ("Application and file candidate ranking", TestApplicationCandidateRanking),
         ("Application candidate merge and refresh", TestApplicationCandidateMerge),
+        ("Application candidate icon sources", TestApplicationCandidateIconSources),
         ("Application candidate source isolation and modes", TestApplicationCandidateIsolation),
         ("Application candidate priority override", TestApplicationCandidatePriorityOverride),
         ("Application activation revision and cancellation", TestApplicationActivationRevision),

@@ -2,6 +2,7 @@
 
 #include "api/InputBoxApi.h"
 #include "rendering/LayeredWindowSurface.h"
+#include "rendering/ShellIconLoader.h"
 #include "rendering/SurfaceShadowWindow.h"
 #include "windows/InputCandidateState.h"
 
@@ -12,6 +13,8 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
+#include <unordered_map>
 #include <vector>
 
 class InputCandidatesWindow final
@@ -45,12 +48,27 @@ public:
 	LRESULT HandleMessage(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 
 private:
+	struct CandidateIconBitmap final
+	{
+		uint64_t generation = 0;
+		ArkheideSystem::ShellIconSourceKind sourceKind =
+			ArkheideSystem::ShellIconSourceKind::GenericFile;
+		std::wstring source;
+		UINT pixelSize = 0;
+		Microsoft::WRL::ComPtr<ID2D1Bitmap> bitmap;
+	};
+
 	HRESULT EnsureResources();
 	void DiscardResources(bool discardSurface);
 	void Show();
 	void UpdateGeometry();
 	void UpdatePosition() const;
 	float WindowHeightDip() const noexcept;
+	void AdvanceIconGeneration() noexcept;
+	void QueueCandidateIcons() noexcept;
+	bool ApplyCompletedIcons() noexcept;
+	static std::optional<ArkheideSystem::ShellIconSourceKind> IconSourceKind(
+		const InputCandidateItem& item) noexcept;
 	void Render();
 
 	HWND hwnd_ = nullptr;
@@ -61,6 +79,9 @@ private:
 	LuvLetterInputBoxConfig config_{};
 	InputCandidateState state_;
 	std::function<void(uint64_t, int32_t)> activated_;
+	uint64_t iconGeneration_ = 0;
+	ArkheideSystem::ShellIconLoader iconLoader_;
+	std::unordered_map<uint64_t, CandidateIconBitmap> iconBitmaps_;
 
 	Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory_;
 	Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;

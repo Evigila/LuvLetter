@@ -11,7 +11,7 @@ namespace LuvLetter.Core.Tests;
 
 internal sealed class FakeNativeShellApi : INativeShellApi
 {
-    public uint AbiVersion => 7;
+    public uint AbiVersion => 8;
 
     public int CompatibilityChecks { get; private set; }
 
@@ -34,7 +34,8 @@ internal sealed class FakeNativeShellApi : INativeShellApi
         CandidateKind Kind,
         CandidateIconKind IconKind,
         string Primary,
-        string Secondary)>
+        string Secondary,
+        string? IconSource)>
         InputCandidates { get; private set; } = [];
 
     public ulong InputCandidateRevision { get; private set; }
@@ -177,7 +178,7 @@ internal sealed class FakeNativeShellApi : INativeShellApi
 
     public int SetInputCandidates(NativeInputCandidate[] items, int count, ulong revision)
     {
-        var copied = new (ulong, CandidateKind, CandidateIconKind, string, string)[count];
+        var copied = new (ulong, CandidateKind, CandidateIconKind, string, string, string?)[count];
         var expectedTextPointer = count == 0 ? IntPtr.Zero : items[0].PrimaryText;
         var textPointersWerePacked = true;
         for (var index = 0; index < count; index++)
@@ -192,12 +193,23 @@ internal sealed class FakeNativeShellApi : INativeShellApi
             expectedTextPointer = IntPtr.Add(
                 items[index].SecondaryText,
                 checked((secondary.Length + 1) * sizeof(char)));
+            var iconSource = items[index].IconSource == IntPtr.Zero
+                ? null
+                : Marshal.PtrToStringUni(items[index].IconSource);
+            if (iconSource is not null)
+            {
+                textPointersWerePacked &= items[index].IconSource == expectedTextPointer;
+                expectedTextPointer = IntPtr.Add(
+                    items[index].IconSource,
+                    checked((iconSource.Length + 1) * sizeof(char)));
+            }
             copied[index] = (
                 items[index].Token,
                 (CandidateKind)items[index].Kind,
                 (CandidateIconKind)items[index].IconKind,
                 primary,
-                secondary);
+                secondary,
+                iconSource);
         }
 
         InputCandidates = copied;

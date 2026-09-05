@@ -48,18 +48,34 @@ public sealed record InputCandidate(
     CandidateKind Kind,
     CandidateIconKind IconKind,
     string PrimaryText,
-    string SecondaryText);
+    string SecondaryText,
+    string? IconSource = null);
 
 internal static class InputCandidatePresentation
 {
     internal const int MaximumPrimaryTextLength = 512;
     internal const int MaximumSecondaryTextLength = 2048;
+    internal const int MaximumIconSourceLength = 2048;
 
     internal static string NormalizePrimaryText(string? value) =>
         TruncateUtf16(value ?? string.Empty, MaximumPrimaryTextLength);
 
     internal static string NormalizeSecondaryText(string? value) =>
         TruncateUtf16(value ?? string.Empty, MaximumSecondaryTextLength);
+
+    internal static string? NormalizeIconSource(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var normalized = value.Trim();
+        return normalized.Length <= MaximumIconSourceLength
+            && normalized.IndexOfAny(['\0', '\r', '\n']) < 0
+                ? normalized
+                : null;
+    }
 
     private static string TruncateUtf16(string value, int maximumLength)
     {

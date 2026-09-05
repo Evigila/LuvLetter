@@ -22,6 +22,10 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 
 ### Added
 
+- Candidate rows now use Windows stock icons for ordinary files and folders and the
+  resolved Shell icon for classic, shortcut, AppsFolder, and indexed executable
+  applications. Resolution runs on a bounded STA worker with DPI-aware caching, stale
+  result rejection, and the existing vector glyph as an immediate or failure fallback.
 - Added a performance and resident-memory audit, a two-process working-set/private-bytes
   sampler, and a synthetic index-kernel benchmark that reports warm Top-K query
   percentiles and compact-snapshot memory changes.

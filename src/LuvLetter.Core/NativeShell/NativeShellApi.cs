@@ -75,6 +75,7 @@ internal struct NativeInputCandidate
     public int IconKind;
     public IntPtr PrimaryText;
     public IntPtr SecondaryText;
+    public IntPtr IconSource;
 }
 
 [UnmanagedFunctionPointer(CallingConvention.StdCall)]
@@ -103,7 +104,7 @@ internal delegate void NativeCandidateActivatedCallback(
 
 internal sealed class NativeShellApi : INativeShellApi
 {
-    private const uint CurrentAbiVersion = 7;
+    private const uint CurrentAbiVersion = 8;
 
     internal static INativeShellApi Instance { get; } = new NativeShellApi();
 
@@ -384,7 +385,7 @@ internal sealed class NativeShellApi : INativeShellApi
         EnsureSize<NativeInputBoxConfig>(104);
         EnsureSize<NativeFeatureWindowConfig>(88);
         EnsureSize<NativeFeatureItem>(16);
-        EnsureSize<NativeInputCandidate>(32);
+        EnsureSize<NativeInputCandidate>(40);
     }
 
     private static void EnsureSize<T>(int expected)

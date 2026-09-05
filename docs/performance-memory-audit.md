@@ -19,7 +19,7 @@ baseline for manual measurement.
 | Ready-state polling | Implemented as a five-second stable wait with an immediate semaphore wake for force refresh. The longer-term pushed protocol remains optional. |
 | Application query | Implemented with publication-time compact-name keys, one query context, and a bounded 256-result heap. |
 | Application cache retention | Raw manifest/snapshot byte arrays and the duplicate old entry graph are no longer retained. A catalog-wide byte budget remains deferred until source eviction policy is defined. |
-| Candidate rendering | Ordinary result changes retain the DIB, render target, brushes, and text formats. Configuration, DPI, and device-loss paths still recreate them. |
+| Candidate rendering | Ordinary result changes retain the DIB, render target, brushes, and text formats. Shell icons load on one STA worker into a bounded CPU cache; configuration, DPI, and device-loss paths recreate device resources without blocking candidate rendering. |
 | Full-ignore matching | Implemented with an empty-list fast path, pre-normalized calls, and sorted boundary-aware prefix lookup. |
 | Repeatable measurement | Added a two-process PowerShell sampler and a synthetic Release index-kernel query benchmark. Baseline capture remains a manual step. |
 | Filename build and cache I/O | The builder writes final compact records directly. Cache records are decoded directly and saved with a 48 KiB streaming buffer and incremental checksum. |
@@ -41,6 +41,9 @@ The current architecture already has several useful performance properties:
   work and UI state.
 - Hidden windows do not continuously animate. Layered-window DIBs are created on first
   render rather than with the initial HWNDs.
+- Candidate icon extraction does not run in the query or UI-render path. One STA worker
+  coalesces identical requests, caps pending/completed work and cached images, and rejects
+  results from stale candidate generations or DPI sizes before creating a D2D bitmap.
 
 These strengths should be retained while the following costs are removed.
 

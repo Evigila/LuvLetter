@@ -80,20 +80,24 @@ composition and cannot be removed; optional assemblies are discovered from `plug
   necessary. InputWindow is the geometry root for the combined input surface: it resolves
   the configured DIP width against the active monitor work area, while the candidate list
   inherits its exact pixel width and left edge. It stores copied display data, applies only the
-  candidate snapshot matching the current editor revision, and draws lightweight
-  Direct2D type glyphs without Shell icon or thumbnail I/O. Ordinary result updates
-  retain its layered DIB and Direct2D resources when geometry and device state permit.
+  candidate snapshot matching the current editor revision. It draws Windows stock file
+  and folder icons and resolves application icons on a bounded background STA worker;
+  lightweight Direct2D type glyphs remain the immediate and failure fallback. Ordinary
+  result updates retain its layered DIB and Direct2D resources when geometry and device
+  state permit.
 - `windows/QuickActionsWindow`: top-aligned Quick Action paging, hotkeys, animation,
   geometry, and rendering.
 - `windows/MessageQueueWindow`: a read-only, non-activating bottom-left notification stack.
   It renders up to six compact, independent notification bubbles without taking focus.
-- `rendering`: shared animation and layered-window surface primitives.
+- `rendering`: shared animation and layered-window surface primitives, including the
+  bounded Shell icon loader and CPU-side icon cache.
 
-The internal Native vocabulary is `QuickActions`. ABI v7 deliberately retains its
+The internal Native vocabulary is `QuickActions`. ABI v8 deliberately retains its
 historic `Feature*` struct names and layouts; those names are compatibility wire
 identifiers, not domain modules. The version gate includes revisioned input-change and
-candidate-activation callbacks, atomic candidate snapshots, and a bounded candidate icon
-category. It also provides token-based begin, update, and complete operations for
+candidate-activation callbacks, atomic candidate snapshots, a bounded candidate icon
+category, and an optional bounded Shell icon source. It also provides token-based begin,
+update, and complete operations for
 persistent message activities while retaining the submitted input mode, ordinary message
 queue, and `HidePopups` exports. A new Managed assembly therefore cannot silently pair
 with an older DLL. Candidate synchronization validates all rows first, then uses pooled
@@ -310,9 +314,13 @@ Catalog application activation is asynchronous and single-flight. A successful l
 completion cannot hide input from a newer editor revision. Classic applications retain
 their shortcut or executable launch semantics; packaged entries activate by AUMID and
 report ordinary file reveal as unavailable. Shell acceptance uses `ShellExecuteExW`
-rather than requiring a new process handle. Native receives only bounded display text,
-an executable glyph, and the managed activation token; no ABI or file protocol change
-is required. Source coverage and launch limitations are in `roadmap.applications.md`.
+rather than requiring a new process handle. Native receives bounded display text, the
+managed activation token, and an optional icon source: a shortcut or executable path for
+classic applications and an AppsFolder parsing name for packaged applications. The icon
+worker requests exact-DPI icon pixels through Windows Shell, publishes only results that
+still match the active candidate generation and pixel size, and caches both success and
+short-lived failure outcomes within fixed limits. Source coverage and launch limitations
+are in `roadmap.applications.md`.
 
 The built-in settings plugin is always Quick Action slot 1 and is displayed as
 `Control Center`. Quick Actions exposes the numeric slots 1 through 9. Selecting an

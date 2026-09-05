@@ -12,10 +12,11 @@
 
 extern "C"
 {
-	inline constexpr uint32_t LUVLETTER_NATIVE_ABI_VERSION = 7;
+	inline constexpr uint32_t LUVLETTER_NATIVE_ABI_VERSION = 8;
 	inline constexpr int32_t LUVLETTER_NATIVE_MAX_INPUT_CANDIDATES = 32;
 	inline constexpr uint32_t LUVLETTER_NATIVE_MAX_CANDIDATE_PRIMARY_LENGTH = 512;
 	inline constexpr uint32_t LUVLETTER_NATIVE_MAX_CANDIDATE_SECONDARY_LENGTH = 2048;
+	inline constexpr uint32_t LUVLETTER_NATIVE_MAX_CANDIDATE_ICON_SOURCE_LENGTH = 2048;
 
 	enum LuvLetterInputMode : int32_t
 	{
@@ -121,6 +122,7 @@ extern "C"
 		int32_t iconKind;
 		const wchar_t* primaryText;
 		const wchar_t* secondaryText;
+		const wchar_t* iconSource;
 	};
 
 	using LuvLetterFeatureActivatedCallback = void (LUVLETTER_NATIVE_CALL*)(
@@ -198,4 +200,4 @@ extern "C"
 static_assert(sizeof(LuvLetterInputBoxConfig) == 104);
 static_assert(sizeof(LuvLetterFeatureWindowConfig) == 88);
 static_assert(sizeof(LuvLetterFeatureItem) == 16);
-static_assert(sizeof(LuvLetterInputCandidate) == 32);
+static_assert(sizeof(LuvLetterInputCandidate) == 40);

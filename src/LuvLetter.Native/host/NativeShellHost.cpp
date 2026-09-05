@@ -477,6 +477,18 @@ HRESULT NativeShellHost::SetInputCandidates(
 				}
 				item.secondaryText.assign(source.secondaryText, secondaryLength);
 			}
+			if (source.iconSource != nullptr)
+			{
+				const auto iconSourceLength = wcsnlen_s(
+					source.iconSource,
+					static_cast<size_t>(LUVLETTER_NATIVE_MAX_CANDIDATE_ICON_SOURCE_LENGTH) + 1);
+				if (iconSourceLength > LUVLETTER_NATIVE_MAX_CANDIDATE_ICON_SOURCE_LENGTH)
+				{
+					request->Release();
+					return E_INVALIDARG;
+				}
+				item.iconSource.assign(source.iconSource, iconSourceLength);
+			}
 			request->inputCandidates.push_back(std::move(item));
 		}
 	}

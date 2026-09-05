@@ -177,6 +177,7 @@ HRESULT InputCandidatesWindow::Attach(HWND window, HWND inputWindow)
 	hwnd_ = window;
 	inputHwnd_ = inputWindow;
 	dpi_ = QueryWindowDpi(inputHwnd_);
+	(void)iconLoader_.Attach(hwnd_);
 	(void)shadowWindow_.Attach(hwnd_);
 	SetWindowLongPtrW(
 		hwnd_,
@@ -317,6 +318,7 @@ HRESULT InputCandidatesWindow::EnsureResources()
 
 void InputCandidatesWindow::DiscardResources(bool discardSurface)
 {
+	iconBitmaps_.clear();
 	separatorBrush_.Reset();
 	selectionBrush_.Reset();
 	secondaryTextBrush_.Reset();
@@ -352,6 +354,8 @@ bool InputCandidatesWindow::SetItems(
 		return false;
 	}
 
+	AdvanceIconGeneration();
+	QueueCandidateIcons();
 	UpdateGeometry();
 	if (!inputVisible || state_.IsEmpty())
 	{
@@ -367,6 +371,7 @@ bool InputCandidatesWindow::SetItems(
 void InputCandidatesWindow::Clear()
 {
 	state_.Clear();
+	AdvanceIconGeneration();
 	Hide();
 }
 
@@ -421,6 +426,7 @@ void InputCandidatesWindow::SynchronizeToInputWindow()
 	{
 		dpi_ = nextDpi;
 		DiscardResources(true);
+		AdvanceIconGeneration();
 	}
 	UpdateGeometry();
 	if (visible_) Render();
@@ -537,9 +543,138 @@ int InputCandidatesWindow::PixelHeight() const
 		(std::max)(1, DipToPixels(fittedHeightDip, dpi_)));
 }
 
+void InputCandidatesWindow::AdvanceIconGeneration() noexcept
+{
+	iconBitmaps_.clear();
+	if (++iconGeneration_ == 0) ++iconGeneration_;
+	iconLoader_.BeginGeneration(iconGeneration_);
+}
+
+std::optional<ArkheideSystem::ShellIconSourceKind> InputCandidatesWindow::IconSourceKind(
+	const InputCandidateItem& item) noexcept
+{
+	if (!item.iconSource.empty())
+	{
+		return ArkheideSystem::ShellIconSourceKind::ShellItem;
+	}
+	if (item.kind != LuvLetterCandidateKindFile)
+	{
+		return std::nullopt;
+	}
+	if (item.iconKind == LuvLetterCandidateIconKindFolder)
+	{
+		return ArkheideSystem::ShellIconSourceKind::Folder;
+	}
+	if (item.iconKind == LuvLetterCandidateIconKindExecutable)
+	{
+		return ArkheideSystem::ShellIconSourceKind::Application;
+	}
+	return ArkheideSystem::ShellIconSourceKind::GenericFile;
+}
+
+void InputCandidatesWindow::QueueCandidateIcons() noexcept
+{
+	if (iconGeneration_ == 0) return;
+	const auto pixelSize = static_cast<UINT>((std::max)(
+		1,
+		DipToPixels(IconSizeDip, dpi_)));
+	for (const auto& item : state_.Items())
+	{
+		if (iconBitmaps_.contains(item.token)) continue;
+		const auto sourceKind = IconSourceKind(item);
+		if (!sourceKind.has_value()) continue;
+		iconLoader_.Request(
+			item.token,
+			iconGeneration_,
+			*sourceKind,
+			item.iconSource,
+			pixelSize);
+	}
+}
+
+bool InputCandidatesWindow::ApplyCompletedIcons() noexcept
+{
+	const auto results = iconLoader_.TakeCompleted();
+	if (!visible_ || results.empty() || FAILED(EnsureResources())) return false;
+	const auto expectedPixelSize = static_cast<UINT>((std::max)(
+		1,
+		DipToPixels(IconSizeDip, dpi_)));
+	bool changed = false;
+	for (const auto& result : results)
+	{
+		if (result.generation != iconGeneration_
+			|| result.pixelSize != expectedPixelSize
+			|| !result.bitmap
+			|| result.bitmap->width != result.pixelSize
+			|| result.bitmap->height != result.pixelSize
+			|| result.bitmap->stride != result.pixelSize * 4U
+			|| result.bitmap->pixels.size()
+				!= static_cast<size_t>(result.bitmap->stride) * result.bitmap->height)
+		{
+			continue;
+		}
+
+		const auto item = std::ranges::find_if(
+			state_.Items(),
+			[&result](const InputCandidateItem& candidate)
+			{
+				return candidate.token == result.token;
+			});
+		if (item == state_.Items().end()) continue;
+		const auto expectedSourceKind = IconSourceKind(*item);
+		if (!expectedSourceKind.has_value()
+			|| *expectedSourceKind != result.sourceKind
+			|| (!item->iconSource.empty() && CompareStringOrdinal(
+				item->iconSource.c_str(),
+				static_cast<int>(item->iconSource.size()),
+				result.source.c_str(),
+				static_cast<int>(result.source.size()),
+				TRUE) != CSTR_EQUAL))
+		{
+			continue;
+		}
+
+		Microsoft::WRL::ComPtr<ID2D1Bitmap> bitmap;
+		const auto properties = D2D1::BitmapProperties(
+			D2D1::PixelFormat(
+				DXGI_FORMAT_B8G8R8A8_UNORM,
+				D2D1_ALPHA_MODE_PREMULTIPLIED),
+			static_cast<float>(dpi_),
+			static_cast<float>(dpi_));
+		if (FAILED(renderTarget_->CreateBitmap(
+			D2D1::SizeU(result.bitmap->width, result.bitmap->height),
+			result.bitmap->pixels.data(),
+			result.bitmap->stride,
+			properties,
+			bitmap.GetAddressOf())))
+		{
+			continue;
+		}
+		try
+		{
+			iconBitmaps_.insert_or_assign(
+				result.token,
+				CandidateIconBitmap{
+					result.generation,
+					result.sourceKind,
+					result.source,
+					result.pixelSize,
+					std::move(bitmap),
+				});
+			changed = true;
+		}
+		catch (...)
+		{
+			// The existing vector glyph remains a valid low-memory fallback.
+		}
+	}
+	return changed;
+}
+
 void InputCandidatesWindow::Render()
 {
 	if (hwnd_ == nullptr || state_.IsEmpty() || FAILED(EnsureResources())) return;
+	QueueCandidateIcons();
 	const auto width = PixelWidth();
 	const auto height = PixelHeight();
 	RECT bindRect{ 0, 0, width, height };
@@ -606,8 +741,20 @@ void InputCandidatesWindow::Render()
 			iconTop,
 			HorizontalPaddingDip + IconSizeDip,
 			iconTop + IconSizeDip);
-		DrawCandidateIcon(
-			renderTarget_.Get(), item.iconKind, iconBounds, secondaryTextBrush_.Get());
+		if (const auto icon = iconBitmaps_.find(item.token);
+			icon != iconBitmaps_.end() && icon->second.bitmap)
+		{
+			renderTarget_->DrawBitmap(
+				icon->second.bitmap.Get(),
+				iconBounds,
+				1.0f,
+				D2D1_BITMAP_INTERPOLATION_MODE_LINEAR);
+		}
+		else
+		{
+			DrawCandidateIcon(
+				renderTarget_.Get(), item.iconKind, iconBounds, secondaryTextBrush_.Get());
+		}
 		const auto textLeft = HorizontalPaddingDip + IconSizeDip + IconGapDip;
 		const auto textRight = (std::max)(
 			textLeft + 1.0f,
@@ -673,6 +820,9 @@ LRESULT InputCandidatesWindow::HandleMessage(
 	(void)lParam;
 	switch (message)
 	{
+	case ArkheideSystem::ShellIconLoader::CompletionMessage:
+		if (ApplyCompletedIcons()) Render();
+		return 0;
 	case WM_ERASEBKGND:
 		return 1;
 	case WM_MOUSEACTIVATE:
@@ -697,6 +847,7 @@ LRESULT InputCandidatesWindow::HandleMessage(
 		Hide();
 		return 0;
 	case WM_DESTROY:
+		iconLoader_.Shutdown();
 		shadowWindow_.Detach();
 		DiscardResources(true);
 		hwnd_ = nullptr;
