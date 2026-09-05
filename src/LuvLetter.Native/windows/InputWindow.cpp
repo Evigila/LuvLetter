@@ -52,7 +52,7 @@ namespace
 			size * 1.75f,
 			size * (4.0f / 7.0f),
 			size * (5.0f / 14.0f),
-			(std::max)(1.0f, size / 14.0f),
+			(std::max)(0.5f, size / 28.0f),
 		};
 	}
 
@@ -216,6 +216,7 @@ HRESULT InputWindow::EnsureResources()
 	renderTarget_->SetDpi(static_cast<float>(dpi_), static_cast<float>(dpi_));
 	if (!textFormat_)
 	{
+		UpdateTypographyMetrics();
 		result = dwriteFactory_->CreateTextFormat(
 			SurfaceFontFamily, nullptr, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL,
 			DWRITE_FONT_STRETCH_NORMAL, config_.fontSize, L"", textFormat_.GetAddressOf());
@@ -226,7 +227,7 @@ HRESULT InputWindow::EnsureResources()
 		result = textFormat_->SetLineSpacing(
 			DWRITE_LINE_SPACING_METHOD_UNIFORM,
 			LineHeightDip(),
-			config_.fontSize);
+			textBaselineDip_);
 		if (FAILED(result)) return result;
 	}
 	if (!borderBrush_)
@@ -257,7 +258,7 @@ HRESULT InputWindow::EnsureResources()
 	if (!statusTagTextFormat_)
 	{
 		result = dwriteFactory_->CreateTextFormat(
-			SurfaceFontFamily, nullptr, DWRITE_FONT_WEIGHT_SEMI_BOLD, DWRITE_FONT_STYLE_NORMAL,
+			SurfaceFontFamily, nullptr, DWRITE_FONT_WEIGHT_REGULAR, DWRITE_FONT_STYLE_NORMAL,
 			DWRITE_FONT_STRETCH_NORMAL, config_.fontSize, L"",
 			statusTagTextFormat_.GetAddressOf());
 		if (FAILED(result)) return result;
@@ -267,19 +268,15 @@ HRESULT InputWindow::EnsureResources()
 		if (FAILED(result)) return result;
 		result = statusTagTextFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
 		if (FAILED(result)) return result;
+		result = statusTagTextFormat_->SetLineSpacing(
+			DWRITE_LINE_SPACING_METHOD_UNIFORM, LineHeightDip(), textBaselineDip_);
+		if (FAILED(result)) return result;
 	}
 	if (!focusIndicatorBrush_)
 	{
 		result = renderTarget_->CreateSolidColorBrush(
 			D2D1::ColorF(0x22C55E, 1.0f), focusIndicatorBrush_.GetAddressOf());
 		if (FAILED(result)) return result;
-	}
-	if (!statusTagBackgroundBrush_)
-	{
-		result = renderTarget_->CreateSolidColorBrush(
-			ColorFromArgb(config_.textColor), statusTagBackgroundBrush_.GetAddressOf());
-		if (FAILED(result)) return result;
-		statusTagBackgroundBrush_->SetOpacity(0.10f);
 	}
 	if (!statusTagBorderBrush_)
 	{
@@ -329,7 +326,6 @@ void InputWindow::DiscardResources(bool discardSurface)
 	textLayout_.Reset();
 	statusTagTextBrush_.Reset();
 	statusTagBorderBrush_.Reset();
-	statusTagBackgroundBrush_.Reset();
 	selectionTextBrush_.Reset();
 	selectionBrush_.Reset();
 	focusIndicatorBrush_.Reset();
@@ -1238,7 +1234,7 @@ void InputWindow::UpdateImeCompositionWindow()
 		animatedLeft + horizontalPadding + leadingReservation + caret.x,
 		dpi_);
 	compositionForm.ptCurrentPos.y = DipToPixels(
-		textTop + caret.y - verticalOffset_ + config_.fontSize,
+		textTop + caret.y - verticalOffset_ + textBaselineDip_,
 		dpi_);
 	ImmSetCompositionWindow(inputContext, &compositionForm);
 	ImmReleaseContext(hwnd_, inputContext);
@@ -1284,11 +1280,9 @@ void InputWindow::Render(bool caretOnly)
 		(std::min)(windowHeight - verticalPadding, textTop + TextViewportHeightDip()));
 	const auto caret = GetCaretLogicalPosition();
 	const auto caretX = textRect.left + caret.x;
-	const auto caretHeight = (std::min)(
-		lineHeight,
-		(std::max)(1.0f, config_.fontSize * 1.1f));
+	const auto caretHeight = (std::min)(lineHeight, caretHeightDip_);
 	const auto caretTop = textTop + caret.y - verticalOffset_
-		+ (lineHeight - caretHeight) / 2.0f;
+		+ caretTopOffsetDip_;
 	RECT nextCaretDirty{
 		DipToPixels(caretX, dpi_) - 2,
 		DipToPixels(caretTop, dpi_) - 2,
@@ -1384,7 +1378,6 @@ void InputWindow::Render(bool caretOnly)
 		renderTarget_->PushAxisAlignedClip(
 			D2D1::RectF(animatedLeft, 0.0f, animatedRight, windowHeight),
 			D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-		renderTarget_->FillRoundedRectangle(tagRect, statusTagBackgroundBrush_.Get());
 		const auto tagProgress = statusTagFrame.IsAnimating()
 			? static_cast<float>((std::clamp)(statusTagFrame.motionProgress, 0.0, 1.0))
 			: 1.0f;
@@ -1547,6 +1540,38 @@ void InputWindow::Render(bool caretOnly)
 float InputWindow::LineHeightDip() const
 {
 	return SurfaceLineHeightDip;
+}
+
+void InputWindow::UpdateTypographyMetrics() noexcept
+{
+	textBaselineDip_ = config_.fontSize;
+	caretHeightDip_ = (std::min)(LineHeightDip(), (std::max)(1.0f, config_.fontSize));
+	caretTopOffsetDip_ = (LineHeightDip() - caretHeightDip_) / 2.0f;
+	if (!dwriteFactory_) return;
+
+	Microsoft::WRL::ComPtr<IDWriteFontCollection> collection;
+	if (FAILED(dwriteFactory_->GetSystemFontCollection(collection.GetAddressOf()))) return;
+	UINT32 familyIndex = 0;
+	BOOL familyExists = FALSE;
+	if (FAILED(collection->FindFamilyName(
+		SurfaceFontFamily, &familyIndex, &familyExists)) || !familyExists) return;
+	Microsoft::WRL::ComPtr<IDWriteFontFamily> family;
+	if (FAILED(collection->GetFontFamily(familyIndex, family.GetAddressOf()))) return;
+	Microsoft::WRL::ComPtr<IDWriteFont> font;
+	if (FAILED(family->GetFirstMatchingFont(
+		DWRITE_FONT_WEIGHT_REGULAR,
+		DWRITE_FONT_STRETCH_NORMAL,
+		DWRITE_FONT_STYLE_NORMAL,
+		font.GetAddressOf()))) return;
+
+	DWRITE_FONT_METRICS metrics{};
+	font->GetMetrics(&metrics);
+	if (metrics.designUnitsPerEm == 0 || metrics.ascent == 0) return;
+	const auto scale = config_.fontSize / static_cast<float>(metrics.designUnitsPerEm);
+	const auto naturalHeight = static_cast<float>(metrics.ascent + metrics.descent) * scale;
+	caretHeightDip_ = (std::clamp)(naturalHeight, 1.0f, LineHeightDip());
+	caretTopOffsetDip_ = (LineHeightDip() - caretHeightDip_) / 2.0f;
+	textBaselineDip_ = caretTopOffsetDip_ + static_cast<float>(metrics.ascent) * scale;
 }
 
 float InputWindow::WindowHeightDip() const

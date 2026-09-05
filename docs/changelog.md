@@ -8,6 +8,9 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 
 ### Fixed
 
+- Input text, placeholder text, caret, and IME placement now share metrics derived from
+  the active font, keeping their vertical alignment consistent. The mode tag uses regular
+  text, a transparent interior, and a finer outline.
 - Downloads discovery and partition classification now use the current Windows Known
   Folder location, including redirection to another drive, instead of assuming a
   Downloads directory beneath the user profile. Failed discovery does not invent a

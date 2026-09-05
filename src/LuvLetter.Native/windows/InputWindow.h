@@ -97,6 +97,7 @@ private:
 	float TextWidthDip() const;
 	float TextTopDip() const;
 	float TextViewportHeightDip() const;
+	void UpdateTypographyMetrics() noexcept;
 	float FocusIndicatorProgress() const noexcept;
 	float FocusIndicatorReservationDip() const noexcept;
 	float StatusTagReservationDip() const noexcept;
@@ -128,6 +129,9 @@ private:
 	bool spaceModeSwitchKeyDown_ = false;
 	int lineCapacity_ = 1;
 	float verticalOffset_ = 0.0f;
+	float textBaselineDip_ = 14.0f;
+	float caretTopOffsetDip_ = 3.0f;
+	float caretHeightDip_ = 14.0f;
 	PopupAnimator animator_;
 	PopupAnimator focusIndicatorAnimator_{ PopupAnimationSettings{ 140.0, 120.0, 1.0f, 0.0f } };
 	PopupAnimator statusTagAnimator_{ PopupAnimationSettings{ 160.0, 160.0, 1.0f, 0.0f } };
@@ -158,7 +162,6 @@ private:
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> placeholderBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> caretBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> focusIndicatorBrush_;
-	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> statusTagBackgroundBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> statusTagBorderBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> statusTagTextBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> selectionBrush_;
