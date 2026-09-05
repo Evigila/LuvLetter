@@ -11,6 +11,7 @@
 #include <deque>
 #include <memory>
 #include <string>
+#include <vector>
 
 class MessageQueueWindow final
 {
@@ -41,17 +42,33 @@ public:
 
 private:
 	using Clock = LuvLetterNative::MessageQueueClock;
+	struct MessageLayout final
+	{
+		size_t messageIndex = 0;
+		float topDip = 0.0f;
+		float widthDip = 1.0f;
+		float heightDip = 1.0f;
+		float textLeftDip = 0.0f;
+		float textTopDip = 0.0f;
+		bool showSpinner = false;
+		Microsoft::WRL::ComPtr<IDWriteTextLayout> textLayout;
+	};
 
 	static constexpr size_t MaximumMessageCount = 6;
 	static constexpr size_t MaximumMessageLength = 4096;
 
+	HRESULT EnsureTextFormat();
 	HRESULT EnsureResources();
+	HRESULT RebuildMessageLayouts();
+	void InvalidateMessageLayouts() noexcept;
 	void DiscardResources(bool discardSurface) noexcept;
 	void RefreshDpiFromWindow();
 	void ApplyDpiChange(UINT dpi, const RECT* suggestedRect);
 	void UpdateGeometry();
 	void UpdatePosition() const;
 	void GetSurfaceMetrics(int& width, int& height, float& renderScale) const;
+	D2D1_SIZE_F AvailableLayoutSizeDip() const noexcept;
+	float WindowWidthDip() const noexcept;
 	float WindowHeightDip() const noexcept;
 	size_t VisibleMessageCount() const noexcept;
 	bool RemoveCompletedMessages(Clock::time_point now);
@@ -67,7 +84,11 @@ private:
 	bool visible_ = false;
 	bool updatingGeometry_ = false;
 	bool messageTimerActive_ = false;
+	bool messageLayoutsDirty_ = true;
+	float layoutWidthDip_ = 1.0f;
+	float layoutHeightDip_ = 1.0f;
 	std::deque<LuvLetterNative::MessageQueueEntry> messages_;
+	std::vector<MessageLayout> messageLayouts_;
 
 	Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory_;
 	Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;

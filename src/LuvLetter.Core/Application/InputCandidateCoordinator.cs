@@ -334,13 +334,8 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         var message = string.IsNullOrEmpty(stage) ? title : $"{title} · {stage}";
         if (state.ProgressPercent is { } percent)
         {
-            const int segmentCount = 10;
-            var filled = Math.Clamp(percent / 10, 0, segmentCount);
-            var bar = string.Concat(
-                new string('█', filled),
-                new string('░', segmentCount - filled));
             var estimate = state.ProgressIsEstimated ? "约" : string.Empty;
-            message = $"{message} [{bar}] {estimate}{percent}%";
+            message = $"{message} · {estimate}{percent}%";
         }
         if (state.Stage == FileIndexRuntimeStage.Scanning && state.DiscoveredEntries > 0)
         {

@@ -312,20 +312,23 @@ message queue. All coordinator status reports are mirrored to that queue and ret
 their existing WPF/tray status fallback.
 
 The message queue starts empty and hidden. Enqueuing a non-empty ordinary message shows
-it without activating it. Each ordinary bubble has its own five-second lifetime; expiry
+it without activating it. Each ordinary bubble has its own three-second lifetime; expiry
 continues while the window is manually hidden, and the window hides automatically when
 the last bubble expires. Alt+Backspace hides a visible queue or shows the remaining
 bubbles; it is a no-op when none remain. A subsequent message shows the queue again.
 Escape deliberately does not hide this read-only status surface. The active stack is
 bounded at six bubbles. Overflow evicts transient bubbles before active persistent
-activities, and long text is kept to one line and trimmed with an ellipsis.
+activities. Each bubble measures its content independently up to 440 DIPs; shorter text
+uses a narrower bubble, while longer text wraps and increases that bubble's height. If
+content exceeds the physical work-area height, the newest messages that fit are shown
+and the final visible line uses an ellipsis; earlier activities remain alive in the queue.
 
 Each bubble owns an independent monotonic timeline: it enters from the left over 180 ms,
-starts its reverse leftward exit five seconds after ordinary enqueue, and is removed
+starts its reverse leftward exit three seconds after ordinary enqueue, and is removed
 after the 140 ms exit completes. A message activity instead has a stable token, remains
 until completion, can update its text in place, and displays an eight-dot rotating
 spinner. Completing it without text begins its exit; completing it with final text turns
-the same bubble into an ordinary five-second notification. One adaptive timer renders
+the same bubble into an ordinary three-second notification. One adaptive timer renders
 16 ms frames only while the queue is visible and animation is required; otherwise it
 sleeps until the next lifecycle boundary. Manually hiding the surface therefore pauses
 rendering rather than activity lifetime, and a hidden persistent-only queue does not run
@@ -381,10 +384,10 @@ the command and Echo paths remain available. A compact status request reports ge
 an explicit `Ready`, `InitialBuild`, `Updating`, or `Failed` activity, work stage, optional
 percentage, whether that percentage is estimated, and the number of entries discovered
 so far. Core maps initial construction to `正在生成索引表`
-and maintenance to `正在更新索引`, with an in-place ten-segment
-progress bar. Initial scanning is labelled with `约` rather than presenting a discovered
+and maintenance to `正在更新索引`, with an in-place percentage and no segmented progress
+bar. Initial scanning is labelled with `约` rather than presenting a discovered
 work queue as an exact total; packing, compaction, and persistence are exact stages. A
-successfully published generation becomes the five-second `索引已就绪` completion. Failed
+successfully published generation becomes the three-second `索引已就绪` completion. Failed
 scans report a delayed retry without announcing success; existing partition snapshots
 remain queryable. Session loss maps locally to `Unavailable`,
 dismisses the spinner without a false completion, and rejects stale session state. Session

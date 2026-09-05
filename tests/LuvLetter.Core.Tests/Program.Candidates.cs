@@ -64,7 +64,7 @@ internal static partial class Program
                 DiscoveredEntries: 12);
             fileIndex.SetState(progressState);
             Assert.SequenceEqual(
-                ["正在生成索引表 · 扫描中 [███░░░░░░░] 约37% · 12 项"],
+                ["正在生成索引表 · 扫描中 · 约37% · 12 项"],
                 nativeShell.UpdatedMessageActivities);
             fileIndex.SetState(progressState);
             Assert.Equal(
@@ -77,7 +77,7 @@ internal static partial class Program
                 1));
             Assert.SequenceEqual(
                 [
-                    "正在生成索引表 · 扫描中 [███░░░░░░░] 约37% · 12 项",
+                    "正在生成索引表 · 扫描中 · 约37% · 12 项",
                     "正在更新索引",
                 ],
                 nativeShell.UpdatedMessageActivities);

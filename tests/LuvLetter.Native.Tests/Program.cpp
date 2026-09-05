@@ -136,6 +136,8 @@ namespace
 	void TestMessageActivityTimeline()
 	{
 		using namespace LuvLetterNative;
+		Assert(MessageLifetime == std::chrono::seconds(3),
+			"Ordinary messages must use the shortened transient lifetime.");
 		const auto started = MessageQueueClock::time_point{};
 		MessageQueueEntry activity{
 			91,
@@ -145,7 +147,7 @@ namespace
 			true,
 		};
 		Assert(activity.IsActiveActivity(), "A loading token must be an active message activity.");
-		Assert(!activity.HasFiniteLifetime(), "An active message activity must not expire after five seconds.");
+		Assert(!activity.HasFiniteLifetime(), "An active message activity must not use the transient lifetime.");
 		Assert(!activity.IsRemovalDue(started + std::chrono::hours(24)),
 			"An active message activity must remain after an arbitrarily long operation.");
 
@@ -168,7 +170,7 @@ namespace
 		Assert(!activity.IsActiveActivity(), "Completing an activity must stop its spinner.");
 		Assert(activity.text == L"Index ready", "Completion must retain the supplied final text.");
 		Assert(activity.expiresAt == completedAt + MessageLifetime,
-			"A final activity message must use the ordinary five-second lifetime.");
+			"A final activity message must use the ordinary transient lifetime.");
 		Assert(!activity.IsRemovalDue(activity.expiresAt + MessageHideDuration - std::chrono::milliseconds(1)),
 			"A completed activity must remain through its exit animation.");
 		Assert(activity.IsRemovalDue(activity.expiresAt + MessageHideDuration),

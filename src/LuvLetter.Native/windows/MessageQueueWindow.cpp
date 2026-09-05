@@ -6,7 +6,6 @@
 #include <chrono>
 #include <cmath>
 #include <cwctype>
-#include <limits>
 #include <utility>
 
 using namespace LuvLetterNative;
@@ -15,12 +14,16 @@ namespace
 {
 	constexpr int64_t MaxSurfacePixels = 4LL * 1024LL * 1024LL;
 	constexpr size_t MaximumVisibleMessages = 6;
-	constexpr float WindowWidthDip = 440.0f;
-	constexpr float MessageHeightDip = 32.0f;
+	constexpr float MaximumMessageWidthDip = 440.0f;
+	constexpr float MinimumMessageWidthDip = 32.0f;
+	constexpr float MinimumMessageHeightDip = 32.0f;
 	constexpr float HorizontalPaddingDip = 10.0f;
+	constexpr float VerticalPaddingDip = 6.0f;
 	constexpr float MessageGapDip = 4.0f;
 	constexpr float WorkAreaMarginDip = 16.0f;
+	constexpr float MaximumTextLayoutExtentDip = 1000000.0f;
 	constexpr float SpinnerSlotWidthDip = 24.0f;
+	constexpr float MinimumTextWidthWithSpinnerDip = 16.0f;
 	constexpr float SpinnerRadiusDip = 6.0f;
 	constexpr float SpinnerDotRadiusDip = 1.35f;
 	constexpr size_t SpinnerDotCount = 8;
@@ -43,7 +46,8 @@ namespace
 	MessageAnimationFrame CalculateMessageFrame(
 		std::chrono::steady_clock::time_point createdAt,
 		std::chrono::steady_clock::time_point expiresAt,
-		std::chrono::steady_clock::time_point now) noexcept
+		std::chrono::steady_clock::time_point now,
+		float messageWidthDip) noexcept
 	{
 		double visibleProgress = 1.0;
 		const auto showEnd = createdAt + MessageShowDuration;
@@ -60,7 +64,7 @@ namespace
 		}
 
 		const auto motionProgress = EaseOutCubic(visibleProgress);
-		const auto slideDistance = WindowWidthDip + WorkAreaMarginDip;
+		const auto slideDistance = messageWidthDip + WorkAreaMarginDip;
 		return MessageAnimationFrame{
 			-slideDistance * (1.0f - static_cast<float>(motionProgress)),
 			static_cast<float>(motionProgress),
@@ -117,6 +121,7 @@ HRESULT MessageQueueWindow::Enqueue(std::wstring message, HMONITOR targetMonitor
 		now + MessageLifetime,
 		false,
 	});
+	InvalidateMessageLayouts();
 	Show(targetMonitor);
 	return S_OK;
 }
@@ -148,6 +153,7 @@ HRESULT MessageQueueWindow::BeginActivity(
 		(Clock::time_point::max)(),
 		true,
 	});
+	InvalidateMessageLayouts();
 	Show(targetMonitor);
 	return S_OK;
 }
@@ -169,8 +175,10 @@ HRESULT MessageQueueWindow::UpdateActivity(uint64_t token, std::wstring message)
 	}
 
 	existing->Update(std::move(message));
+	InvalidateMessageLayouts();
 	if (visible_)
 	{
+		UpdateGeometry();
 		Render(now);
 	}
 	ScheduleMessageTimer(now);
@@ -199,13 +207,18 @@ HRESULT MessageQueueWindow::CompleteActivity(
 	if (existing == messages_.end() || !existing->IsActiveActivity()) return S_FALSE;
 
 	existing->Complete(std::move(finalMessage), retainFinalMessage, now);
+	InvalidateMessageLayouts();
 	if (retainFinalMessage)
 	{
 		Show(targetMonitor);
 	}
 	else
 	{
-		if (visible_) Render(now);
+		if (visible_)
+		{
+			UpdateGeometry();
+			Render(now);
+		}
 		ScheduleMessageTimer(now);
 	}
 	return S_OK;
@@ -225,11 +238,12 @@ void MessageQueueWindow::Show(HMONITOR targetMonitor)
 	if (targetMonitor != nullptr)
 	{
 		targetMonitor_ = targetMonitor;
+		InvalidateMessageLayouts();
 	}
 
 	// Move first so Windows assigns the destination monitor's DPI, then lay out
 	// again in DIPs using that DPI. This window never takes focus.
-	UpdatePosition();
+	UpdateGeometry();
 	RefreshDpiFromWindow();
 	visible_ = true;
 	UpdateGeometry();
@@ -263,9 +277,47 @@ void MessageQueueWindow::Toggle(HMONITOR targetMonitor)
 	}
 }
 
+HRESULT MessageQueueWindow::EnsureTextFormat()
+{
+	if (dwriteFactory_ == nullptr) return E_POINTER;
+	if (textFormat_ && trimmingSign_) return S_OK;
+	auto result = S_OK;
+	if (!textFormat_)
+	{
+		result = dwriteFactory_->CreateTextFormat(
+			SurfaceFontFamily,
+			nullptr,
+			DWRITE_FONT_WEIGHT_NORMAL,
+			DWRITE_FONT_STYLE_NORMAL,
+			DWRITE_FONT_STRETCH_NORMAL,
+			SurfaceFontSizeDip,
+			L"",
+			textFormat_.GetAddressOf());
+		if (FAILED(result)) return result;
+		result = textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
+		if (FAILED(result)) return result;
+		result = textFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_NEAR);
+		if (FAILED(result)) return result;
+		result = textFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_EMERGENCY_BREAK);
+		if (FAILED(result)) return result;
+	}
+	if (!trimmingSign_)
+	{
+		result = dwriteFactory_->CreateEllipsisTrimmingSign(
+			textFormat_.Get(),
+			trimmingSign_.GetAddressOf());
+		if (FAILED(result)) return result;
+	}
+	DWRITE_TRIMMING trimming{};
+	trimming.granularity = DWRITE_TRIMMING_GRANULARITY_CHARACTER;
+	return textFormat_->SetTrimming(&trimming, trimmingSign_.Get());
+}
+
 HRESULT MessageQueueWindow::EnsureResources()
 {
 	if (d2dFactory_ == nullptr || dwriteFactory_ == nullptr) return E_POINTER;
+	auto result = RebuildMessageLayouts();
+	if (FAILED(result)) return result;
 
 	int width = 0;
 	int height = 0;
@@ -277,7 +329,7 @@ HRESULT MessageQueueWindow::EnsureResources()
 	{
 		surface_ = std::make_unique<LayeredWindowSurface>();
 	}
-	auto result = surface_->Ensure(width, height, MaxSurfacePixels);
+	result = surface_->Ensure(width, height, MaxSurfacePixels);
 	if (FAILED(result)) return result;
 
 	if (!renderTarget_)
@@ -293,32 +345,6 @@ HRESULT MessageQueueWindow::EnsureResources()
 		if (FAILED(result)) return result;
 	}
 	renderTarget_->SetDpi(static_cast<float>(dpi_), static_cast<float>(dpi_));
-
-	if (!textFormat_)
-	{
-		result = dwriteFactory_->CreateTextFormat(
-			SurfaceFontFamily,
-			nullptr,
-			DWRITE_FONT_WEIGHT_NORMAL,
-			DWRITE_FONT_STYLE_NORMAL,
-			DWRITE_FONT_STRETCH_NORMAL,
-			SurfaceFontSizeDip,
-			L"",
-			textFormat_.GetAddressOf());
-		if (FAILED(result)) return result;
-		textFormat_->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_LEADING);
-		textFormat_->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
-		textFormat_->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
-
-		DWRITE_TRIMMING trimming{};
-		trimming.granularity = DWRITE_TRIMMING_GRANULARITY_CHARACTER;
-		result = dwriteFactory_->CreateEllipsisTrimmingSign(
-			textFormat_.Get(),
-			trimmingSign_.GetAddressOf());
-		if (FAILED(result)) return result;
-		result = textFormat_->SetTrimming(&trimming, trimmingSign_.Get());
-		if (FAILED(result)) return result;
-	}
 
 	if (!backgroundBrush_)
 	{
@@ -344,8 +370,145 @@ HRESULT MessageQueueWindow::EnsureResources()
 	return S_OK;
 }
 
+HRESULT MessageQueueWindow::RebuildMessageLayouts()
+{
+	if (!messageLayoutsDirty_) return S_OK;
+	messageLayouts_.clear();
+	layoutWidthDip_ = 1.0f;
+	layoutHeightDip_ = 1.0f;
+	if (messages_.empty())
+	{
+		messageLayoutsDirty_ = false;
+		return S_OK;
+	}
+
+	auto result = EnsureTextFormat();
+	if (FAILED(result)) return result;
+	const auto available = AvailableLayoutSizeDip();
+	const auto visibleCount = VisibleMessageCount();
+	const auto firstIndex = messages_.size() - visibleCount;
+	std::vector<MessageLayout> measured;
+	measured.reserve(visibleCount);
+	for (size_t visibleIndex = 0; visibleIndex < visibleCount; ++visibleIndex)
+	{
+		const auto messageIndex = firstIndex + visibleIndex;
+		const auto& queuedMessage = messages_[messageIndex];
+		const auto showSpinner = queuedMessage.IsActiveActivity()
+			&& available.width >= 2.0f * HorizontalPaddingDip
+				+ SpinnerSlotWidthDip + MinimumTextWidthWithSpinnerDip;
+		const auto spinnerWidth = showSpinner ? SpinnerSlotWidthDip : 0.0f;
+		const auto horizontalPadding = (std::min)(
+			HorizontalPaddingDip,
+			(std::max)(0.0f, (available.width - spinnerWidth - 1.0f) * 0.5f));
+		const auto leadingWidth = horizontalPadding + spinnerWidth;
+		const auto fixedWidth = leadingWidth + horizontalPadding;
+
+		Microsoft::WRL::ComPtr<IDWriteTextLayout> naturalLayout;
+		result = dwriteFactory_->CreateTextLayout(
+			queuedMessage.text.c_str(),
+			static_cast<UINT32>(queuedMessage.text.size()),
+			textFormat_.Get(),
+			MaximumTextLayoutExtentDip,
+			MaximumTextLayoutExtentDip,
+			naturalLayout.GetAddressOf());
+		if (FAILED(result)) return result;
+		result = naturalLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+		if (FAILED(result)) return result;
+		DWRITE_TEXT_METRICS naturalMetrics{};
+		result = naturalLayout->GetMetrics(&naturalMetrics);
+		if (FAILED(result)) return result;
+
+		const auto minimumWidth = (std::min)(MinimumMessageWidthDip, available.width);
+		const auto desiredWidth = (std::clamp)(
+			naturalMetrics.widthIncludingTrailingWhitespace + fixedWidth,
+			minimumWidth,
+			available.width);
+		const auto textWidth = (std::max)(1.0f, desiredWidth - fixedWidth);
+		Microsoft::WRL::ComPtr<IDWriteTextLayout> textLayout;
+		result = dwriteFactory_->CreateTextLayout(
+			queuedMessage.text.c_str(),
+			static_cast<UINT32>(queuedMessage.text.size()),
+			textFormat_.Get(),
+			textWidth,
+			(std::max)(1.0f, available.height - 2.0f * VerticalPaddingDip),
+			textLayout.GetAddressOf());
+		if (FAILED(result)) return result;
+		DWRITE_TEXT_METRICS textMetrics{};
+		result = textLayout->GetMetrics(&textMetrics);
+		if (FAILED(result)) return result;
+
+		MessageLayout layout{};
+		layout.messageIndex = messageIndex;
+		layout.widthDip = desiredWidth;
+		layout.heightDip = (std::min)(
+			available.height,
+			(std::max)(MinimumMessageHeightDip,
+				textMetrics.height + 2.0f * VerticalPaddingDip));
+		layout.textLeftDip = leadingWidth;
+		layout.showSpinner = showSpinner;
+		layout.textLayout = std::move(textLayout);
+		measured.push_back(std::move(layout));
+	}
+
+	float selectedHeight = 0.0f;
+	auto firstVisibleLayout = measured.size();
+	while (firstVisibleLayout > 0)
+	{
+		const auto candidateIndex = firstVisibleLayout - 1;
+		const auto additionalHeight = measured[candidateIndex].heightDip
+			+ (selectedHeight > 0.0f ? MessageGapDip : 0.0f);
+		if (selectedHeight > 0.0f && selectedHeight + additionalHeight > available.height)
+		{
+			break;
+		}
+		firstVisibleLayout = candidateIndex;
+		selectedHeight = (std::min)(available.height, selectedHeight + additionalHeight);
+		if (selectedHeight >= available.height) break;
+	}
+
+	messageLayouts_.reserve(measured.size() - firstVisibleLayout);
+	float top = 0.0f;
+	for (auto index = firstVisibleLayout; index < measured.size(); ++index)
+	{
+		auto layout = std::move(measured[index]);
+		const auto remainingHeight = (std::max)(1.0f, available.height - top);
+		layout.heightDip = (std::min)(layout.heightDip, remainingHeight);
+		layout.textLayout->SetMaxHeight((std::max)(
+			1.0f,
+			layout.heightDip - 2.0f * VerticalPaddingDip));
+		DWRITE_TEXT_METRICS textMetrics{};
+		if (SUCCEEDED(layout.textLayout->GetMetrics(&textMetrics)))
+		{
+			layout.textTopDip = top + (std::max)(
+				0.0f,
+				(layout.heightDip - textMetrics.height) * 0.5f);
+		}
+		else
+		{
+			layout.textTopDip = top + VerticalPaddingDip;
+		}
+		layout.topDip = top;
+		layoutWidthDip_ = (std::max)(layoutWidthDip_, layout.widthDip);
+		top += layout.heightDip;
+		messageLayouts_.push_back(std::move(layout));
+		if (index + 1 < measured.size()) top += MessageGapDip;
+	}
+	layoutHeightDip_ = (std::max)(1.0f, top);
+	messageLayoutsDirty_ = false;
+	return S_OK;
+}
+
+void MessageQueueWindow::InvalidateMessageLayouts() noexcept
+{
+	messageLayoutsDirty_ = true;
+	messageLayouts_.clear();
+	layoutWidthDip_ = 1.0f;
+	layoutHeightDip_ = 1.0f;
+}
+
 void MessageQueueWindow::DiscardResources(bool discardSurface) noexcept
 {
+	InvalidateMessageLayouts();
 	textBrush_.Reset();
 	borderBrush_.Reset();
 	backgroundBrush_.Reset();
@@ -381,6 +544,7 @@ void MessageQueueWindow::ApplyDpiChange(UINT dpi, const RECT* suggestedRect)
 void MessageQueueWindow::UpdateGeometry()
 {
 	if (hwnd_ == nullptr) return;
+	if (FAILED(RebuildMessageLayouts())) return;
 	updatingGeometry_ = true;
 	SetWindowRgn(hwnd_, nullptr, TRUE);
 	UpdatePosition();
@@ -390,12 +554,16 @@ void MessageQueueWindow::UpdateGeometry()
 void MessageQueueWindow::UpdatePosition() const
 {
 	if (hwnd_ == nullptr) return;
-	const auto monitor = targetMonitor_ != nullptr
+	auto monitor = targetMonitor_ != nullptr
 		? targetMonitor_
-		: MonitorFromWindow(hwnd_, MONITOR_DEFAULTTOPRIMARY);
+		: MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
 	MONITORINFO monitorInfo{};
 	monitorInfo.cbSize = sizeof(monitorInfo);
-	if (!GetMonitorInfoW(monitor, &monitorInfo)) return;
+	if (monitor == nullptr || !GetMonitorInfoW(monitor, &monitorInfo))
+	{
+		monitor = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
+		if (monitor == nullptr || !GetMonitorInfoW(monitor, &monitorInfo)) return;
+	}
 
 	int width = 0;
 	int height = 0;
@@ -417,73 +585,76 @@ void MessageQueueWindow::UpdatePosition() const
 		SWP_NOACTIVATE);
 }
 
-void MessageQueueWindow::GetSurfaceMetrics(
-	int& width,
-	int& height,
-	float& renderScale) const
+D2D1_SIZE_F MessageQueueWindow::AvailableLayoutSizeDip() const noexcept
 {
-	const auto requestedWidth = (std::max)(1, DipToPixels(WindowWidthDip, dpi_));
-	const auto requestedHeight = (std::max)(1, DipToPixels(WindowHeightDip(), dpi_));
-	int availableWidth = requestedWidth;
-	int availableHeight = requestedHeight;
-
-	const auto monitor = targetMonitor_ != nullptr
+	auto maximumWidth = MaximumMessageWidthDip;
+	auto maximumHeight = MaximumTextLayoutExtentDip;
+	auto monitor = targetMonitor_ != nullptr
 		? targetMonitor_
 		: (hwnd_ != nullptr
 			? MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST)
 			: MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY));
 	MONITORINFO monitorInfo{};
 	monitorInfo.cbSize = sizeof(monitorInfo);
-	if (monitor != nullptr && GetMonitorInfoW(monitor, &monitorInfo))
+	auto hasMonitorInfo = monitor != nullptr && GetMonitorInfoW(monitor, &monitorInfo);
+	if (!hasMonitorInfo && hwnd_ != nullptr)
 	{
-		const auto workWidth = (std::clamp)(
-			static_cast<int64_t>(monitorInfo.rcWork.right)
-				- static_cast<int64_t>(monitorInfo.rcWork.left),
-			int64_t{ 1 },
-			static_cast<int64_t>((std::numeric_limits<int>::max)()));
-		const auto workHeight = (std::clamp)(
-			static_cast<int64_t>(monitorInfo.rcWork.bottom)
-				- static_cast<int64_t>(monitorInfo.rcWork.top),
-			int64_t{ 1 },
-			static_cast<int64_t>((std::numeric_limits<int>::max)()));
-		const auto totalMargin = static_cast<int64_t>((std::max)(
+		monitor = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
+		hasMonitorInfo = monitor != nullptr && GetMonitorInfoW(monitor, &monitorInfo);
+	}
+	if (hasMonitorInfo)
+	{
+		const auto totalMargin = (std::max)(
 			0,
-			DipToPixels(WorkAreaMarginDip * 2.0f, dpi_)));
-		availableWidth = static_cast<int>((std::max)(int64_t{ 1 }, workWidth - totalMargin));
-		availableHeight = static_cast<int>((std::max)(int64_t{ 1 }, workHeight - totalMargin));
+			DipToPixels(2.0f * WorkAreaMarginDip, dpi_));
+		const auto availableWidth = (std::max)(
+			1L,
+			monitorInfo.rcWork.right - monitorInfo.rcWork.left - totalMargin);
+		const auto availableHeight = (std::max)(
+			1L,
+			monitorInfo.rcWork.bottom - monitorInfo.rcWork.top - totalMargin);
+		maximumWidth = (std::min)(
+			maximumWidth,
+			PixelsToDip(static_cast<int>(availableWidth), dpi_));
+		maximumHeight = PixelsToDip(static_cast<int>(availableHeight), dpi_);
 	}
 
-	const auto requestedPixels = static_cast<double>(requestedWidth)
-		* static_cast<double>(requestedHeight);
-	auto scale = (std::min)({
-		1.0,
-		static_cast<double>(availableWidth) / static_cast<double>(requestedWidth),
-		static_cast<double>(availableHeight) / static_cast<double>(requestedHeight),
-		std::sqrt(static_cast<double>(MaxSurfacePixels) / requestedPixels),
-	});
-	scale = (std::clamp)(scale, 0.0, 1.0);
-	width = (std::clamp)(
-		static_cast<int>(std::floor(static_cast<double>(requestedWidth) * scale)),
-		1,
-		availableWidth);
-	height = (std::clamp)(
-		static_cast<int>(std::floor(static_cast<double>(requestedHeight) * scale)),
-		1,
-		availableHeight);
-	if (static_cast<int64_t>(width) > MaxSurfacePixels / static_cast<int64_t>(height))
+	const auto widthPixels = (std::max)(1, DipToPixels(maximumWidth, dpi_));
+	const auto surfaceHeightPixels = static_cast<int>((std::max)(
+		int64_t{ 1 },
+		MaxSurfacePixels / static_cast<int64_t>(widthPixels)));
+	maximumHeight = (std::min)(
+		maximumHeight,
+		PixelsToDip(surfaceHeightPixels, dpi_));
+	return D2D1::SizeF(
+		(std::max)(1.0f, maximumWidth),
+		(std::max)(1.0f, maximumHeight));
+}
+
+void MessageQueueWindow::GetSurfaceMetrics(
+	int& width,
+	int& height,
+	float& renderScale) const
+{
+	width = (std::max)(1, DipToPixels(WindowWidthDip(), dpi_));
+	height = (std::max)(1, DipToPixels(WindowHeightDip(), dpi_));
+	if (static_cast<int64_t>(height) > MaxSurfacePixels / static_cast<int64_t>(width))
 	{
-		width = static_cast<int>(MaxSurfacePixels / static_cast<int64_t>(height));
+		height = static_cast<int>((std::max)(
+			int64_t{ 1 },
+			MaxSurfacePixels / static_cast<int64_t>(width)));
 	}
-	renderScale = static_cast<float>((std::min)(
-		static_cast<double>(width) / static_cast<double>(requestedWidth),
-		static_cast<double>(height) / static_cast<double>(requestedHeight)));
+	renderScale = 1.0f;
+}
+
+float MessageQueueWindow::WindowWidthDip() const noexcept
+{
+	return (std::max)(1.0f, layoutWidthDip_);
 }
 
 float MessageQueueWindow::WindowHeightDip() const noexcept
 {
-	const auto count = (std::max)(size_t{ 1 }, VisibleMessageCount());
-	return static_cast<float>(count) * MessageHeightDip
-		+ static_cast<float>(count - 1) * MessageGapDip;
+	return (std::max)(1.0f, layoutHeightDip_);
 }
 
 size_t MessageQueueWindow::VisibleMessageCount() const noexcept
@@ -505,7 +676,9 @@ bool MessageQueueWindow::RemoveCompletedMessages(Clock::time_point now)
 			++message;
 		}
 	}
-	return messages_.size() != originalSize;
+	const auto changed = messages_.size() != originalSize;
+	if (changed) InvalidateMessageLayouts();
+	return changed;
 }
 
 bool MessageQueueWindow::MakeRoomForMessage() noexcept
@@ -517,6 +690,7 @@ bool MessageQueueWindow::MakeRoomForMessage() noexcept
 		[](const MessageQueueEntry& item) { return !item.IsActiveActivity(); });
 	if (transient == messages_.end()) return false;
 	messages_.erase(transient);
+	InvalidateMessageLayouts();
 	return true;
 }
 
@@ -614,22 +788,22 @@ void MessageQueueWindow::Render(Clock::time_point now)
 	renderTarget_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
 	renderTarget_->Clear(D2D1::ColorF(0, 0.0f));
 
-	const auto visibleCount = VisibleMessageCount();
-	const auto firstIndex = messages_.size() - visibleCount;
-	for (size_t index = 0; index < visibleCount; ++index)
+	for (const auto& layout : messageLayouts_)
 	{
-		const auto& queuedMessage = messages_[firstIndex + index];
+		if (layout.messageIndex >= messages_.size()) continue;
+		const auto& queuedMessage = messages_[layout.messageIndex];
 		const auto animationFrame = CalculateMessageFrame(
 			queuedMessage.createdAt,
 			queuedMessage.expiresAt,
-			now);
-		const auto top = static_cast<float>(index) * (MessageHeightDip + MessageGapDip);
+			now,
+			layout.widthDip);
+		const auto top = layout.topDip;
 		const auto left = animationFrame.horizontalOffsetDip;
 		const auto bubble = CreateInsetRoundedRect(
 			left,
 			top,
-			left + WindowWidthDip,
-			top + MessageHeightDip,
+			left + layout.widthDip,
+			top + layout.heightDip,
 			SurfaceCornerRadius,
 			SurfaceBorderThickness);
 		backgroundBrush_->SetOpacity(animationFrame.opacity);
@@ -640,14 +814,14 @@ void MessageQueueWindow::Render(Clock::time_point now)
 			borderBrush_.Get(),
 			SurfaceBorderThickness);
 
-		if (queuedMessage.IsActiveActivity())
+		if (queuedMessage.IsActiveActivity() && layout.showSpinner)
 		{
 			constexpr double TwoPi = 6.283185307179586476925286766559;
 			const auto phase = CalculateMessageSpinnerRadians(
 				queuedMessage.createdAt,
 				now);
 			const auto centerX = left + HorizontalPaddingDip + SpinnerSlotWidthDip * 0.42f;
-			const auto centerY = top + MessageHeightDip * 0.5f;
+			const auto centerY = top + layout.heightDip * 0.5f;
 			for (size_t dot = 0; dot < SpinnerDotCount; ++dot)
 			{
 				const auto angle = phase
@@ -663,22 +837,14 @@ void MessageQueueWindow::Render(Clock::time_point now)
 			}
 		}
 
-		const auto& message = queuedMessage.text;
 		textBrush_->SetOpacity(animationFrame.opacity);
-		const auto textRect = D2D1::RectF(
-			left + HorizontalPaddingDip
-				+ (queuedMessage.IsActiveActivity() ? SpinnerSlotWidthDip : 0.0f),
-			top,
-			left + WindowWidthDip - HorizontalPaddingDip,
-			top + MessageHeightDip);
-		renderTarget_->DrawTextW(
-			message.c_str(),
-			static_cast<UINT32>(message.size()),
-			textFormat_.Get(),
-			textRect,
+		renderTarget_->DrawTextLayout(
+			D2D1::Point2F(
+				left + layout.textLeftDip,
+				layout.textTopDip),
+			layout.textLayout.Get(),
 			textBrush_.Get(),
-			D2D1_DRAW_TEXT_OPTIONS_CLIP,
-			DWRITE_MEASURING_MODE_NATURAL);
+			D2D1_DRAW_TEXT_OPTIONS_CLIP);
 	}
 	backgroundBrush_->SetOpacity(1.0f);
 	borderBrush_->SetOpacity(1.0f);
@@ -749,6 +915,7 @@ LRESULT MessageQueueWindow::HandleMessage(
 		return 0;
 	case WM_DISPLAYCHANGE:
 	case WM_SETTINGCHANGE:
+		InvalidateMessageLayouts();
 		if (visible_)
 		{
 			UpdateGeometry();

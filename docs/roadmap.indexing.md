@@ -175,7 +175,7 @@ No edit distance, token score, usage history, or pinyin score participates in Ph
 - Present initial construction as the persistent `正在生成索引表` activity and later
   rebuilds, including the six-minute reconciliation, as `正在更新索引`.
 - Keep the activity visible with a rotating indicator until a generation is successfully
-  published, then convert it in place to the ordinary five-second `索引已就绪` message.
+  published, then convert it in place to the ordinary three-second `索引已就绪` message.
   Disconnects and shutdown dismiss the activity without reporting a false completion.
   Failed scans also dismiss it without a success message and report a delayed retry.
 - Distinguish file-change triggers (gray), periodic triggers (green), per-path cooldown
@@ -396,7 +396,7 @@ candidates, persistence, or activation:
 18. Observe a large rebuild on battery and AC power and confirm Windows reports background
     processing behavior while input animation and keyboard navigation remain smooth.
 19. Start without a compatible snapshot and confirm `正在生成索引表` remains visible with
-    progress updates until publication, then becomes `索引已就绪` for five seconds.
+    progress updates until publication, then becomes `索引已就绪` for three seconds.
 20. Start with a compatible snapshot or trigger scheduled maintenance and confirm the
     persistent activity reads `正在更新索引`; hiding the queue must not consume continuous
     animation CPU, and showing it again must resume the spinner.
@@ -485,7 +485,7 @@ candidates, persistence, or activation:
     root continues returning recovered and newly journaled results, and that no partial
     full-scan generation deletes the disconnected root's previous results.
 44. Remove the active snapshot, start the application, and confirm the persistent message
-    shows a monotonic ten-segment bar, an explicitly approximate scan percentage, and a
+    shows an explicitly approximate scan percentage without a segmented bar, and a
     growing discovered-entry count. Confirm packing and saving advance through their fixed
     final stages before `索引已就绪`.
 45. Set `LUVLETTER_INDEXER_LOG=debug`, repeat an initial build, and inspect

@@ -11,7 +11,7 @@ namespace LuvLetterNative
 {
 	using MessageQueueClock = std::chrono::steady_clock;
 
-	inline constexpr auto MessageLifetime = std::chrono::seconds(5);
+	inline constexpr auto MessageLifetime = std::chrono::seconds(3);
 	inline constexpr auto MessageShowDuration = std::chrono::milliseconds(180);
 	inline constexpr auto MessageHideDuration = std::chrono::milliseconds(140);
 	inline constexpr double MessageSpinnerPeriodMilliseconds = 800.0;

@@ -99,7 +99,7 @@ reserved product capabilities. Architectural ownership and dependency rules rema
   opens a selected file, while Shift+Enter opens its containing location in Explorer.
 - Added persistent message activities that update one bubble in place, remain visible
   until completion, and display a rotating progress indicator without changing the
-  existing five-second lifetime of ordinary messages.
+  ordinary transient-message lifetime.
 - Added explicit index lifecycle feedback. Initial construction reports
   `正在生成索引表`, background maintenance reports `正在更新索引`, and successful
   publication completes the activity with `索引已就绪`.
@@ -129,13 +129,18 @@ reserved product capabilities. Architectural ownership and dependency rules rema
   partitions remain recoverable when another configured root is unavailable.
 - Added estimated initial-scan progress with discovered-entry counts and exact packing,
   compaction, and persistence stages. The existing persistent activity now updates an
-  in-place ten-segment progress bar instead of showing only an indefinite spinner.
+  in-place percentage alongside its indefinite spinner.
 - Added explicit opt-in, bounded JSONL indexer diagnostics through
   `LUVLETTER_INDEXER_LOG`, including throttled scan progress, filesystem errors,
   no-progress detection, recovery, persistence, and publication events.
 
 ### Changed
 
+- Message bubbles now size to their measured content up to the existing 440-DIP maximum.
+  Long messages wrap and grow vertically, and ordinary transient messages remain for
+  three seconds instead of five.
+- Index activities retain their percentage and discovered-entry count without rendering
+  a text-based segmented progress bar.
 - Reduced ready-state companion status polling from four round trips per second to one
   every five seconds while preserving immediate forced refresh through an explicit wake.
 - Reworked application lookup to precompute compact display/alias keys and retain only a
