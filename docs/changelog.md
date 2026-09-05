@@ -8,6 +8,9 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 
 ### Fixed
 
+- The candidate list now inherits the input window's resolved width and left edge. The
+  combined input surface keeps one DIP-based layout across monitor DPI and work-area
+  changes, while narrow displays constrain both windows together.
 - Input text, placeholder text, caret, and IME placement now share metrics derived from
   the active font, keeping their vertical alignment consistent. The mode tag uses regular
   text, a transparent interior, and a finer outline.

@@ -5,7 +5,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
 #include <utility>
 
 using namespace LuvLetterNative;
@@ -13,17 +12,17 @@ using namespace LuvLetterNative;
 namespace
 {
 	constexpr int64_t MaxSurfacePixels = 16LL * 1024LL * 1024LL;
-	constexpr float RowHeightDip = 48.0f;
+	constexpr float RowVerticalPaddingDip = 4.0f;
+	constexpr float RowHeightDip = 2.0f * SurfaceLineHeightDip
+		+ 2.0f * RowVerticalPaddingDip;
 	constexpr float OuterPaddingDip = 6.0f;
 	constexpr float HorizontalPaddingDip = 12.0f;
-	constexpr float IconSizeDip = 20.0f;
+	constexpr float IconSizeDip = SurfaceLineHeightDip;
 	constexpr float IconGapDip = 10.0f;
 	constexpr float IconStrokeDip = 1.25f;
 	constexpr float WindowGapDip = 7.0f;
 	constexpr float CornerRadiusDip = 7.0f;
 	constexpr float BorderWidthDip = 1.0f;
-	constexpr float PreferredWidthDip = 720.0f;
-	constexpr float WorkAreaMarginDip = 16.0f;
 
 	D2D1_COLOR_F WithOpacity(D2D1_COLOR_F color, float opacity) noexcept
 	{
@@ -442,8 +441,7 @@ void InputCandidatesWindow::UpdatePosition() const
 	const auto height = PixelHeight();
 	const auto gap = DipToPixels(WindowGapDip, dpi_);
 	auto y = inputBounds.top - gap - height;
-	auto x = inputBounds.left
-		+ ((inputBounds.right - inputBounds.left) - width) / 2;
+	const auto x = inputBounds.left;
 	const auto monitor = MonitorFromWindow(inputHwnd_, MONITOR_DEFAULTTONEAREST);
 	MONITORINFO monitorInfo{};
 	monitorInfo.cbSize = sizeof(monitorInfo);
@@ -464,10 +462,6 @@ void InputCandidatesWindow::UpdatePosition() const
 			y,
 			monitorInfo.rcWork.top,
 			(std::max)(monitorInfo.rcWork.top, monitorInfo.rcWork.bottom - height));
-		x = (std::clamp)(
-			x,
-			monitorInfo.rcWork.left,
-			(std::max)(monitorInfo.rcWork.left, monitorInfo.rcWork.right - width));
 	}
 	SetWindowPos(
 		hwnd_, HWND_TOPMOST,
@@ -485,38 +479,15 @@ float InputCandidatesWindow::WindowHeightDip() const noexcept
 
 int InputCandidatesWindow::PixelWidth() const
 {
-	auto requestedWidth = (std::max)(1, DipToPixels(PreferredWidthDip, dpi_));
 	if (inputHwnd_ != nullptr)
 	{
 		RECT bounds{};
 		if (GetWindowRect(inputHwnd_, &bounds) && bounds.right > bounds.left)
 		{
-			requestedWidth = (std::max)(
-				requestedWidth,
-				static_cast<int>(bounds.right - bounds.left));
+			return static_cast<int>(bounds.right - bounds.left);
 		}
 	}
-	else
-	{
-		requestedWidth = (std::max)(
-			requestedWidth,
-			DipToPixels(static_cast<float>(config_.width), dpi_));
-	}
-
-	const auto monitor = inputHwnd_ != nullptr
-		? MonitorFromWindow(inputHwnd_, MONITOR_DEFAULTTONEAREST)
-		: MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
-	MONITORINFO monitorInfo{};
-	monitorInfo.cbSize = sizeof(monitorInfo);
-	if (monitor == nullptr || !GetMonitorInfoW(monitor, &monitorInfo))
-	{
-		return requestedWidth;
-	}
-	const auto workWidth = (std::max)(1L, monitorInfo.rcWork.right - monitorInfo.rcWork.left);
-	const auto margin = (std::min)(
-		workWidth / 2,
-		static_cast<LONG>(DipToPixels(WorkAreaMarginDip, dpi_)));
-	return (std::min)(requestedWidth, static_cast<int>(workWidth - 2 * margin));
+	return (std::max)(1, DipToPixels(static_cast<float>(config_.width), dpi_));
 }
 
 int InputCandidatesWindow::PixelHeight() const
@@ -642,9 +613,9 @@ void InputCandidatesWindow::Render()
 		const auto primaryRect = hasSecondary
 			? D2D1::RectF(
 				textLeft,
-				top + 4.0f,
+				top + RowVerticalPaddingDip,
 				textRight,
-				top + 4.0f + SurfaceLineHeightDip)
+				top + RowVerticalPaddingDip + SurfaceLineHeightDip)
 			: D2D1::RectF(textLeft, top, textRight, bottom);
 		const auto primaryFormat = item.kind == LuvLetterCandidateKindFile
 			? fileNameTextFormat_.Get()
@@ -658,8 +629,8 @@ void InputCandidatesWindow::Render()
 		if (hasSecondary)
 		{
 			const auto secondaryRect = D2D1::RectF(
-				textLeft, top + 4.0f + SurfaceLineHeightDip,
-				textRight, bottom - 4.0f);
+				textLeft, top + RowVerticalPaddingDip + SurfaceLineHeightDip,
+				textRight, bottom - RowVerticalPaddingDip);
 			renderTarget_->DrawTextW(
 				item.secondaryText.c_str(),
 				static_cast<UINT32>(item.secondaryText.size()),

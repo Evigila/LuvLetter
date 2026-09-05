@@ -1482,7 +1482,9 @@ LRESULT NativeShellHost::DispatchWindowMessage(
 		if (inputCandidatesWindow_ != nullptr
 			&& (message == WM_WINDOWPOSCHANGED
 				|| message == WM_SIZE
-				|| message == WM_DPICHANGED))
+				|| message == WM_DPICHANGED
+				|| message == WM_DISPLAYCHANGE
+				|| message == WM_SETTINGCHANGE))
 		{
 			inputCandidatesWindow_->SynchronizeToInputWindow();
 		}

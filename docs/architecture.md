@@ -77,7 +77,9 @@ composition and cannot be removed; optional assemblies are discovered from `plug
 - `windows/InputWindow`: input editing, history, IME, animation driving, and rendering.
 - `windows/InputCandidatesWindow`: the non-activating, keyboard-driven candidate list
   positioned beside InputWindow, preferring the space above it and flipping below when
-  necessary. It stores copied display data, applies only the
+  necessary. InputWindow is the geometry root for the combined input surface: it resolves
+  the configured DIP width against the active monitor work area, while the candidate list
+  inherits its exact pixel width and left edge. It stores copied display data, applies only the
   candidate snapshot matching the current editor revision, and draws lightweight
   Direct2D type glyphs without Shell icon or thumbnail I/O. Ordinary result updates
   retain its layered DIB and Direct2D resources when geometry and device state permit.
@@ -200,7 +202,9 @@ shared type scale, and Direct2D applies the active monitor DPI to the complete s
 Candidate rows use the same size for both lines, distinguish file names with bold weight,
 and reserve a wider, taller layout for full-size paths. Text overflow uses ellipses; when
 neither side of InputBox can fit every row, the viewport keeps the selected row visible
-without scaling the text.
+without scaling the text. Device DPI converts this logical layout to pixels once. Display,
+work-area, and DPI changes reflow the input surface as a unit so its internal proportions
+remain stable across monitors.
 
 The command input shortcut is fixed to double Ctrl, Quick Actions is fixed to Alt+F1,
 the message queue is fixed to Alt+Backspace, and Escape dismisses the two interactive

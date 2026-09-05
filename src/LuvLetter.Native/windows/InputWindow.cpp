@@ -25,6 +25,7 @@ namespace
 	constexpr size_t HistoryCapacity = 100;
 	constexpr float MaxTextLayoutHeight = 16777216.0f;
 	constexpr int64_t MaxSurfacePixels = 16LL * 1024LL * 1024LL;
+	constexpr float WorkAreaMarginDip = 16.0f;
 	constexpr wchar_t PlaceholderText[] = L"Enter command here";
 	constexpr int AltModifier = 1;
 	constexpr int ControlModifier = 2;
@@ -380,18 +381,13 @@ void InputWindow::ApplyDpiChange(UINT dpi, const RECT* suggestedRect)
 	if (suggestedRect != nullptr)
 	{
 		targetMonitor_ = MonitorFromRect(suggestedRect, MONITOR_DEFAULTTONEAREST);
-		SetWindowPos(
-			hwnd_, nullptr,
-			suggestedRect->left, suggestedRect->top,
-			suggestedRect->right - suggestedRect->left,
-			suggestedRect->bottom - suggestedRect->top,
-			SWP_NOZORDER | SWP_NOACTIVATE);
 	}
 	else
 	{
 		targetMonitor_ = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
-		UpdateWindowPosition();
 	}
+	UpdateResponsiveHeight();
+	UpdateWindowPosition();
 	UpdateWindowShape();
 	UpdateImeCompositionWindow();
 	if (visible_) Render();
@@ -623,10 +619,14 @@ void InputWindow::UpdateWindowPosition(bool applyAnimation) const
 	if (hwnd_ == nullptr) return;
 	MONITORINFO monitorInfo{};
 	monitorInfo.cbSize = sizeof(monitorInfo);
-	const auto monitor = targetMonitor_ != nullptr
+	auto monitor = targetMonitor_ != nullptr
 		? targetMonitor_
 		: MonitorFromWindow(hwnd_, MONITOR_DEFAULTTOPRIMARY);
-	if (!GetMonitorInfoW(monitor, &monitorInfo)) return;
+	if (!GetMonitorInfoW(monitor, &monitorInfo))
+	{
+		monitor = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTOPRIMARY);
+		if (!GetMonitorInfoW(monitor, &monitorInfo)) return;
+	}
 	const auto width = PixelWidth();
 	const auto height = PixelHeight();
 	const auto bottomMargin = DipToPixels(static_cast<float>(config_.bottomMargin), dpi_);
@@ -651,6 +651,14 @@ void InputWindow::UpdateWindowPosition(bool applyAnimation) const
 	}
 	x += DipToPixels(static_cast<float>(config_.offsetX), dpi_);
 	y += DipToPixels(static_cast<float>(config_.offsetY), dpi_);
+	x = (std::clamp)(
+		x,
+		monitorInfo.rcWork.left,
+		(std::max)(monitorInfo.rcWork.left, monitorInfo.rcWork.right - width));
+	y = (std::clamp)(
+		y,
+		monitorInfo.rcWork.top,
+		(std::max)(monitorInfo.rcWork.top, monitorInfo.rcWork.bottom - height));
 	if (applyAnimation)
 	{
 		y += DipToPixels(animator_.Current().verticalOffsetDip, dpi_);
@@ -1076,8 +1084,9 @@ void InputWindow::SetCaretFromPoint(LPARAM lParam, bool extendSelection)
 		animator_.Current().widthScale,
 		0.0f,
 		1.0f);
-	const auto animatedWidth = (std::max)(1.0f, static_cast<float>(config_.width) * widthScale);
-	const auto animatedLeft = (static_cast<float>(config_.width) - animatedWidth) / 2.0f;
+	const auto fullWidth = PixelsToDip(PixelWidth(), dpi_);
+	const auto animatedWidth = (std::max)(1.0f, fullWidth * widthScale);
+	const auto animatedLeft = (fullWidth - animatedWidth) / 2.0f;
 	const auto horizontalPadding = (std::min)(
 		(std::max)(0.0f, config_.horizontalPadding),
 		(std::max)(0.0f, animatedWidth / 2.0f - 1.0f));
@@ -1218,8 +1227,9 @@ void InputWindow::UpdateImeCompositionWindow()
 		animator_.Current().widthScale,
 		0.0f,
 		1.0f);
-	const auto animatedWidth = (std::max)(1.0f, static_cast<float>(config_.width) * widthScale);
-	const auto animatedLeft = (static_cast<float>(config_.width) - animatedWidth) / 2.0f;
+	const auto fullWidth = PixelsToDip(PixelWidth(), dpi_);
+	const auto animatedWidth = (std::max)(1.0f, fullWidth * widthScale);
+	const auto animatedLeft = (fullWidth - animatedWidth) / 2.0f;
 	const auto horizontalPadding = (std::min)(
 		(std::max)(0.0f, config_.horizontalPadding),
 		(std::max)(0.0f, animatedWidth / 2.0f - 1.0f));
@@ -1252,7 +1262,7 @@ void InputWindow::Render(bool caretOnly)
 		&& !statusTagFrame.IsAnimating();
 	const auto width = PixelWidth();
 	const auto height = PixelHeight();
-	const auto fullWidth = static_cast<float>(config_.width);
+	const auto fullWidth = PixelsToDip(width, dpi_);
 	const auto animatedWidth = (std::max)(
 		1.0f,
 		fullWidth * (std::clamp)(animationFrame.widthScale, 0.0f, 1.0f));
@@ -1595,9 +1605,7 @@ float InputWindow::WindowHeightDip() const
 	const auto placementMargin = config_.positionMode == 1 || config_.positionMode == 3
 		? 0
 		: DipToPixels(static_cast<float>(config_.bottomMargin), dpi_);
-	const auto widthPixels = (std::max)(
-		1,
-		DipToPixels(static_cast<float>(config_.width), dpi_));
+	const auto widthPixels = PixelWidth();
 	const auto areaLimitedHeight = static_cast<LONG>((std::max)(
 		int64_t{ 1 },
 		MaxSurfacePixels / static_cast<int64_t>(widthPixels)));
@@ -1614,7 +1622,7 @@ float InputWindow::TextWidthDip() const
 {
 	return (std::max)(
 		1.0f,
-		static_cast<float>(config_.width)
+		PixelsToDip(PixelWidth(), dpi_)
 			- 2.0f * (std::max)(0.0f, config_.horizontalPadding)
 			- LeadingReservationDip());
 }
@@ -1676,7 +1684,32 @@ const wchar_t* InputWindow::InputModeLabel(LuvLetterInputMode mode) const noexce
 
 int InputWindow::PixelWidth() const
 {
-	return (std::max)(1, DipToPixels(static_cast<float>(config_.width), dpi_));
+	const auto requestedWidth = (std::max)(
+		1,
+		DipToPixels(static_cast<float>(config_.width), dpi_));
+	auto monitor = targetMonitor_ != nullptr
+		? targetMonitor_
+		: (hwnd_ != nullptr
+			? MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST)
+			: nullptr);
+	if (monitor == nullptr) return requestedWidth;
+	MONITORINFO monitorInfo{};
+	monitorInfo.cbSize = sizeof(monitorInfo);
+	if (!GetMonitorInfoW(monitor, &monitorInfo))
+	{
+		if (hwnd_ == nullptr) return requestedWidth;
+		monitor = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
+		if (!GetMonitorInfoW(monitor, &monitorInfo)) return requestedWidth;
+	}
+	const auto workWidth = (std::max)(
+		1L,
+		monitorInfo.rcWork.right - monitorInfo.rcWork.left);
+	const auto margin = (std::min)(
+		workWidth / 2,
+		static_cast<LONG>(DipToPixels(WorkAreaMarginDip, dpi_)));
+	return (std::min)(
+		requestedWidth,
+		static_cast<int>((std::max)(1L, workWidth - 2 * margin)));
 }
 
 int InputWindow::PixelHeight() const
@@ -1908,6 +1941,17 @@ LRESULT InputWindow::HandleMessage(HWND window, UINT message, WPARAM wParam, LPA
 		ApplyDpiChange(
 			static_cast<UINT>(LOWORD(wParam)),
 			reinterpret_cast<const RECT*>(lParam));
+		return 0;
+	case WM_DISPLAYCHANGE:
+	case WM_SETTINGCHANGE:
+		targetMonitor_ = MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
+		dpi_ = QueryWindowDpi(hwnd_);
+		DiscardResources(true);
+		UpdateResponsiveHeight();
+		UpdateWindowPosition();
+		UpdateWindowShape();
+		UpdateImeCompositionWindow();
+		if (visible_) Render();
 		return 0;
 	case WM_PAINT:
 	{
