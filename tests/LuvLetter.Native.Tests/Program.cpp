@@ -84,8 +84,8 @@ namespace
 
 	void TestAbiContract()
 	{
-		Assert(LuvLetterNative::SurfaceBackgroundColor == 0xFFF0F3F9,
-			"All native popup surfaces must use the shared cool-white background.");
+		Assert(LuvLetterNative::SurfaceBackgroundColor == 0xE6F0F3F9,
+			"All native popup surfaces must use the shared translucent cool-white background.");
 		AssertNear(14.0f, LuvLetterNative::SurfaceFontSizeDip,
 			"All native popup surfaces must use the shared message font size.");
 		Assert(std::wstring{ LuvLetterNative::SurfaceFontFamily } == L"Microsoft YaHei UI",

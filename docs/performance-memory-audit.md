@@ -363,6 +363,12 @@ Quick Actions, and message surfaces after a measured idle interval, keeping smal
 state so recreation is correct. Avoid releasing the input surface immediately if that
 hurts invocation latency.
 
+Each surface also creates a click-through shadow HWND, but its DIB is allocated only when
+the corresponding content first renders and is released immediately when that content
+hides. The shadow adds an 8-DIP perimeter while visible and caches pixels until its shape,
+opacity, size, or DPI changes; caret blinking and a stable message spinner therefore do
+not rebuild it.
+
 The coded caps are also material at the supported extremes: Input, candidates, and
 Quick Actions each permit up to 16 million pixels (64 MiB at 32 bits per pixel), while
 the message queue permits four million pixels (16 MiB). Display and geometry constraints

@@ -3,6 +3,7 @@
 #include "api/InputBoxApi.h"
 #include "rendering/InputBoxAnimator.h"
 #include "rendering/LayeredWindowSurface.h"
+#include "rendering/SurfaceShadowWindow.h"
 
 #include <Windows.h>
 #include <d2d1.h>
@@ -167,4 +168,5 @@ private:
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> selectionBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> selectionTextBrush_;
 	std::unique_ptr<LuvLetterNative::LayeredWindowSurface> surface_;
+	LuvLetterNative::SurfaceShadowWindow shadowWindow_;
 };

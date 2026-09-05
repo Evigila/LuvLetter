@@ -1,6 +1,7 @@
 #pragma once
 
 #include "rendering/LayeredWindowSurface.h"
+#include "rendering/SurfaceShadowWindow.h"
 #include "windows/MessageQueueEntry.h"
 
 #include <Windows.h>
@@ -99,4 +100,5 @@ private:
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> borderBrush_;
 	Microsoft::WRL::ComPtr<ID2D1SolidColorBrush> textBrush_;
 	std::unique_ptr<LuvLetterNative::LayeredWindowSurface> surface_;
+	LuvLetterNative::SurfaceShadowWindow shadowWindow_;
 };

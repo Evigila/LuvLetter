@@ -136,6 +136,10 @@ reserved product capabilities. Architectural ownership and dependency rules rema
 
 ### Changed
 
+- Native popup surfaces now use a 90%-opaque cool-white background so desktop color can
+  show through subtly, with a shared low-opacity rounded shadow rendered behind InputBox,
+  candidates, Quick Actions cards, and message bubbles. Schema 12 upgrades the previous
+  opaque default while preserving customized themes.
 - Message bubbles now size to their measured content up to the existing 440-DIP maximum.
   Long messages wrap and grow vertically, and ordinary transient messages remain for
   three seconds instead of five.

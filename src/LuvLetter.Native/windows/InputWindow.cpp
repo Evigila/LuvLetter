@@ -170,7 +170,8 @@ InputWindow::InputWindow(
 	hideCandidates_(std::move(hideCandidates)),
 	d2dFactory_(d2dFactory),
 	dwriteFactory_(dwriteFactory),
-	surface_(std::make_unique<LayeredWindowSurface>())
+	surface_(std::make_unique<LayeredWindowSurface>()),
+	shadowWindow_(d2dFactory)
 {
 }
 
@@ -179,6 +180,7 @@ HRESULT InputWindow::Attach(HWND window)
 	if (window == nullptr || hwnd_ != nullptr) return E_INVALIDARG;
 	hwnd_ = window;
 	dpi_ = QueryWindowDpi(hwnd_);
+	(void)shadowWindow_.Attach(hwnd_);
 	SetWindowPos(
 		hwnd_,
 		nullptr,
@@ -444,6 +446,7 @@ void InputWindow::Hide()
 	if (!visible_ && !animator_.TargetVisible())
 	{
 		if (IsWindowEnabled(hwnd_)) EnableWindow(hwnd_, FALSE);
+		shadowWindow_.Hide();
 		return;
 	}
 	SynchronizeAnimation();
@@ -494,6 +497,7 @@ void InputWindow::HideImmediately()
 	caretDirtyValid_ = false;
 	EnableWindow(hwnd_, FALSE);
 	ShowWindow(hwnd_, SW_HIDE);
+	shadowWindow_.Hide();
 }
 
 void InputWindow::ReleaseFocus()
@@ -587,6 +591,7 @@ void InputWindow::CompleteHide()
 	if (hwnd_ == nullptr) return;
 	KillTimer(hwnd_, AnimationTimerId);
 	ShowWindow(hwnd_, SW_HIDE);
+	shadowWindow_.Hide();
 	focusIndicatorAnimator_.Reset(false);
 	statusTagAnimator_.Reset(true);
 	animationTimestamp_ = 0;
@@ -1538,13 +1543,25 @@ void InputWindow::Render(bool caretOnly)
 
 	caretDirtyRect_ = nextCaretDirty;
 	caretDirtyValid_ = nextCaretDirtyValid;
-	surface_->Present(
+	const auto popupOpacity = static_cast<float>((std::clamp)(
+		animationFrame.opacity,
+		0.0f,
+		1.0f));
+	const auto presented = surface_->Present(
 		hwnd_,
 		width,
 		height,
 		caretOnly ? &caretDirtyRect_ : nullptr,
-		static_cast<BYTE>(std::lround(
-			(std::clamp)(animationFrame.opacity, 0.0f, 1.0f) * 255.0f)));
+		static_cast<BYTE>(std::lround(popupOpacity * 255.0f)));
+	if (presented)
+	{
+		(void)shadowWindow_.Update(
+			dpi_,
+			{ LuvLetterNative::SurfaceShadowShape{
+				D2D1::RectF(animatedLeft, 0.0f, animatedRight, windowHeight),
+				config_.cornerRadius,
+				popupOpacity } });
+	}
 }
 
 float InputWindow::LineHeightDip() const
@@ -1971,6 +1988,7 @@ LRESULT InputWindow::HandleMessage(HWND window, UINT message, WPARAM wParam, LPA
 		KillTimer(hwnd_, CaretTimerId);
 		KillTimer(hwnd_, AnimationTimerId);
 		mouseSelecting_ = false;
+		shadowWindow_.Detach();
 		DiscardResources(true);
 		hwnd_ = nullptr;
 		visible_ = false;

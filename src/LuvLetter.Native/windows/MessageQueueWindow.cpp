@@ -77,7 +77,8 @@ MessageQueueWindow::MessageQueueWindow(
 	IDWriteFactory* dwriteFactory)
 	: d2dFactory_(d2dFactory),
 	  dwriteFactory_(dwriteFactory),
-	  surface_(std::make_unique<LayeredWindowSurface>())
+	  surface_(std::make_unique<LayeredWindowSurface>()),
+	  shadowWindow_(d2dFactory)
 {
 }
 
@@ -91,6 +92,7 @@ HRESULT MessageQueueWindow::Attach(HWND window)
 	if (window == nullptr || hwnd_ != nullptr) return E_INVALIDARG;
 	hwnd_ = window;
 	dpi_ = QueryWindowDpi(hwnd_);
+	(void)shadowWindow_.Attach(hwnd_);
 	SetWindowPos(
 		hwnd_,
 		HWND_TOPMOST,
@@ -262,6 +264,7 @@ void MessageQueueWindow::Hide() noexcept
 	{
 		ShowWindow(hwnd_, SW_HIDE);
 	}
+	shadowWindow_.Hide();
 	ScheduleMessageTimer(Clock::now());
 }
 
@@ -788,6 +791,8 @@ void MessageQueueWindow::Render(Clock::time_point now)
 	renderTarget_->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
 	renderTarget_->Clear(D2D1::ColorF(0, 0.0f));
 
+	std::vector<LuvLetterNative::SurfaceShadowShape> shadowShapes;
+	shadowShapes.reserve(messageLayouts_.size());
 	for (const auto& layout : messageLayouts_)
 	{
 		if (layout.messageIndex >= messages_.size()) continue;
@@ -799,6 +804,15 @@ void MessageQueueWindow::Render(Clock::time_point now)
 			layout.widthDip);
 		const auto top = layout.topDip;
 		const auto left = animationFrame.horizontalOffsetDip;
+		shadowShapes.push_back(LuvLetterNative::SurfaceShadowShape{
+			D2D1::RectF(
+				left,
+				top,
+				left + layout.widthDip,
+				top + layout.heightDip),
+			SurfaceCornerRadius,
+			animationFrame.opacity,
+		});
 		const auto bubble = CreateInsetRoundedRect(
 			left,
 			top,
@@ -858,7 +872,10 @@ void MessageQueueWindow::Render(Clock::time_point now)
 	}
 	if (SUCCEEDED(endResult))
 	{
-		surface_->Present(hwnd_, width, height);
+		if (surface_->Present(hwnd_, width, height))
+		{
+			(void)shadowWindow_.Update(dpi_, shadowShapes);
+		}
 	}
 }
 
@@ -960,6 +977,7 @@ LRESULT MessageQueueWindow::HandleMessage(
 		return 0;
 	case WM_DESTROY:
 		StopMessageTimer();
+		shadowWindow_.Detach();
 		DiscardResources(true);
 		hwnd_ = nullptr;
 		visible_ = false;

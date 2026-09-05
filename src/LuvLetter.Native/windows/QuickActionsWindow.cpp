@@ -28,7 +28,8 @@ QuickActionsWindow::QuickActionsWindow(
 	activated_(std::move(activated)),
 	d2dFactory_(d2dFactory),
 	dwriteFactory_(dwriteFactory),
-	surface_(std::make_unique<LayeredWindowSurface>())
+	surface_(std::make_unique<LayeredWindowSurface>()),
+	shadowWindow_(d2dFactory)
 {
 }
 
@@ -37,6 +38,7 @@ HRESULT QuickActionsWindow::Attach(HWND window)
 	if (window == nullptr || hwnd_ != nullptr) return E_INVALIDARG;
 	hwnd_ = window;
 	dpi_ = QueryWindowDpi(hwnd_);
+	(void)shadowWindow_.Attach(hwnd_);
 	SetWindowPos(
 		hwnd_,
 		nullptr,
@@ -236,6 +238,7 @@ void QuickActionsWindow::Hide()
 	if (!visible_ && !animator_.TargetVisible())
 	{
 		if (IsWindowEnabled(hwnd_)) EnableWindow(hwnd_, FALSE);
+		shadowWindow_.Hide();
 		return;
 	}
 	SynchronizeAnimation();
@@ -305,6 +308,7 @@ void QuickActionsWindow::CompleteHide()
 	KillTimer(hwnd_, AnimationTimerId);
 	EnableWindow(hwnd_, FALSE);
 	ShowWindow(hwnd_, SW_HIDE);
+	shadowWindow_.Hide();
 	animationTimestamp_ = 0;
 }
 
@@ -457,9 +461,20 @@ void QuickActionsWindow::Render()
 	renderTarget_->Clear(D2D1::ColorF(0, 0.0f));
 	const auto count = CurrentItemCount();
 	const auto start = FirstItemIndex();
+	std::vector<LuvLetterNative::SurfaceShadowShape> shadowShapes;
+	shadowShapes.reserve(count);
 	for (size_t index = 0; index < count; ++index)
 	{
 		const auto left = static_cast<float>(index) * (config_.cellSize + config_.gap);
+		shadowShapes.push_back(LuvLetterNative::SurfaceShadowShape{
+			D2D1::RectF(
+				left * renderScale,
+				0.0f,
+				(left + config_.cellSize) * renderScale,
+				config_.cellSize * renderScale),
+			config_.cornerRadius * renderScale,
+			static_cast<float>((std::clamp)(animator_.Current().opacity, 0.0f, 1.0f)),
+		});
 		const auto rounded = CreateInsetRoundedRect(
 			left,
 			0.0f,
@@ -498,13 +513,14 @@ void QuickActionsWindow::Render()
 	}
 	if (SUCCEEDED(endResult))
 	{
-		surface_->Present(
+		const auto presented = surface_->Present(
 			hwnd_,
 			width,
 			height,
 			nullptr,
 			static_cast<BYTE>(std::lround(
 				(std::clamp)(animator_.Current().opacity, 0.0f, 1.0f) * 255.0f)));
+		if (presented) (void)shadowWindow_.Update(dpi_, shadowShapes);
 	}
 }
 
@@ -632,6 +648,7 @@ LRESULT QuickActionsWindow::HandleMessage(HWND window, UINT message, WPARAM wPar
 		return 0;
 	case WM_DESTROY:
 		KillTimer(hwnd_, AnimationTimerId);
+		shadowWindow_.Detach();
 		DiscardResources(true);
 		hwnd_ = nullptr;
 		visible_ = false;

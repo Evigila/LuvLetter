@@ -863,6 +863,102 @@ internal static partial class Program
             Assert.Equal("#FF223344", customizedSilverTheme.QuickActions.Colors.Background);
             Assert.Equal(1.0f, customizedSilverTheme.QuickActions.Colors.BackgroundOpacity);
 
+            var opaqueCoolWhiteThemePath = Path.Combine(
+                temporaryDirectory,
+                "opaque-cool-white-theme-v11.json");
+            File.WriteAllText(
+                opaqueCoolWhiteThemePath,
+                """
+                {
+                  "SchemaVersion": 11,
+                  "InputBox": {
+                    "Colors": {
+                      "Background": "#F0F3F9",
+                      "BackgroundOpacity": 1
+                    }
+                  },
+                  "QuickActions": {
+                    "Colors": {
+                      "Background": "#FFF0F3F9",
+                      "BackgroundOpacity": 1
+                    }
+                  }
+                }
+                """);
+            var migratedCoolWhiteTheme = new LuvLetterConfigurationStore(
+                opaqueCoolWhiteThemePath).Current;
+            Assert.Equal(
+                LuvLetterConfiguration.CurrentSchemaVersion,
+                migratedCoolWhiteTheme.SchemaVersion);
+            Assert.Equal(
+                SurfaceStyleDefaults.Background,
+                migratedCoolWhiteTheme.InputBox.Colors.Background);
+            Assert.Equal(
+                SurfaceStyleDefaults.BackgroundOpacity,
+                migratedCoolWhiteTheme.InputBox.Colors.BackgroundOpacity);
+            Assert.Equal(
+                SurfaceStyleDefaults.Background,
+                migratedCoolWhiteTheme.QuickActions.Colors.Background);
+            Assert.Equal(
+                SurfaceStyleDefaults.BackgroundOpacity,
+                migratedCoolWhiteTheme.QuickActions.Colors.BackgroundOpacity);
+
+            var customizedCoolWhiteThemePath = Path.Combine(
+                temporaryDirectory,
+                "customized-cool-white-theme-v11.json");
+            File.WriteAllText(
+                customizedCoolWhiteThemePath,
+                """
+                {
+                  "SchemaVersion": 11,
+                  "InputBox": {
+                    "Colors": {
+                      "Background": "#FFF0F3F9",
+                      "BackgroundOpacity": 0.82
+                    }
+                  },
+                  "QuickActions": {
+                    "Colors": {
+                      "Background": "#FF223344",
+                      "BackgroundOpacity": 1
+                    }
+                  }
+                }
+                """);
+            var customizedCoolWhiteTheme = new LuvLetterConfigurationStore(
+                customizedCoolWhiteThemePath).Current;
+            Assert.Equal("#D1F0F3F9", customizedCoolWhiteTheme.InputBox.Colors.Background);
+            Assert.Equal(0.82f, customizedCoolWhiteTheme.InputBox.Colors.BackgroundOpacity);
+            Assert.Equal("#FF223344", customizedCoolWhiteTheme.QuickActions.Colors.Background);
+            Assert.Equal(1.0f, customizedCoolWhiteTheme.QuickActions.Colors.BackgroundOpacity);
+
+            var omittedLegacyOpacityPath = Path.Combine(
+                temporaryDirectory,
+                "omitted-legacy-opacity-v11.json");
+            File.WriteAllText(
+                omittedLegacyOpacityPath,
+                """
+                {
+                  "SchemaVersion": 11,
+                  "InputBox": {
+                    "Colors": {
+                      "Background": "#FF334455"
+                    }
+                  },
+                  "QuickActions": {
+                    "Colors": {
+                      "Background": "#556677"
+                    }
+                  }
+                }
+                """);
+            var preservedLegacyOpacity = new LuvLetterConfigurationStore(
+                omittedLegacyOpacityPath).Current;
+            Assert.Equal("#FF334455", preservedLegacyOpacity.InputBox.Colors.Background);
+            Assert.Equal(1.0f, preservedLegacyOpacity.InputBox.Colors.BackgroundOpacity);
+            Assert.Equal("#FF556677", preservedLegacyOpacity.QuickActions.Colors.Background);
+            Assert.Equal(1.0f, preservedLegacyOpacity.QuickActions.Colors.BackgroundOpacity);
+
             TestFailedSaveDoesNotChangeCurrent(temporaryDirectory);
         }
         finally

@@ -56,6 +56,9 @@
     <ClInclude Include="rendering\LayeredWindowSurface.h">
       <Filter>Header Files\rendering</Filter>
     </ClInclude>
+    <ClInclude Include="rendering\SurfaceShadowWindow.h">
+      <Filter>Header Files\rendering</Filter>
+    </ClInclude>
     <ClInclude Include="rendering\SurfaceStyleDefaults.h">
       <Filter>Header Files\rendering</Filter>
     </ClInclude>
@@ -86,6 +89,9 @@
       <Filter>Source Files\host</Filter>
     </ClCompile>
     <ClCompile Include="rendering\LayeredWindowSurface.cpp">
+      <Filter>Source Files\rendering</Filter>
+    </ClCompile>
+    <ClCompile Include="rendering\SurfaceShadowWindow.cpp">
       <Filter>Source Files\rendering</Filter>
     </ClCompile>
     <ClCompile Include="windows\InputWindow.cpp">

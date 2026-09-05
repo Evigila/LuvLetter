@@ -6,14 +6,14 @@ namespace LuvLetter.Core.Configuration;
 public static class SurfaceStyleDefaults
 {
     public const string Border = "#FFFFFFFF";
-    public const string Background = "#FFF0F3F9";
+    public const string Background = "#E6F0F3F9";
     public const string Content = "#FF3F3F3F";
 
     public const uint BorderArgb = 0xFFFFFFFF;
-    public const uint BackgroundArgb = 0xFFF0F3F9;
+    public const uint BackgroundArgb = 0xE6F0F3F9;
     public const uint ContentArgb = 0xFF3F3F3F;
 
-    public const float BackgroundOpacity = 1.0f;
+    public const float BackgroundOpacity = 0.9f;
     public const float ContentOpacity = 1.0f;
     public const string FontFamily = "Microsoft YaHei UI";
     public const float FontSize = 14.0f;

@@ -92,6 +92,7 @@
     <ClInclude Include="host\NativeShellHost.h" />
     <ClInclude Include="rendering\InputBoxAnimator.h" />
     <ClInclude Include="rendering\LayeredWindowSurface.h" />
+    <ClInclude Include="rendering\SurfaceShadowWindow.h" />
     <ClInclude Include="rendering\SurfaceStyleDefaults.h" />
     <ClInclude Include="windows\QuickActionsWindow.h" />
     <ClInclude Include="windows\InputCandidateState.h" />
@@ -106,6 +107,7 @@
     <ClCompile Include="host\NativeShellHost.cpp" />
     <ClCompile Include="rendering\InputBoxAnimator.cpp" />
     <ClCompile Include="rendering\LayeredWindowSurface.cpp" />
+    <ClCompile Include="rendering\SurfaceShadowWindow.cpp" />
     <ClCompile Include="windows\QuickActionsWindow.cpp" />
     <ClCompile Include="windows\InputCandidatesWindow.cpp" />
     <ClCompile Include="windows\InputWindow.cpp" />

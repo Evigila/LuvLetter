@@ -179,16 +179,16 @@ step is idempotent and container-owned singletons are disposed by the Host after
 
 ## Configuration compatibility
 
-Configuration is stored in `%AppData%\LuvLetter\settings.json`. Schema 9 writes the
+Configuration is stored in `%AppData%\LuvLetter\settings.json`. The current schema writes the
 canonical groups `InputBox`, `ActivationGestures`, and `QuickActions`. Older settings
 using `FeatureWindow` at the root or inside `ActivationGestures` are migrated before
 deserialization. A document containing both legacy and canonical names is rejected as
 ambiguous instead of silently choosing one value.
 
 InputBox, its candidate dataset, QuickActions, and the message queue share the same
-default surface tokens: an opaque cool-white background (`#FFF0F3F9`), white border
+default surface tokens: a 90%-opaque cool-white background (`#E6F0F3F9`), white border
 (`#FFFFFFFF`), dark-gray content
-(`#FF3F3F3F`), 8-pixel corner radius, and 1-pixel border. Core owns the canonical
+(`#FF3F3F3F`), 8-DIP corner radius, and 1-DIP border. Core owns the canonical
 configuration defaults, while Native mirrors the same values for ABI fallback and
 defensive sanitization. Schema migration upgrades fields that still match the previous
 default theme and preserves customized values. Schema 10 replaces the previous opaque
@@ -199,12 +199,21 @@ Schema 11 standardizes typography on Microsoft YaHei UI at 14 DIPs. The legacy p
 remain in serialized/native layouts for compatibility, but normalization and Native
 sanitization enforce the shared value. Input adornments derive their geometry from that
 shared type scale, and Direct2D applies the active monitor DPI to the complete surface.
+Schema 12 upgrades only the previous opaque cool-white default to the translucent token;
+custom background colors and opacity values remain unchanged.
 Candidate rows use the same size for both lines, distinguish file names with bold weight,
 and reserve a wider, taller layout for full-size paths. Text overflow uses ellipses; when
 neither side of InputBox can fit every row, the viewport keeps the selected row visible
 without scaling the text. Device DPI converts this logical layout to pixels once. Display,
 work-area, and DPI changes reflow the input surface as a unit so its internal proportions
 remain stable across monitors.
+
+Each visible native surface also owns a separate layered shadow window. Its click-through,
+non-activating bitmap renders a low-opacity rounded outline up to 8 DIPs outside the
+content HWND and stays directly behind that content in the topmost Z-order band. This
+keeps content geometry, input hit testing, and InputBox/candidate width alignment
+unchanged. Shadow geometry follows popup animation and DPI, reuses its bitmap while the
+shape is stable, and releases the bitmap when the corresponding surface hides.
 
 The command input shortcut is fixed to double Ctrl, Quick Actions is fixed to Alt+F1,
 the message queue is fixed to Alt+Backspace, and Escape dismisses the two interactive
@@ -322,6 +331,7 @@ activities. Each bubble measures its content independently up to 440 DIPs; short
 uses a narrower bubble, while longer text wraps and increases that bubble's height. If
 content exceeds the physical work-area height, the newest messages that fit are shown
 and the final visible line uses an ellipsis; earlier activities remain alive in the queue.
+Every bubble uses the shared translucent background and owns a matching rounded shadow.
 
 Each bubble owns an independent monotonic timeline: it enters from the left over 180 ms,
 starts its reverse leftward exit three seconds after ordinary enqueue, and is removed

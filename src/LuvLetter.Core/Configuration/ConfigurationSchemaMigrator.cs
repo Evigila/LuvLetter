@@ -91,6 +91,16 @@ internal static class ConfigurationSchemaMigrator
                 "activation gestures");
         }
 
+        if (ReadSchemaVersion(root) < 12)
+        {
+            PreserveExplicitLegacyBackgroundOpacity(
+                migrated,
+                nameof(LuvLetterConfiguration.InputBox));
+            PreserveExplicitLegacyBackgroundOpacity(
+                migrated,
+                nameof(LuvLetterConfiguration.QuickActions));
+        }
+
         return migrated;
     }
 
@@ -393,8 +403,52 @@ internal static class ConfigurationSchemaMigrator
             };
         }
 
+        if (configuration.SchemaVersion < 12)
+        {
+            if (migrated.InputBox is { Colors: { } opaqueInputColors } opaqueInputBox
+                && IsPreviousOpaqueCoolWhiteBackground(
+                    opaqueInputColors.Background,
+                    opaqueInputColors.BackgroundOpacity))
+            {
+                migrated = migrated with
+                {
+                    InputBox = opaqueInputBox with
+                    {
+                        Colors = opaqueInputColors with
+                        {
+                            Background = defaults.InputBox.Colors.Background,
+                            BackgroundOpacity = defaults.InputBox.Colors.BackgroundOpacity,
+                        },
+                    },
+                };
+            }
+
+            if (migrated.QuickActions is
+                { Colors: { } opaqueQuickActionsColors } opaqueQuickActions
+                && IsPreviousOpaqueCoolWhiteBackground(
+                    opaqueQuickActionsColors.Background,
+                    opaqueQuickActionsColors.BackgroundOpacity))
+            {
+                migrated = migrated with
+                {
+                    QuickActions = opaqueQuickActions with
+                    {
+                        Colors = opaqueQuickActionsColors with
+                        {
+                            Background = defaults.QuickActions.Colors.Background,
+                            BackgroundOpacity = defaults.QuickActions.Colors.BackgroundOpacity,
+                        },
+                    },
+                };
+            }
+        }
+
         return migrated;
     }
+
+    private static bool IsPreviousOpaqueCoolWhiteBackground(string? color, float opacity) =>
+        (IsColor(color, "FFF0F3F9") || IsColor(color, "F0F3F9"))
+        && NearlyEquals(opacity, 1.0f);
 
     private static bool IsPreviousSilverSurfaceBackground(string? color, float opacity) =>
         (IsColor(color, "FFC0C0C0") || IsColor(color, "C0C0C0"))
@@ -556,6 +610,24 @@ internal static class ConfigurationSchemaMigrator
 
         return null;
     }
+
+    private static void PreserveExplicitLegacyBackgroundOpacity(
+        JsonObject root,
+        string surfacePropertyName)
+    {
+        if (FindNodeProperty(root, surfacePropertyName) is not JsonObject surface
+            || FindNodeProperty(surface, nameof(InputBoxConfiguration.Colors)) is not JsonObject colors
+            || !ContainsNodeProperty(colors, nameof(InputBoxColorOptions.Background))
+            || ContainsNodeProperty(colors, nameof(InputBoxColorOptions.BackgroundOpacity)))
+        {
+            return;
+        }
+
+        colors[nameof(InputBoxColorOptions.BackgroundOpacity)] = 1.0f;
+    }
+
+    private static bool ContainsNodeProperty(JsonObject source, string propertyName) =>
+        source.Any(property => property.Key.Equals(propertyName, StringComparison.OrdinalIgnoreCase));
 
     private static void RemoveNodeProperty(JsonObject source, string propertyName)
     {

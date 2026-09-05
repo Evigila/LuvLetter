@@ -161,9 +161,10 @@ InputCandidatesWindow::InputCandidatesWindow(
 	std::function<void(uint64_t, int32_t)> activated)
 	: config_(NativeConfigurationSanitizer::DefaultInputBox()),
 	  activated_(std::move(activated)),
-	  d2dFactory_(d2dFactory),
-	  dwriteFactory_(dwriteFactory),
-	  surface_(std::make_unique<LayeredWindowSurface>())
+	d2dFactory_(d2dFactory),
+	dwriteFactory_(dwriteFactory),
+	surface_(std::make_unique<LayeredWindowSurface>()),
+	shadowWindow_(d2dFactory)
 {
 }
 
@@ -176,6 +177,7 @@ HRESULT InputCandidatesWindow::Attach(HWND window, HWND inputWindow)
 	hwnd_ = window;
 	inputHwnd_ = inputWindow;
 	dpi_ = QueryWindowDpi(inputHwnd_);
+	(void)shadowWindow_.Attach(hwnd_);
 	SetWindowLongPtrW(
 		hwnd_,
 		GWLP_HWNDPARENT,
@@ -408,6 +410,7 @@ void InputCandidatesWindow::Hide()
 	{
 		ShowWindow(hwnd_, SW_HIDE);
 	}
+	shadowWindow_.Hide();
 }
 
 void InputCandidatesWindow::SynchronizeToInputWindow()
@@ -648,7 +651,15 @@ void InputCandidatesWindow::Render()
 	}
 	if (SUCCEEDED(endResult))
 	{
-		surface_->Present(hwnd_, width, height, nullptr, 255);
+		if (surface_->Present(hwnd_, width, height, nullptr, 255))
+		{
+			(void)shadowWindow_.Update(
+				dpi_,
+				{ LuvLetterNative::SurfaceShadowShape{
+					D2D1::RectF(0.0f, 0.0f, widthDip, heightDip),
+					CornerRadiusDip,
+					1.0f } });
+		}
 	}
 }
 
@@ -675,7 +686,7 @@ LRESULT InputCandidatesWindow::HandleMessage(
 	{
 		PAINTSTRUCT paint{};
 		BeginPaint(window, &paint);
-		Render();
+		if (visible_) Render();
 		EndPaint(window, &paint);
 		return 0;
 	}
@@ -686,6 +697,7 @@ LRESULT InputCandidatesWindow::HandleMessage(
 		Hide();
 		return 0;
 	case WM_DESTROY:
+		shadowWindow_.Detach();
 		DiscardResources(true);
 		hwnd_ = nullptr;
 		inputHwnd_ = nullptr;

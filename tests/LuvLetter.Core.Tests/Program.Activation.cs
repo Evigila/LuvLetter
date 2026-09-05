@@ -21,8 +21,8 @@ internal static partial class Program
         Assert.True(defaults.AllowRightControl, "Right Ctrl should be enabled by default.");
 
         var configuration = LuvLetterConfiguration.Default;
-        Assert.Equal("#FFF0F3F9", SurfaceStyleDefaults.Background);
-        Assert.Equal(0xFFF0F3F9u, SurfaceStyleDefaults.BackgroundArgb);
+        Assert.Equal("#E6F0F3F9", SurfaceStyleDefaults.Background);
+        Assert.Equal(0xE6F0F3F9u, SurfaceStyleDefaults.BackgroundArgb);
         Assert.Equal(560, configuration.InputBox.Size.Width);
         Assert.Equal(32, configuration.InputBox.Size.Height);
         Assert.Equal(SurfaceStyleDefaults.FontSize, configuration.InputBox.Size.FontSize);
