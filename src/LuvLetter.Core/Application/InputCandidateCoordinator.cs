@@ -20,6 +20,7 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
     private readonly IApplicationCatalog? applicationCatalog;
     private readonly IApplicationLauncher? applicationLauncher;
     private readonly ICandidateRankingPolicy rankingPolicy;
+    private readonly IClipboard? clipboard;
     private readonly Channel<InputChanged> pendingChanges;
     private readonly object stateLock = new();
     private readonly object indexActivityLock = new();
@@ -58,7 +59,8 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         InputCandidateOptions options,
         IApplicationCatalog? applicationCatalog = null,
         IApplicationLauncher? applicationLauncher = null,
-        ICandidateRankingPolicy? rankingPolicy = null)
+        ICandidateRankingPolicy? rankingPolicy = null,
+        IClipboard? clipboard = null)
     {
         ArgumentNullException.ThrowIfNull(nativeShell);
         ArgumentNullException.ThrowIfNull(fileIndexClient);
@@ -75,6 +77,7 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         this.applicationCatalog = applicationCatalog;
         this.applicationLauncher = applicationLauncher;
         this.rankingPolicy = rankingPolicy ?? new DefaultCandidateRankingPolicy();
+        this.clipboard = clipboard;
         pendingChanges = Channel.CreateBounded<InputChanged>(
             new BoundedChannelOptions(1)
             {
@@ -416,6 +419,11 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
 
         if (target.ApplicationId is not null)
         {
+            if (activation.Action == CandidateAction.CopyPath)
+            {
+                CopyCandidatePath(target.CopyText);
+                return;
+            }
             _ = ActivateApplicationAsync(target, activation.Action);
             return;
         }
@@ -423,7 +431,11 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         switch (target.Kind)
         {
             case CandidateKind.File:
-                if (target.EntryKind is { } entryKind
+                if (activation.Action == CandidateAction.CopyPath)
+                {
+                    CopyCandidatePath(target.CopyText);
+                }
+                else if (target.EntryKind is { } entryKind
                     && target.ExecutionText is not null)
                 {
                     ActivateFileSystemEntry(target.ExecutionText, entryKind, activation.Action);
@@ -639,9 +651,15 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
             var entry = match.Entry;
             if (string.IsNullOrWhiteSpace(entry.Id) || string.IsNullOrWhiteSpace(entry.DisplayName)) continue;
             var identity = $"app:{entry.Id}";
+            var candidatePath = CandidatePathForApplication(entry);
+            var actions = CandidateActions.Open;
+            if (candidatePath is not null)
+            {
+                actions |= CandidateActions.Reveal | CandidateActions.CopyPath;
+            }
             var spec = new CandidateSpec(CandidateKind.File, CandidateIconKind.Executable,
-                entry.DisplayName, ApplicationDescription(entry), entry.LaunchTarget, null, identity,
-                IconSourceForApplication(entry), entry.Id);
+                entry.DisplayName, ApplicationDescription(candidatePath), entry.LaunchTarget, null, identity,
+                IconSourceForApplication(entry), entry.Id, Actions: actions, CopyText: candidatePath);
             ranked.Add((spec, rankingPolicy.Score(new CandidateRankingContext(
                 identity, query, SearchCandidateSource.Application, match.MatchScore))));
 
@@ -676,11 +694,12 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
                 CandidateKind.File,
                 CandidateIconClassifier.Classify(file.EntryKind, file.FullPath),
                 file.DisplayName,
-                isExecutable ? $"应用程序 · {ParentPath(file.FullPath)}" : ParentPath(file.FullPath),
+                $"{CandidateTypeLabel(file.EntryKind, isExecutable)} · {ParentPath(file.FullPath)}",
                 file.FullPath,
                 file.EntryKind,
                 identity,
-                isExecutable ? InputCandidatePresentation.NormalizeIconSource(file.FullPath) : null);
+                isExecutable ? InputCandidatePresentation.NormalizeIconSource(file.FullPath) : null,
+                CopyText: file.FullPath);
             ranked.Add((spec, rankingPolicy.Score(new CandidateRankingContext(
                 identity, query, isExecutable ? SearchCandidateSource.Application
                     : file.EntryKind == FileSystemEntryKind.Directory ? SearchCandidateSource.Directory : SearchCandidateSource.File,
@@ -707,12 +726,29 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         return candidates;
     }
 
-    private static string ApplicationDescription(ApplicationEntry entry) =>
-        entry.LaunchKind == ApplicationLaunchKind.Packaged ? "应用程序 · Windows 应用"
-            : entry.LaunchKind == ApplicationLaunchKind.Shortcut
-                ? string.IsNullOrWhiteSpace(entry.Arguments) ? $"应用程序 · {entry.LaunchTarget}"
-                    : $"应用程序 · {entry.Arguments} · {entry.LaunchTarget}"
-            : $"应用程序 · {entry.ExecutablePath ?? entry.LaunchTarget}";
+    private static string ApplicationDescription(string? candidatePath) =>
+        candidatePath is null ? "应用" : $"应用 · {candidatePath}";
+
+    private static string CandidateTypeLabel(FileSystemEntryKind entryKind, bool isExecutable) =>
+        isExecutable ? "应用"
+            : entryKind == FileSystemEntryKind.Directory ? "文件夹" : "文件";
+
+    private static string? CandidatePathForApplication(ApplicationEntry entry)
+    {
+        var candidate = entry.LaunchKind switch
+        {
+            ApplicationLaunchKind.Shortcut => entry.ExecutablePath ?? entry.LaunchTarget,
+            ApplicationLaunchKind.Packaged => entry.ExecutablePath ?? entry.InstallDirectory,
+            _ => entry.ExecutablePath ?? entry.InstallDirectory ?? entry.LaunchTarget,
+        };
+        if (string.IsNullOrWhiteSpace(candidate))
+        {
+            return null;
+        }
+
+        var normalized = candidate.Trim();
+        return normalized.IndexOfAny(['\0', '\r', '\n']) < 0 ? normalized : null;
+    }
 
     private static string? IconSourceForApplication(ApplicationEntry entry)
     {
@@ -739,13 +775,7 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
                 CandidateKind.Command,
                 CandidateIconKind.Command,
                 suggestion.Label,
-                suggestion.Kind switch
-                {
-                    CommandRouteKind.Domain => options.CommandDomainDescription,
-                    CommandRouteKind.Alias => $"Alias · {suggestion.TargetPath}",
-                    CommandRouteKind.Link => $"Link → {suggestion.TargetPath}",
-                    _ => options.CommandDescription,
-                },
+                suggestion.Description,
                 suggestion.ExecutionText,
                 null,
                 $"command:{suggestion.Kind}:{suggestion.ExecutionText}",
@@ -791,6 +821,7 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
                 spec.CompletionText,
                 spec.EntryKind,
                 spec.ApplicationId,
+                spec.CopyText,
                 revision,
                 actions));
             identityTokens.Add(spec.Identity, token);
@@ -855,11 +886,12 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         try
         {
             var started = action == CandidateAction.Reveal
+                && entryKind != FileSystemEntryKind.Directory
                 ? fileLauncher.Reveal(fullPath, entryKind)
                 : fileLauncher.Open(fullPath, entryKind);
             if (started)
             {
-                nativeShell.HideCommandInput();
+                nativeShell.DismissCommandInput();
                 return;
             }
 
@@ -888,7 +920,7 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
                 ? await applicationLauncher.RevealAsync(entry, cancellationToken).ConfigureAwait(false)
                 : await applicationLauncher.OpenAsync(entry, cancellationToken).ConfigureAwait(false);
             if (!IsLatest(target.Revision)) return;
-            if (result.Succeeded) nativeShell.HideCommandInput();
+            if (result.Succeeded) nativeShell.DismissCommandInput();
             else ReportStatus(result.Message ?? (result.Cancelled ? "已取消打开应用程序。" : "无法打开应用程序。"));
         }
         catch (OperationCanceledException) { }
@@ -915,6 +947,22 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         catch (Exception exception)
         {
             ReportStatus($"Cannot activate command candidate: {exception.Message}");
+        }
+    }
+
+    private void CopyCandidatePath(string? path)
+    {
+        try
+        {
+            if (path is null || clipboard?.TrySetText(path) != true)
+            {
+                ReportStatus("无法复制候选项路径。");
+                return;
+            }
+        }
+        catch (Exception exception)
+        {
+            ReportStatus($"无法复制候选项路径：{exception.Message}");
         }
     }
 
@@ -969,7 +1017,8 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         string? IconSource = null,
         string? ApplicationId = null,
         string? CompletionText = null,
-        CandidateActions? Actions = null);
+        CandidateActions? Actions = null,
+        string? CopyText = null);
 
     private readonly record struct CandidateTarget(
         CandidateKind Kind,
@@ -977,12 +1026,13 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
         string? CompletionText,
         FileSystemEntryKind? EntryKind,
         string? ApplicationId,
+        string? CopyText,
         ulong Revision,
         CandidateActions Actions);
 
     private static CandidateActions DefaultActions(CandidateKind kind) => kind switch
     {
-        CandidateKind.File => CandidateActions.Open | CandidateActions.Reveal,
+        CandidateKind.File => CandidateActions.Open | CandidateActions.Reveal | CandidateActions.CopyPath,
         CandidateKind.GlobalSearch => CandidateActions.Open,
         _ => CandidateActions.None,
     };
@@ -994,6 +1044,7 @@ public sealed class InputCandidateCoordinator : IHostedService, IDisposable
             CandidateAction.Open => CandidateActions.Open,
             CandidateAction.Reveal => CandidateActions.Reveal,
             CandidateAction.Complete => CandidateActions.Complete,
+            CandidateAction.CopyPath => CandidateActions.CopyPath,
             _ => CandidateActions.None,
         };
         return required != CandidateActions.None && (actions & required) != 0;

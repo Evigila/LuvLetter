@@ -12,7 +12,7 @@
 
 extern "C"
 {
-	inline constexpr uint32_t LUVLETTER_NATIVE_ABI_VERSION = 10;
+	inline constexpr uint32_t LUVLETTER_NATIVE_ABI_VERSION = 12;
 	inline constexpr int32_t LUVLETTER_NATIVE_MAX_INPUT_TEXT_LENGTH = 32768;
 	inline constexpr int32_t LUVLETTER_NATIVE_MAX_INPUT_CANDIDATES = 32;
 	inline constexpr uint32_t LUVLETTER_NATIVE_MAX_CANDIDATE_PRIMARY_LENGTH = 512;
@@ -38,6 +38,7 @@ extern "C"
 		LuvLetterCandidateActionOpen = 0,
 		LuvLetterCandidateActionReveal = 1,
 		LuvLetterCandidateActionComplete = 2,
+		LuvLetterCandidateActionCopyPath = 3,
 	};
 
 	enum LuvLetterCandidateActions : int32_t
@@ -46,6 +47,7 @@ extern "C"
 		LuvLetterCandidateActionsOpen = 1 << 0,
 		LuvLetterCandidateActionsReveal = 1 << 1,
 		LuvLetterCandidateActionsComplete = 1 << 2,
+		LuvLetterCandidateActionsCopyPath = 1 << 3,
 	};
 
 	enum LuvLetterCandidateIconKind : int32_t
@@ -177,6 +179,7 @@ extern "C"
 		int32_t inputMode);
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ShowInputBox();
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL HideInputBox();
+	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL DismissInputBox();
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ToggleInputBox();
 
 	LUVLETTER_NATIVE_EXPORT int LUVLETTER_NATIVE_CALL ApplyFeatureWindowConfig(

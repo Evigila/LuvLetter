@@ -44,6 +44,7 @@ namespace
 		SetCandidateCallback,
 		ShowInput,
 		HideInput,
+		DismissInput,
 		ToggleInput,
 		ApplyQuickActionsConfig,
 		SetQuickActions,
@@ -191,6 +192,12 @@ HRESULT NativeShellHost::Show()
 HRESULT NativeShellHost::Hide()
 {
 	auto* request = new (std::nothrow) HostRequest(RequestKind::HideInput, false);
+	return request == nullptr ? E_OUTOFMEMORY : DispatchRequest(request, false);
+}
+
+HRESULT NativeShellHost::Dismiss()
+{
+	auto* request = new (std::nothrow) HostRequest(RequestKind::DismissInput, false);
 	return request == nullptr ? E_OUTOFMEMORY : DispatchRequest(request, false);
 }
 
@@ -452,7 +459,8 @@ HRESULT NativeShellHost::SetInputCandidates(
 				|| source.actions == LuvLetterCandidateActionsNone
 				|| (source.actions & ~(LuvLetterCandidateActionsOpen
 					| LuvLetterCandidateActionsReveal
-					| LuvLetterCandidateActionsComplete)) != 0)
+					| LuvLetterCandidateActionsComplete
+					| LuvLetterCandidateActionsCopyPath)) != 0)
 			{
 				request->Release();
 				return E_INVALIDARG;
@@ -835,6 +843,10 @@ HRESULT NativeShellHost::ProcessRequest(HostRequest& request)
 		inputWindow_->Hide();
 		inputCandidatesWindow_->Hide();
 		return S_OK;
+	case RequestKind::DismissInput:
+		inputWindow_->Dismiss();
+		inputCandidatesWindow_->Hide();
+		return S_OK;
 	case RequestKind::ToggleInput:
 		if (inputWindow_->IsVisible() && inputWindow_->HasKeyboardFocus())
 		{
@@ -1078,6 +1090,13 @@ HRESULT NativeShellHost::Run()
 					return inputCandidatesWindow_ != nullptr
 						&& inputCandidatesWindow_->ActivateSelected(
 							static_cast<LuvLetterCandidateAction>(action));
+				},
+				[this](int modifiers)
+				{
+					if (inputCandidatesWindow_ != nullptr)
+					{
+						inputCandidatesWindow_->SetKeyboardModifiers(modifiers);
+					}
 				},
 				[this]()
 				{

@@ -84,8 +84,9 @@ internal static partial class Program
             TestApplication("todo-a", "Microsoft To Do"),
             TestApplication("todo-b", "Microsoft To Do"));
         var launcher = new TestApplicationLauncher();
+        var clipboard = new FakeClipboard();
         using var coordinator = new InputCandidateCoordinator(shell, files, fileLauncher, commands,
-            new InputCandidateOptions(), apps, launcher);
+            new InputCandidateOptions(), apps, launcher, clipboard: clipboard);
         await coordinator.StartAsync(CancellationToken.None);
         try
         {
@@ -96,6 +97,11 @@ internal static partial class Program
                 first.Take(3).Select(candidate => candidate.PrimaryText));
             Assert.True(first.Take(2).All(candidate => candidate.Kind == CandidateKind.File &&
                 candidate.IconKind == CandidateIconKind.Executable));
+            Assert.SequenceEqual(
+                [@"应用 · C:\Apps\todo-a.exe", @"应用 · C:\Apps\todo-b.exe"],
+                first.Take(2).Select(static candidate => candidate.SecondaryText));
+            Assert.True(first.Take(2).All(static candidate => candidate.Actions
+                == (CandidateActions.Open | CandidateActions.Reveal | CandidateActions.CopyPath)));
             Assert.NotEqual(first[0].Token, first[1].Token,
                 "Distinct app identities must survive merge even when their names are identical.");
             Assert.Equal(CandidateKind.GlobalSearch, first[^1].Kind);
@@ -123,20 +129,25 @@ internal static partial class Program
             Assert.True(files.Queries.Count > fileQueriesBeforeFileRefresh);
 
             shell.RaiseCandidateActivated(refreshed[0].Token);
-            await WaitApplicationConditionAsync(() => launcher.Opened.Count == 1 && shell.HideCommandInputCalls == 1,
+            await WaitApplicationConditionAsync(() => launcher.Opened.Count == 1 && shell.DismissCommandInputCalls == 1,
                 "A successful app launch was not dispatched and dismissed.");
+            Assert.Equal(0, shell.HideCommandInputCalls);
             Assert.Equal("todo-a", launcher.Opened.Single().Id);
             Assert.Empty(fileLauncher.Opened, "App rows must dispatch app identities instead of launching their file-shaped UI row.");
             shell.RaiseCandidateActivated(refreshed[1].Token, CandidateAction.Reveal);
-            await WaitApplicationConditionAsync(() => launcher.Revealed.Count == 1 && shell.HideCommandInputCalls == 2,
+            await WaitApplicationConditionAsync(() => launcher.Revealed.Count == 1 && shell.DismissCommandInputCalls == 2,
                 "Application reveal did not reach the application launcher.");
             Assert.Equal("todo-b", launcher.Revealed.Single().Id);
+            shell.RaiseCandidateActivated(refreshed[0].Token, CandidateAction.CopyPath);
+            Assert.SequenceEqual([@"C:\Apps\todo-a.exe"], clipboard.Values);
+            Assert.Equal(2, shell.DismissCommandInputCalls,
+                "Copying an application path must keep the input window open.");
 
             launcher.Result = new ApplicationLaunchResult(false, "Application is unavailable.");
             shell.RaiseCandidateActivated(refreshed[0].Token);
             await WaitApplicationConditionAsync(() => shell.EnqueuedMessages.Contains("Application is unavailable."),
                 "Application launch failure was not reported.");
-            Assert.Equal(2, shell.HideCommandInputCalls, "A failed app launch must keep the input open.");
+            Assert.Equal(2, shell.DismissCommandInputCalls, "A failed app launch must keep the input open.");
 
             priorSnapshots = shell.CandidateSnapshots.Count;
             apps.SetEntries([]);
@@ -341,6 +352,8 @@ internal static partial class Program
                 "A cancelled launch did not report its result.");
             Assert.Equal(0, shell.HideCommandInputCalls,
                 "A stale successful launch and a current cancelled launch must both preserve the current input.");
+            Assert.Equal(0, shell.DismissCommandInputCalls,
+                "A stale successful launch and a current cancelled launch must not dismiss the current input.");
         }
         finally
         {

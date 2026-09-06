@@ -228,7 +228,8 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
                     || candidate.Actions == CandidateActions.None
                     || (candidate.Actions & ~(CandidateActions.Open
                         | CandidateActions.Reveal
-                        | CandidateActions.Complete)) != 0)
+                        | CandidateActions.Complete
+                        | CandidateActions.CopyPath)) != 0)
                 {
                     throw new ArgumentException(
                         "Candidates must have a non-zero token, valid kind, icon, and actions.",
@@ -354,6 +355,15 @@ public sealed class NativeShellService : INativeShell, INativeConfigurationSink,
         {
             ThrowIfDisposed();
             ThrowIfFailed(nativeApi.HideInputBox(), "HideInputBox");
+        }
+    }
+
+    public void DismissCommandInput()
+    {
+        lock (operationSyncRoot)
+        {
+            ThrowIfDisposed();
+            ThrowIfFailed(nativeApi.DismissInputBox(), "DismissInputBox");
         }
     }
 

@@ -35,7 +35,18 @@ internal sealed class WindowsApplicationLauncher : IApplicationLauncher
                 if (!paths.Registered) return Unavailable();
                 if (WindowsApplicationDiscovery.IsExcluded(isPathExcluded,
                     paths.InstallDirectory, paths.ExecutablePath)) return Excluded();
-                if (reveal) return new(false, "此应用通过 Windows 应用标识启动，没有可定位的普通应用快捷方式。");
+                if (reveal)
+                {
+                    if (File.Exists(paths.ExecutablePath))
+                    {
+                        return WindowsShell.Reveal(paths.ExecutablePath!);
+                    }
+                    if (Directory.Exists(paths.InstallDirectory))
+                    {
+                        return WindowsShell.Execute(paths.InstallDirectory!);
+                    }
+                    return new(false, "此 Windows 应用没有可定位的文件系统路径。");
+                }
                 cancellationToken.ThrowIfCancellationRequested();
                 return WindowsPackageApplications.Activate(entry.LaunchTarget);
             }

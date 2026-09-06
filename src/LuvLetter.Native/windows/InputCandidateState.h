@@ -115,9 +115,11 @@ public:
 			? LuvLetterCandidateActionsOpen
 			: action == LuvLetterCandidateActionReveal
 				? LuvLetterCandidateActionsReveal
-				: action == LuvLetterCandidateActionComplete
+			: action == LuvLetterCandidateActionComplete
 					? LuvLetterCandidateActionsComplete
-					: LuvLetterCandidateActionsNone;
+					: action == LuvLetterCandidateActionCopyPath
+						? LuvLetterCandidateActionsCopyPath
+						: LuvLetterCandidateActionsNone;
 		if (required == LuvLetterCandidateActionsNone
 			|| (items_[*selectedIndex_].actions & required) == 0)
 		{

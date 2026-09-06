@@ -34,6 +34,8 @@ public interface INativeShell
 
     void HideCommandInput();
 
+    void DismissCommandInput();
+
     void ToggleQuickActions();
 
     void HideQuickActions();

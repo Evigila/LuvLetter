@@ -1,6 +1,7 @@
 using LuvLetter.Core.Application;
 using LuvLetter.Core.Commands;
 using LuvLetter.Core.NativeShell;
+using ArkheideSystem;
 
 namespace LuvLetter.Core.Tests;
 
@@ -25,13 +26,21 @@ internal static partial class Program
         using var commandInvoked = new ManualResetEventSlim();
         Assert.True(commands.Register("luv", "build", _ => commandInvoked.Set()));
         Assert.True(commands.Register("luv", "beta", _ => { }));
-        Assert.True(commands.Register("luv", "index refresh", _ => { }));
+        Assert.True(commands.Register(
+            "luv",
+            "index refresh",
+            _ => { },
+            options:
+            [
+                new CommandOption(["-f", "--force"], "强制全量刷新"),
+            ]));
         Assert.True(commands.RegisterLink("luv", "refreshindex", "luv", "index refresh"));
         Assert.True(commands.Register("luv", "zeta", _ => { }));
 
         var nativeShell = new FakeNativeShell();
         var fileIndex = new FakeFileIndexClient();
         var launcher = new FakeFileCandidateLauncher();
+        var clipboard = new FakeClipboard();
         fileIndex.SetQuery(static (_, _, _, _) =>
             ValueTask.FromResult<IReadOnlyList<FileIndexMatch>>(
             [
@@ -49,7 +58,8 @@ internal static partial class Program
             fileIndex,
             launcher,
             commands,
-            new InputCandidateOptions());
+            new InputCandidateOptions(),
+            clipboard: clipboard);
         await coordinator.StartAsync(CancellationToken.None);
         try
         {
@@ -124,8 +134,10 @@ internal static partial class Program
                     CandidateIconKind.Search,
                 ],
                 general.Select(static item => item.IconKind));
-            Assert.Equal(@"C:\aaa", general[0].SecondaryText);
-            Assert.Equal(@"C:\logs", general[1].SecondaryText);
+            Assert.Equal(@"文件 · C:\aaa", general[0].SecondaryText);
+            Assert.Equal(@"文件夹 · C:\logs", general[1].SecondaryText);
+            Assert.True(general.Take(4).All(candidate => candidate.Actions
+                == (CandidateActions.Open | CandidateActions.Reveal | CandidateActions.CopyPath)));
             Assert.Equal(64, fileIndex.Queries.Single().MaximumResults);
 
             nativeShell.RaiseInputChanged("b", InputMode.Ask, revision: 2);
@@ -147,6 +159,7 @@ internal static partial class Program
                 "Empty Command input did not produce command-domain candidates.");
             var domains = nativeShell.CandidateSnapshots.Last(item => item.Revision == 3).Candidates;
             Assert.SequenceEqual(["luv"], domains.Select(static item => item.PrimaryText));
+            Assert.Equal(string.Empty, domains.Single().SecondaryText);
             Assert.Equal(CandidateActions.Complete, domains.Single().Actions);
             nativeShell.RaiseCandidateActivated(
                 domains.Single().Token,
@@ -166,8 +179,7 @@ internal static partial class Program
                 commandRoots.Select(static item => item.PrimaryText));
             var index = commandRoots.Single(item => item.PrimaryText == "index");
             Assert.Equal(CandidateActions.Complete, index.Actions);
-            Assert.True(commandRoots.Single(item => item.PrimaryText == "refreshindex")
-                .SecondaryText.StartsWith("Link", StringComparison.Ordinal));
+            Assert.True(commandRoots.All(static item => item.SecondaryText.Length == 0));
             nativeShell.RaiseCandidateActivated(index.Token, CandidateAction.Complete);
             Assert.SequenceEqual(["/luv ", "/luv index "], nativeShell.ReplacedCommandInputs);
 
@@ -180,6 +192,7 @@ internal static partial class Program
             var refresh = nativeShell.CandidateSnapshots.Last(item => item.Revision == 5)
                 .Candidates.Single();
             Assert.Equal("refresh", refresh.PrimaryText);
+            Assert.Equal(string.Empty, refresh.SecondaryText);
             Assert.Equal(
                 CandidateActions.Open | CandidateActions.Complete,
                 refresh.Actions);
@@ -203,6 +216,7 @@ internal static partial class Program
                 commandOnly.Select(static item => item.PrimaryText));
             Assert.True(commandOnly.All(item => item.Actions
                 == (CandidateActions.Open | CandidateActions.Complete)));
+            Assert.True(commandOnly.All(static item => item.SecondaryText.Length == 0));
             Assert.Equal(1, fileIndex.Queries.Count);
             var build = commandOnly.Single(item => item.PrimaryText == "build");
             nativeShell.RaiseCandidateActivated(build.Token, CandidateAction.Complete);
@@ -290,31 +304,41 @@ internal static partial class Program
             nativeShell.RaiseCandidateActivated(fileCandidate.Token, CandidateAction.Reveal);
             Assert.SequenceEqual([@"C:\aaa\bbb.md"], launcher.Revealed);
             Assert.SequenceEqual([FileSystemEntryKind.File], launcher.RevealedKinds);
-            Assert.Equal(2, nativeShell.HideCommandInputCalls);
+            Assert.Equal(1, nativeShell.HideCommandInputCalls);
+            Assert.Equal(1, nativeShell.DismissCommandInputCalls);
             Assert.Equal(
                 0,
                 nativeShell.EnqueuedMessages.Count,
                 "Successful candidate activation must not report a stale indexed item.");
 
+            nativeShell.RaiseCandidateActivated(fileCandidate.Token, CandidateAction.CopyPath);
+            Assert.SequenceEqual([@"C:\aaa\bbb.md"], clipboard.Values);
+            Assert.Equal(1, nativeShell.HideCommandInputCalls);
+            Assert.Equal(
+                1,
+                nativeShell.DismissCommandInputCalls,
+                "Copying a candidate path must keep the input window open.");
+
             nativeShell.RaiseCandidateActivated(directoryCandidate.Token, CandidateAction.Open);
             Assert.SequenceEqual([@"C:\logs\builds"], launcher.Opened);
             Assert.SequenceEqual([FileSystemEntryKind.Directory], launcher.OpenedKinds);
-            Assert.Equal(3, nativeShell.HideCommandInputCalls);
+            Assert.Equal(2, nativeShell.DismissCommandInputCalls);
 
             nativeShell.RaiseCandidateActivated(directoryCandidate.Token, CandidateAction.Reveal);
             Assert.SequenceEqual(
-                [@"C:\aaa\bbb.md", @"C:\logs\builds"],
-                launcher.Revealed);
+                [@"C:\logs\builds", @"C:\logs\builds"],
+                launcher.Opened);
             Assert.SequenceEqual(
-                [FileSystemEntryKind.File, FileSystemEntryKind.Directory],
-                launcher.RevealedKinds);
-            Assert.Equal(4, nativeShell.HideCommandInputCalls);
+                [FileSystemEntryKind.Directory, FileSystemEntryKind.Directory],
+                launcher.OpenedKinds);
+            Assert.SequenceEqual([@"C:\aaa\bbb.md"], launcher.Revealed);
+            Assert.Equal(3, nativeShell.DismissCommandInputCalls);
 
             launcher.OpenResult = false;
             nativeShell.RaiseCandidateActivated(directoryCandidate.Token, CandidateAction.Open);
             Assert.Equal(
-                4,
-                nativeShell.HideCommandInputCalls,
+                3,
+                nativeShell.DismissCommandInputCalls,
                 "A missing indexed item must keep the input window open.");
             Assert.Equal(
                 @"The indexed item is no longer available: C:\logs\builds",
@@ -324,8 +348,8 @@ internal static partial class Program
             nativeShell.RaiseCandidateActivated(globalCandidate.Token, CandidateAction.Open);
             Assert.Equal("全局搜索功能尚未实现。", nativeShell.EnqueuedMessages[^1]);
             Assert.Equal(
-                4,
-                nativeShell.HideCommandInputCalls,
+                3,
+                nativeShell.DismissCommandInputCalls,
                 "The Global Search placeholder must keep the input window open.");
 
             var hideCountBeforeEnter = nativeShell.HideCommandInputCalls;
@@ -381,7 +405,7 @@ internal static partial class Program
                 acceptedCandidate.Token,
                 "A token from a Native-rejected snapshot was committed for reuse.");
             Assert.Equal(
-                InputCandidatePresentation.MaximumSecondaryTextLength - 1,
+                InputCandidatePresentation.MaximumSecondaryTextLength,
                 acceptedCandidate.SecondaryText.Length,
                 "The long parent path was not safely truncated for Native presentation.");
             Assert.False(
@@ -393,6 +417,23 @@ internal static partial class Program
                 longFullPath,
                 launcher.Opened[^1],
                 "Presentation truncation changed the complete Core activation path.");
+
+            nativeShell.RaiseInputChanged("/luv index refresh -", InputMode.Command, revision: 11);
+            Assert.True(
+                SpinWait.SpinUntil(
+                    () => nativeShell.CandidateSnapshots.Any(item => item.Revision == 11),
+                    TimeSpan.FromSeconds(2)),
+                "An executable command did not publish its optional arguments.");
+            var commandOptions = nativeShell.CandidateSnapshots
+                .Last(item => item.Revision == 11)
+                .Candidates;
+            Assert.SequenceEqual(
+                ["-f", "--force"],
+                commandOptions.Select(static candidate => candidate.PrimaryText));
+            Assert.True(commandOptions.All(static candidate =>
+                candidate.SecondaryText == "强制全量刷新"));
+            Assert.True(commandOptions.All(static candidate =>
+                candidate.Actions == CandidateActions.Complete));
         }
         finally
         {

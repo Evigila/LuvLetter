@@ -47,6 +47,12 @@ int LUVLETTER_NATIVE_CALL HideInputBox()
 	catch (...) { return E_FAIL; }
 }
 
+int LUVLETTER_NATIVE_CALL DismissInputBox()
+{
+	try { return NativeShellHost::Instance().Dismiss(); }
+	catch (...) { return E_FAIL; }
+}
+
 int LUVLETTER_NATIVE_CALL ToggleInputBox()
 {
 	try { return NativeShellHost::Instance().Toggle(); }

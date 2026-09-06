@@ -96,7 +96,7 @@ composition and cannot be removed; optional assemblies are discovered from `plug
 - `rendering`: shared animation and layered-window surface primitives, including the
   bounded Shell icon loader and CPU-side icon cache.
 
-The internal Native vocabulary is `QuickActions`. ABI v8 deliberately retains its
+The internal Native vocabulary is `QuickActions`. ABI v12 deliberately retains its
 historic `Feature*` struct names and layouts; those names are compatibility wire
 identifiers, not domain modules. The version gate includes revisioned input-change and
 candidate-activation callbacks, atomic candidate snapshots, a bounded candidate icon
@@ -104,7 +104,9 @@ category, and an optional bounded Shell icon source. It also provides token-base
 update, and complete operations for
 persistent message activities while retaining the submitted input mode, ordinary message
 queue, and `HidePopups` exports. A new Managed assembly therefore cannot silently pair
-with an older DLL. Candidate synchronization validates all rows first, then uses pooled
+with an older DLL. Its separate input dismissal export closes a successful external
+activation without restoring the window that preceded LuvLetter; ordinary hide and Escape
+continue restoring that focus. Candidate synchronization validates all rows first, then uses pooled
 metadata and one pinned contiguous UTF-16 region for the synchronous ABI call; Native
 copies the bounded strings before the region is returned to the pool.
 
@@ -325,9 +327,12 @@ mode change increments an editor revision, immediately clears the old Native sna
 and enters a capacity-one latest-wins pipeline. `Gen` merges application and file matches,
 then appends the reserved Global Search row. `Ask` publishes no candidates. Empty `Cmd`
 shows registered domains only. Command candidates then expose one immediate path segment
-at a time, including alias and link routes. Tab completes the selected segment and keeps
-the input open. Enter executes an executable candidate; when the selected row represents
-only a domain or branch, it falls through to ordinary text submission. `Cmd` never enters
+at a time, including alias and link routes. Command definitions can also publish optional
+argument metadata; an exact command or a link to it then offers the matching argument
+spellings with their descriptions. Domain and command-path rows intentionally have no
+secondary description. Tab completes the selected segment or argument and keeps the input
+open. Arguments are completion-only, so Enter submits the text already present instead of
+silently choosing an optional argument. `Cmd` never enters
 application or filesystem index paths. The default
 configuration allows five direct results and one Global Search row, while the limit is
 owned by `InputCandidateOptions` rather than Native rendering code.
@@ -350,16 +355,29 @@ A non-empty new editor revision selects and visibly highlights its first candida
 same-revision index refresh reuses stable candidate tokens and preserves the selected
 token when it still exists; if that token disappears, selection falls back to the first
 candidate. Up or Down moves the selection. Tab completes command candidates. Enter opens
-or executes an eligible selection, while Shift+Enter reveals files and classic applications
-in Explorer. A successful filesystem or command activation closes InputWindow. If the
+or executes an eligible selection. Gen rows label their secondary location as `应用`, `文件`,
+or `文件夹`. Only the selected Gen row reserves a right-side action hint: Enter opens it,
+Shift+Enter reveals a file or application in Explorer while opening a selected directory
+itself, and Ctrl+Enter copies the full activation path through `IClipboard`. Modifier key
+changes repaint that hint without changing the candidate snapshot. A successful filesystem,
+application, or command activation closes InputWindow; copying a path keeps it open. If the
 selection does not support Enter, the current text is submitted normally. Global Search
 currently reports its reserved status through the message queue and keeps the input open.
 
 Catalog application activation is asynchronous and single-flight. A successful late
 completion cannot hide input from a newer editor revision. Classic applications retain
 their shortcut or executable launch semantics; packaged entries activate by AUMID and
-report ordinary file reveal as unavailable. Shell acceptance uses `ShellExecuteExW`
-rather than requiring a new process handle. Native receives bounded display text, the
+resolve their executable or install directory for Explorer reveal when Windows exposes one.
+Shell acceptance uses `ShellExecuteExW` rather than requiring a new process handle. Reveal
+requests run on the Shell STA worker with `SHOpenFolderAndSelectItems`. Before dispatch, a
+short-lived UI Automation session subscribes to Shell window, selection, and focus events.
+It observes only the foreground Explorer root while navigation is incomplete, then narrows
+structure events to the matched active file view. Shell PIDLs identify the folder and target;
+the MTA automation broker focuses only one selected file `ListItem` or `DataItem`, after an
+asynchronous Shell STA validation confirms the active tab, view HWND, parent PIDL, and
+foreground window. Event coalescing, per-session operation budgets, stability debounce, and
+one final timeout correction bound the work without periodic polling or foreground stealing. Native
+receives bounded display text, the
 managed activation token, and an optional icon source: a shortcut or executable path for
 classic applications and an AppsFolder parsing name for packaged applications. The icon
 worker requests exact-DPI icon pixels through Windows Shell, publishes only results that

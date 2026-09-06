@@ -97,7 +97,7 @@ Phase 2 introduced memory-only Delta state; Phase 3 adds durable change replay.
   Native ABI. Native renders Windows stock icons for ordinary files and folders and
   keeps lightweight built-in glyphs as the immediate and failure fallback.
 - Keep icon metadata bounded and deterministic. Application and indexed executable
-  candidates may carry one bounded Shell parsing source through Native ABI v10. A bounded
+  candidates may carry one bounded Shell parsing source through Native ABI v12. A bounded
   STA worker extracts exact-DPI icons asynchronously; candidate production and rendering
   never wait for Shell extraction, and thumbnails remain outside this phase.
 
@@ -189,15 +189,17 @@ No edit distance, token score, usage history, or pinyin score participates in Ph
 ### Activation behavior and verification
 
 - Validate the candidate path and expected filesystem kind immediately before activation.
-  A successful file open, file reveal, folder open, or folder reveal closes InputWindow.
+  A successful file open, file reveal, or folder open dismisses InputWindow without
+  restoring focus to the previously active application.
 - A stale, missing, inaccessible, or kind-mismatched candidate reports a message and
-  keeps the input open. Shift+Enter reveals a file or folder in its containing location;
+  keeps the input open. Shift+Enter reveals a file in its containing location and opens a
+  selected folder directly; Ctrl+Enter copies the full path without closing the input.
   Enter opens the selected item using the Windows shell.
 - The kernel suite covers file and directory records, Unicode prefix lookup,
   deterministic ranking, overlapping roots, v4 persistence, provenance mismatch,
   checksum corruption, Delta ordering, ancestor tombstones, rebuild-cutoff pruning, and
   live create/rename/delete notifications.
-- Core and Native suites cover LLIX v8 activity/progress decoding, Native ABI v10, icon categories and sources,
+- Core and Native suites cover LLIX v8 activity/progress decoding, Native ABI v12, icon categories and sources,
   default and same-revision selection, persistent message timelines, stale revision
   rejection, and file/folder activation success or failure.
 
@@ -388,7 +390,9 @@ candidates, persistence, or activation:
     and submits the current text for non-executable branches or an empty list. Confirm
     Escape follows the ordinary input-hide path.
 12. Confirm Enter opens a selected file or folder and closes InputWindow only on success;
-   confirm Shift+Enter reveals the selected item in its containing location.
+    confirm Shift+Enter reveals files in their containing location, opens folders directly,
+    and leaves Explorer focused with the selected file visible. Confirm Ctrl+Enter copies
+    the full path while keeping InputWindow open.
 13. Delete or replace a selected item before activation and confirm validation reports a
     message, does not open the wrong item, and keeps InputWindow open.
 14. Change configured roots and confirm a snapshot from the previous scope is not exposed

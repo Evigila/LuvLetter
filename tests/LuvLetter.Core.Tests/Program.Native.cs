@@ -145,7 +145,7 @@ internal static partial class Program
         var service = new NativeShellService(nativeApi);
         try
         {
-            Assert.Equal(10U, nativeApi.AbiVersion);
+            Assert.Equal(12U, nativeApi.AbiVersion);
             Assert.Equal(1, nativeApi.CompatibilityChecks);
             Assert.NotNull(nativeApi.InputSubmittedCallback);
             Assert.NotNull(nativeApi.InputChangedCallback);
@@ -272,7 +272,8 @@ internal static partial class Program
                     CandidateIconKind.Document,
                     "bbb.md",
                     @"C:\aaa",
-                    @"C:\aaa\bbb.md"),
+                    @"C:\aaa\bbb.md",
+                    CandidateActions.Open | CandidateActions.Reveal | CandidateActions.CopyPath),
                 new InputCandidate(
                     8,
                     CandidateKind.Command,
@@ -286,7 +287,9 @@ internal static partial class Program
             Assert.Equal(7UL, nativeApi.InputCandidates[0].Token);
             Assert.Equal(CandidateKind.File, nativeApi.InputCandidates[0].Kind);
             Assert.Equal(CandidateIconKind.Document, nativeApi.InputCandidates[0].IconKind);
-            Assert.Equal(CandidateActions.Open, nativeApi.InputCandidates[0].Actions);
+            Assert.Equal(
+                CandidateActions.Open | CandidateActions.Reveal | CandidateActions.CopyPath,
+                nativeApi.InputCandidates[0].Actions);
             Assert.Equal("bbb.md", nativeApi.InputCandidates[0].Primary);
             Assert.Equal(@"C:\aaa\bbb.md", nativeApi.InputCandidates[0].IconSource);
             Assert.Equal("电源", nativeApi.InputCandidates[1].Primary);
@@ -351,6 +354,7 @@ internal static partial class Program
 
             service.ShowCommandInput();
             service.HideCommandInput();
+            service.DismissCommandInput();
             service.ToggleQuickActions();
             service.EnqueueMessage("  hello queue  ");
             service.EnqueueMessage("   ");
@@ -387,6 +391,7 @@ internal static partial class Program
             service.HidePopups();
             Assert.Equal(1, nativeApi.ShowInputBoxCalls);
             Assert.Equal(1, nativeApi.HideInputBoxCalls);
+            Assert.Equal(1, nativeApi.DismissInputBoxCalls);
             Assert.Equal(1, nativeApi.ToggleQuickActionsCalls);
             Assert.Equal(1, nativeApi.EnqueuedMessages.Count);
             Assert.Equal("hello queue", nativeApi.EnqueuedMessages[0].Text);

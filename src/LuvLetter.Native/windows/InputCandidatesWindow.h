@@ -38,6 +38,7 @@ public:
 	void Clear();
 	bool MoveSelection(int direction);
 	bool ActivateSelected(LuvLetterCandidateAction action);
+	void SetKeyboardModifiers(int modifiers);
 	void Hide();
 	void SynchronizeToInputWindow();
 	bool IsVisible() const noexcept { return visible_; }
@@ -76,6 +77,7 @@ private:
 	UINT dpi_ = LuvLetterNative::DefaultDpi;
 	bool visible_ = false;
 	bool updatingGeometry_ = false;
+	int keyboardModifiers_ = 0;
 	LuvLetterInputBoxConfig config_{};
 	InputCandidateState state_;
 	std::function<void(uint64_t, int32_t)> activated_;

@@ -34,6 +34,7 @@ public:
 	HRESULT ReplaceInputText(const wchar_t* text, int32_t length, int32_t inputMode);
 	HRESULT Show();
 	HRESULT Hide();
+	HRESULT Dismiss();
 	HRESULT Toggle();
 	HRESULT ApplyQuickActionsConfig(const LuvLetterFeatureWindowConfig& config);
 	HRESULT SetQuickActions(const LuvLetterFeatureItem* items, int32_t count);

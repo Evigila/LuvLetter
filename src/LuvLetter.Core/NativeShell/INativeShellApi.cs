@@ -22,6 +22,8 @@ internal interface INativeShellApi
 
     int HideInputBox();
 
+    int DismissInputBox();
+
     int ToggleInputBox();
 
     int ApplyFeatureWindowConfig(in NativeFeatureWindowConfig config);

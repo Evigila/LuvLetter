@@ -2,9 +2,11 @@
 
 #include "configuration/NativeConfigurationSanitizer.h"
 #include "rendering/SurfaceStyleDefaults.h"
+#include "windows/CandidateActionPresentation.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cwchar>
 #include <utility>
 
 using namespace LuvLetterNative;
@@ -20,9 +22,98 @@ namespace
 	constexpr float IconSizeDip = SurfaceLineHeightDip;
 	constexpr float IconGapDip = 10.0f;
 	constexpr float IconStrokeDip = 1.25f;
+	constexpr float ActionHintGapDip = 10.0f;
+	constexpr float ActionIconSizeDip = 18.0f;
+	constexpr float ActionIconGapDip = 7.0f;
 	constexpr float WindowGapDip = 7.0f;
 	constexpr float CornerRadiusDip = 7.0f;
 	constexpr float BorderWidthDip = 1.0f;
+	void DrawEnterIcon(
+		ID2D1RenderTarget* target,
+		const D2D1_RECT_F& bounds,
+		ID2D1Brush* brush)
+	{
+		if (target == nullptr || brush == nullptr) return;
+
+		constexpr float ViewBoxSize = 276.0f;
+		const auto width = (std::max)(0.0f, bounds.right - bounds.left);
+		const auto height = (std::max)(0.0f, bounds.bottom - bounds.top);
+		const auto scale = (std::min)(width, height) / ViewBoxSize;
+		if (scale <= 0.0f) return;
+		const auto offsetX = bounds.left + (width - ViewBoxSize * scale) * 0.5f;
+		const auto offsetY = bounds.top + (height - ViewBoxSize * scale) * 0.5f;
+		const auto point = [scale, offsetX, offsetY](float x, float y)
+		{
+			return D2D1::Point2F(offsetX + x * scale, offsetY + y * scale);
+		};
+
+		Microsoft::WRL::ComPtr<ID2D1Factory> factory;
+		target->GetFactory(factory.GetAddressOf());
+		if (!factory) return;
+
+		D2D1_STROKE_STYLE_PROPERTIES strokeProperties{};
+		strokeProperties.startCap = D2D1_CAP_STYLE_ROUND;
+		strokeProperties.endCap = D2D1_CAP_STYLE_ROUND;
+		strokeProperties.dashCap = D2D1_CAP_STYLE_ROUND;
+		strokeProperties.lineJoin = D2D1_LINE_JOIN_ROUND;
+		strokeProperties.miterLimit = 10.0f;
+		strokeProperties.dashStyle = D2D1_DASH_STYLE_SOLID;
+		Microsoft::WRL::ComPtr<ID2D1StrokeStyle> strokeStyle;
+		if (FAILED(factory->CreateStrokeStyle(
+			strokeProperties, nullptr, 0, strokeStyle.GetAddressOf()))) return;
+
+		const auto strokeWidth = 10.0f * scale;
+		const auto frame = D2D1::RoundedRect(
+			D2D1::RectF(
+				offsetX + 34.0f * scale,
+				offsetY + 30.0f * scale,
+				offsetX + 242.0f * scale,
+				offsetY + 240.0f * scale),
+			38.0f * scale,
+			38.0f * scale);
+		target->DrawRoundedRectangle(frame, brush, strokeWidth, strokeStyle.Get());
+
+		Microsoft::WRL::ComPtr<ID2D1PathGeometry> arrow;
+		if (FAILED(factory->CreatePathGeometry(arrow.GetAddressOf()))) return;
+		Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+		if (FAILED(arrow->Open(sink.GetAddressOf()))) return;
+		sink->BeginFigure(point(192.0f, 95.0f), D2D1_FIGURE_BEGIN_HOLLOW);
+		sink->AddLine(point(192.0f, 132.0f));
+		sink->AddQuadraticBezier(D2D1::QuadraticBezierSegment(
+			point(192.0f, 144.0f), point(180.0f, 144.0f)));
+		sink->AddLine(point(84.0f, 144.0f));
+		sink->EndFigure(D2D1_FIGURE_END_OPEN);
+		sink->BeginFigure(point(84.0f, 144.0f), D2D1_FIGURE_BEGIN_HOLLOW);
+		sink->AddLine(point(113.0f, 114.0f));
+		sink->EndFigure(D2D1_FIGURE_END_OPEN);
+		sink->BeginFigure(point(84.0f, 144.0f), D2D1_FIGURE_BEGIN_HOLLOW);
+		sink->AddLine(point(113.0f, 174.0f));
+		sink->EndFigure(D2D1_FIGURE_END_OPEN);
+		if (FAILED(sink->Close())) return;
+		target->DrawGeometry(arrow.Get(), brush, strokeWidth, strokeStyle.Get());
+	}
+
+	float MeasureTextWidth(
+		IDWriteFactory* factory,
+		IDWriteTextFormat* format,
+		const wchar_t* text) noexcept
+	{
+		if (factory == nullptr || format == nullptr || text == nullptr) return 0.0f;
+		const auto length = static_cast<UINT32>(wcslen(text));
+		const auto fallbackWidth = static_cast<float>(length) * SurfaceFontSizeDip;
+		Microsoft::WRL::ComPtr<IDWriteTextLayout> layout;
+		if (FAILED(factory->CreateTextLayout(
+			text,
+			length,
+			format,
+			4096.0f,
+			SurfaceLineHeightDip,
+			layout.GetAddressOf()))) return fallbackWidth;
+		DWRITE_TEXT_METRICS metrics{};
+		return SUCCEEDED(layout->GetMetrics(&metrics))
+			? std::ceil(metrics.widthIncludingTrailingWhitespace)
+			: fallbackWidth;
+	}
 
 	D2D1_COLOR_F WithOpacity(D2D1_COLOR_F color, float opacity) noexcept
 	{
@@ -349,6 +440,8 @@ bool InputCandidatesWindow::SetItems(
 	uint64_t currentInputRevision,
 	bool inputVisible)
 {
+	keyboardModifiers_ = GetCurrentHotkeyModifiers()
+		& (ArkheideSystem::CandidateControlModifier | ArkheideSystem::CandidateShiftModifier);
 	if (!state_.Apply(std::move(items), revision, currentInputRevision))
 	{
 		return false;
@@ -397,6 +490,15 @@ bool InputCandidatesWindow::ActivateSelected(LuvLetterCandidateAction action)
 		activated_(activation.token, static_cast<int32_t>(activation.action));
 	}
 	return true;
+}
+
+void InputCandidatesWindow::SetKeyboardModifiers(int modifiers)
+{
+	const auto normalized = modifiers
+		& (ArkheideSystem::CandidateControlModifier | ArkheideSystem::CandidateShiftModifier);
+	if (keyboardModifiers_ == normalized) return;
+	keyboardModifiers_ = normalized;
+	if (visible_) Render();
 }
 
 void InputCandidatesWindow::Show()
@@ -756,9 +858,24 @@ void InputCandidatesWindow::Render()
 				renderTarget_.Get(), item.iconKind, iconBounds, secondaryTextBrush_.Get());
 		}
 		const auto textLeft = HorizontalPaddingDip + IconSizeDip + IconGapDip;
-		const auto textRight = (std::max)(
+		const auto actionLabel = selected.has_value() && *selected == index
+			? ArkheideSystem::CandidateActionLabel(item.actions, keyboardModifiers_)
+			: nullptr;
+		const auto actionRight = (std::max)(
 			textLeft + 1.0f,
 			widthDip - HorizontalPaddingDip);
+		const auto actionTextWidth = actionLabel == nullptr
+			? 0.0f
+			: MeasureTextWidth(dwriteFactory_.Get(), secondaryTextFormat_.Get(), actionLabel);
+		const auto actionWidth = actionLabel == nullptr
+			? 0.0f
+			: ActionIconSizeDip + ActionIconGapDip + actionTextWidth;
+		const auto actionLeft = actionLabel == nullptr
+			? actionRight
+			: (std::max)(textLeft + 1.0f, actionRight - actionWidth);
+		const auto textRight = (std::max)(
+			textLeft + 1.0f,
+			actionLabel == nullptr ? actionRight : actionLeft - ActionHintGapDip);
 		const auto hasSecondary = !item.secondaryText.empty();
 		const auto primaryRect = hasSecondary
 			? D2D1::RectF(
@@ -786,6 +903,33 @@ void InputCandidatesWindow::Render()
 				static_cast<UINT32>(item.secondaryText.size()),
 				secondaryTextFormat_.Get(), secondaryRect,
 				secondaryTextBrush_.Get(), D2D1_DRAW_TEXT_OPTIONS_CLIP,
+				DWRITE_MEASURING_MODE_NATURAL);
+		}
+		if (actionLabel != nullptr)
+		{
+			const auto iconTop = top + (RowHeightDip - ActionIconSizeDip) * 0.5f;
+			const auto actionIconBounds = D2D1::RectF(
+				actionLeft,
+				iconTop,
+				actionLeft + ActionIconSizeDip,
+				iconTop + ActionIconSizeDip);
+			DrawEnterIcon(
+				renderTarget_.Get(),
+				actionIconBounds,
+				secondaryTextBrush_.Get());
+			const auto actionTextLeft = actionIconBounds.right + ActionIconGapDip;
+			const auto actionTextRect = D2D1::RectF(
+				actionTextLeft,
+				top,
+				actionRight,
+				bottom);
+			renderTarget_->DrawTextW(
+				actionLabel,
+				static_cast<UINT32>(wcslen(actionLabel)),
+				secondaryTextFormat_.Get(),
+				actionTextRect,
+				secondaryTextBrush_.Get(),
+				D2D1_DRAW_TEXT_OPTIONS_CLIP,
 				DWRITE_MEASURING_MODE_NATURAL);
 		}
 	}

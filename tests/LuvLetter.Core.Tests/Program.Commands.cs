@@ -165,7 +165,14 @@ internal static partial class Program
             routedCompleted.Signal();
         }
 
-        Assert.True(routeDispatcher.Register("tool", "index refresh", Capture));
+        Assert.True(routeDispatcher.Register(
+            "tool",
+            "index refresh",
+            Capture,
+            options:
+            [
+                new CommandOption(["-f", "--force"], "Force a complete refresh"),
+            ]));
         Assert.True(routeDispatcher.Register("tool", "branch child", Capture));
         Assert.True(routeDispatcher.RegisterAlias(
             "tool", "rebuild", "tool", "index refresh"));
@@ -213,9 +220,25 @@ internal static partial class Program
         var refresh = routeDispatcher.Suggest("tool index ", 10).Single();
         Assert.Equal("refresh", refresh.Label);
         Assert.True(refresh.CanExecute);
+        Assert.Equal(string.Empty, refresh.Description);
         var linkedChild = routeDispatcher.Suggest("tool short ", 10).Single();
         Assert.Equal("child", linkedChild.Label);
         Assert.Equal("tool short child", linkedChild.ExecutionText);
+        var options = routeDispatcher.Suggest("tool index refresh -", 10);
+        Assert.SequenceEqual(["-f", "--force"], options.Select(static option => option.Label));
+        Assert.True(options.All(static option => option.Kind == CommandRouteKind.Option));
+        Assert.True(options.All(static option => !option.CanExecute));
+        Assert.True(options.All(static option => option.Description == "Force a complete refresh"));
+        Assert.SequenceEqual(
+            ["/tool index refresh -f ", "/tool index refresh --force "],
+            options.Select(static option => option.CompletionText));
+        var linkedOptions = routeDispatcher.Suggest("tool refreshindex -", 10);
+        Assert.SequenceEqual(
+            ["/tool refreshindex -f ", "/tool refreshindex --force "],
+            linkedOptions.Select(static option => option.CompletionText));
+        Assert.Empty(
+            routeDispatcher.Suggest("tool refreshindex -f ", 10),
+            "Using one non-repeatable option spelling must suppress all of its aliases.");
 
         using var cycleDispatcher = new CommandDispatcher();
         Assert.True(cycleDispatcher.Register("tool", "target", _ => { }));

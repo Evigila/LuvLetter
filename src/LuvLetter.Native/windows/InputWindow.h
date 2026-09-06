@@ -26,6 +26,7 @@ public:
 		std::function<void(const std::wstring&, int32_t, uint64_t)> changed,
 		std::function<bool(int)> moveCandidateSelection,
 		std::function<bool(int32_t)> activateCandidate,
+		std::function<void(int)> updateCandidateModifiers,
 		std::function<void()> hideCandidates);
 	~InputWindow() = default;
 	InputWindow(const InputWindow&) = delete;
@@ -36,6 +37,7 @@ public:
 	void ApplyConfiguration(const LuvLetterInputBoxConfig& config);
 	void Show(HMONITOR targetMonitor, HWND previousForegroundWindow);
 	void Hide();
+	void Dismiss();
 	void HideImmediately();
 	bool IsVisible() const noexcept { return visible_; }
 	bool HasKeyboardFocus() const noexcept;
@@ -54,7 +56,8 @@ private:
 	void UpdateWindowShape() const;
 	void RefreshDpiFromWindow();
 	void ApplyDpiChange(UINT dpi, const RECT* suggestedRect);
-	void ReleaseFocus();
+	void HideCore(bool restorePreviousFocus);
+	void ReleaseFocus(bool restorePreviousFocus);
 	void SynchronizeAnimation();
 	void AdvanceAnimation();
 	void CompleteHide();
@@ -151,6 +154,7 @@ private:
 	std::function<void(const std::wstring&, int32_t, uint64_t)> changed_;
 	std::function<bool(int)> moveCandidateSelection_;
 	std::function<bool(int32_t)> activateCandidate_;
+	std::function<void(int)> updateCandidateModifiers_;
 	std::function<void()> hideCandidates_;
 
 	Microsoft::WRL::ComPtr<ID2D1Factory> d2dFactory_;

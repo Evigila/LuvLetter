@@ -1,6 +1,7 @@
 using LuvLetter.Core.Commands;
 using LuvLetter.Core.Modules.QuickActions;
 using LuvLetter.Core.Plugins;
+using ArkheideSystem;
 
 namespace LuvLetter.Core.Tests;
 
@@ -99,7 +100,14 @@ internal static partial class Program
             "healthy",
             context =>
             {
-                context.RegisterCommand("test", "healthy run", _ => { });
+                context.RegisterCommand(
+                    "test",
+                    "healthy run",
+                    _ => { },
+                    options:
+                    [
+                        new CommandOption(["--safe"], "Use safe mode"),
+                    ]);
                 context.RegisterCommandAlias(
                     "test", "well", "test", "healthy run");
                 context.RegisterCommandLink(
@@ -130,6 +138,10 @@ internal static partial class Program
             Assert.True(commandDispatcher.IsRegistered("test", "healthy run"));
             Assert.True(commandDispatcher.IsExecutable("test", "well"));
             Assert.True(commandDispatcher.IsExecutable("test", "go run"));
+            var option = commandDispatcher.Suggest("test go run --", 10).Single();
+            Assert.Equal("--safe", option.Label);
+            Assert.Equal("Use safe mode", option.Description);
+            Assert.Equal(CommandRouteKind.Option, option.Kind);
             Assert.True(quickActionRegistry.IsRegistered("healthy.action"));
         }
 
@@ -174,12 +186,14 @@ internal static partial class Program
             string commandDomain,
             string commandName,
             Action<CommandInvocation> handler,
-            CommandRegistrationMode mode = CommandRegistrationMode.RejectDuplicate)
+            CommandRegistrationMode mode = CommandRegistrationMode.RejectDuplicate,
+            IReadOnlyList<CommandOption>? options = null)
         {
             _ = commandDomain;
             _ = commandName;
             _ = handler;
             _ = mode;
+            _ = options;
             RegisterCalls++;
             return false;
         }

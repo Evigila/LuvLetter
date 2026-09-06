@@ -105,7 +105,7 @@ internal delegate void NativeCandidateActivatedCallback(
 
 internal sealed class NativeShellApi : INativeShellApi
 {
-    private const uint CurrentAbiVersion = 10;
+    private const uint CurrentAbiVersion = 12;
 
     internal static INativeShellApi Instance { get; } = new NativeShellApi();
 
@@ -192,6 +192,13 @@ internal sealed class NativeShellApi : INativeShellApi
             ExactSpelling = true,
             CallingConvention = CallingConvention.StdCall)]
         internal static extern int HideInputBox();
+
+        [DllImport(
+            "LuvLetter.Native.dll",
+            EntryPoint = "DismissInputBox",
+            ExactSpelling = true,
+            CallingConvention = CallingConvention.StdCall)]
+        internal static extern int DismissInputBox();
 
         [DllImport(
             "LuvLetter.Native.dll",
@@ -348,6 +355,8 @@ internal sealed class NativeShellApi : INativeShellApi
     public int ShowInputBox() => NativeMethods.ShowInputBox();
 
     public int HideInputBox() => NativeMethods.HideInputBox();
+
+    public int DismissInputBox() => NativeMethods.DismissInputBox();
 
     public int ToggleInputBox() => NativeMethods.ToggleInputBox();
 

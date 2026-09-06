@@ -1,4 +1,5 @@
 using LuvLetter.Core.Concurrency;
+using ArkheideSystem;
 
 namespace LuvLetter.Core.Commands;
 
@@ -23,6 +24,7 @@ public enum CommandRouteKind
     Command,
     Alias,
     Link,
+    Option,
 }
 
 public sealed record CommandInvocation(
@@ -44,7 +46,8 @@ public sealed record CommandSuggestion(
     string ExecutionText,
     bool CanExecute,
     CommandRouteKind Kind,
-    string? TargetPath);
+    string? TargetPath,
+    string Description = "");
 
 /// <summary>
 /// A bounded, single-consumer command dispatcher. Registered routes form a command tree;
@@ -72,12 +75,23 @@ public sealed class CommandDispatcher : ICommandRegistrar, IDisposable
         string commandDomain,
         string commandPath,
         Action<CommandInvocation> handler,
-        CommandRegistrationMode mode = CommandRegistrationMode.RejectDuplicate)
+        CommandRegistrationMode mode = CommandRegistrationMode.RejectDuplicate,
+        IReadOnlyList<CommandOption>? options = null)
     {
         var domain = NormalizeDomain(commandDomain, nameof(commandDomain));
         var path = NormalizePath(commandPath, nameof(commandPath));
         ArgumentNullException.ThrowIfNull(handler);
         ValidateMode(mode);
+        var registeredOptions = options?.ToArray() ?? [];
+        if (registeredOptions.Any(static option => option is null))
+        {
+            throw new ArgumentException("Command options cannot contain null entries.", nameof(options));
+        }
+        var optionNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (registeredOptions.SelectMany(static option => option.Names).Any(name => !optionNames.Add(name)))
+        {
+            throw new ArgumentException("Command option names must be unique.", nameof(options));
+        }
 
         lock (routesLock)
         {
@@ -92,11 +106,12 @@ public sealed class CommandDispatcher : ICommandRegistrar, IDisposable
                 if (existing.Kind == CommandRouteKind.Command && existing.Definition is not null)
                 {
                     existing.Definition.Handler = handler;
+                    existing.Definition.Options = registeredOptions;
                     return true;
                 }
             }
 
-            var definition = new CommandDefinition(domain, path, handler);
+            var definition = new CommandDefinition(domain, path, handler, registeredOptions);
             routes[key] = CommandRoute.Command(domain, path, definition);
             return true;
         }
@@ -454,6 +469,45 @@ public sealed class CommandDispatcher : ICommandRegistrar, IDisposable
                 kind,
                 targetPath));
         }
+
+        if (suggestions.Count < maximumResults
+            && TryResolveDefinitionLocked(effectiveText, out var optionResolution, out _))
+        {
+            var usedArguments = Parse(optionResolution.Invocation.Arguments).Tokens
+                .Select(static token => token.Value)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            foreach (var option in optionResolution.Definition.Options)
+            {
+                if (!option.Repeatable && option.Names.Any(usedArguments.Contains))
+                {
+                    continue;
+                }
+
+                foreach (var name in option.Names)
+                {
+                    if (!name.StartsWith(partial, StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var surfacePrefix = surfaceParent.Length == 0
+                        ? domain
+                        : $"{domain} {JoinPath(surfaceParent)}";
+                    suggestions.Add(new(
+                        name,
+                        $"/{surfacePrefix} {name} ",
+                        $"{surfacePrefix} {name}",
+                        false,
+                        CommandRouteKind.Option,
+                        null,
+                        option.Description));
+                    if (suggestions.Count >= maximumResults)
+                    {
+                        return suggestions;
+                    }
+                }
+            }
+        }
         return suggestions;
     }
 
@@ -763,13 +817,16 @@ public sealed class CommandDispatcher : ICommandRegistrar, IDisposable
     private sealed class CommandDefinition(
         string canonicalDomain,
         string canonicalPath,
-        Action<CommandInvocation> handler)
+        Action<CommandInvocation> handler,
+        IReadOnlyList<CommandOption> options)
     {
         internal string CanonicalDomain { get; } = canonicalDomain;
 
         internal string CanonicalPath { get; } = canonicalPath;
 
         internal Action<CommandInvocation> Handler { get; set; } = handler;
+
+        internal IReadOnlyList<CommandOption> Options { get; set; } = options;
     }
 
     private sealed class CommandRoute

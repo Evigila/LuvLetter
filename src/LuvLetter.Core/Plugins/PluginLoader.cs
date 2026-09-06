@@ -415,7 +415,8 @@ public static class PluginLoader
                         command.Domain,
                         command.Path,
                         command.Handler,
-                        command.Mode))
+                        command.Mode,
+                        command.Options))
                 {
                     throw new InvalidOperationException(
                         $"Command '{command.Domain} {command.Path}' from plugin '{plugin.Id}' "

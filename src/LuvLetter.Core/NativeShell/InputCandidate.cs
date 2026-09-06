@@ -27,6 +27,7 @@ public enum CandidateAction
     Open = 0,
     Reveal = 1,
     Complete = 2,
+    CopyPath = 3,
 }
 
 [Flags]
@@ -36,6 +37,7 @@ public enum CandidateActions
     Open = 1 << 0,
     Reveal = 1 << 1,
     Complete = 1 << 2,
+    CopyPath = 1 << 3,
 }
 
 public enum InputCandidateSetResult

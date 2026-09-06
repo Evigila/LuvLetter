@@ -28,9 +28,29 @@ reserved product capabilities. Architectural ownership and dependency rules rema
   Downloads directory beneath the user profile. Failed discovery does not invent a
   fallback path. Explicitly configured unavailable roots still retain their previous
   index and retry; ordinary logs now identify unavailable roots by path and Win32 error.
+- Candidate action labels now compile with an explicit UTF-8 source encoding and
+  code-page-independent Unicode literals. The right-side action group measures its current
+  label, so `打开到文件夹` and `复制路径` expand left while preserving a common right edge.
+- Successful file and application activation now dismisses the input without restoring its
+  previous foreground window. File reveal uses `SHOpenFolderAndSelectItems`, then waits for
+  event-driven Shell and UI Automation signals after dismissal. The focus broker matches the
+  active folder by PIDL, scopes structure observation to the target Explorer window and file
+  view, validates the active tab before each focus write, and focuses the unique selected file
+  item rather than the `Name` column header. Event and focus budgets plus a single final timeout
+  correction replace periodic retries. Native ABI v12 adds the focus-safe dismissal operation.
+  Copying a path leaves the input and candidates visible.
 
 ### Added
 
+- Gen candidates now identify their location as `应用`, `文件`, or `文件夹`. The selected
+  row alone reserves a right-side Enter hint; holding Shift changes it to `打开到文件夹`,
+  while holding Ctrl changes it to `复制路径`. Enter opens the item, Shift+Enter reveals
+  files and applications but opens a selected folder directly, and Ctrl+Enter copies the
+  complete untruncated path. Native ABI v11 adds the copy-path action capability.
+- Command domains and command-path candidates no longer repeat generic descriptions.
+  Commands can register optional argument metadata; `/luv index refresh` exposes `-f` and
+  `--force` with the `强制全量刷新` description. Argument candidates remain Tab-only so
+  Enter always submits the arguments already entered by the user.
 - Added explicit command domains and multi-segment command paths. Empty `Cmd` lists
   domains and each completed segment reveals only its immediate children. Built-in
   commands are now `/luv settings` and `/luv index refresh`.

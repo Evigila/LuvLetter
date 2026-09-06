@@ -102,9 +102,10 @@ launcher uses the same corrected acceptance rule. Failure or cancelled elevation
 input visible. Success closes it only while the originating editor revision is current.
 Acceptance does not certify completed application initialization.
 
-Shift+Enter reveals a classic application's resolved executable. Packaged entries report
-that ordinary file reveal is unavailable and keep input open. Real executable icons,
-thumbnails, and user-defined launch arguments remain future work.
+Shift+Enter reveals a classic application's resolved executable. Packaged entries reveal
+their executable or installation directory when Windows exposes one; virtual entries with
+no filesystem location report that limitation and keep input open. Thumbnails and
+user-defined launch arguments remain future work.
 
 ## Cache and maintenance
 

@@ -41,6 +41,7 @@ internal static class ServiceRegistration
         services.AddSingleton(new InputCandidateOptions());
         services.AddSingleton(new CandidateRankingOptions());
         services.AddSingleton<ICandidateRankingPolicy, DefaultCandidateRankingPolicy>();
+        services.AddSingleton<IClipboard, WindowsClipboard>();
 
         services.AddSingleton<NativeShellService>();
         services.AddSingleton<INativeShell>(

@@ -1,4 +1,5 @@
 #include "windows/InputWindow.h"
+#include "windows/CandidateActionPresentation.h"
 
 #include "configuration/NativeConfigurationSanitizer.h"
 #include "rendering/SurfaceStyleDefaults.h"
@@ -162,12 +163,14 @@ InputWindow::InputWindow(
 	std::function<void(const std::wstring&, int32_t, uint64_t)> changed,
 	std::function<bool(int)> moveCandidateSelection,
 	std::function<bool(int32_t)> activateCandidate,
+	std::function<void(int)> updateCandidateModifiers,
 	std::function<void()> hideCandidates)
 	: config_(NativeConfigurationSanitizer::DefaultInputBox()),
 	submitted_(std::move(submitted)),
 	changed_(std::move(changed)),
 	moveCandidateSelection_(std::move(moveCandidateSelection)),
 	activateCandidate_(std::move(activateCandidate)),
+	updateCandidateModifiers_(std::move(updateCandidateModifiers)),
 	hideCandidates_(std::move(hideCandidates)),
 	d2dFactory_(d2dFactory),
 	dwriteFactory_(dwriteFactory),
@@ -442,6 +445,16 @@ void InputWindow::Show(HMONITOR targetMonitor, HWND previousForegroundWindow)
 
 void InputWindow::Hide()
 {
+	HideCore(true);
+}
+
+void InputWindow::Dismiss()
+{
+	HideCore(false);
+}
+
+void InputWindow::HideCore(bool restorePreviousFocus)
+{
 	if (hwnd_ == nullptr) return;
 	if (hideCandidates_) hideCandidates_();
 	if (!visible_ && !animator_.TargetVisible())
@@ -462,7 +475,7 @@ void InputWindow::Hide()
 	// dismissal by playing transitions that have not started yet.
 	pendingStatusTagModes_.clear();
 	caretDirtyValid_ = false;
-	ReleaseFocus();
+	ReleaseFocus(restorePreviousFocus);
 	UpdateWindowPosition();
 	Render();
 	animationTimestamp_ = GetTickCount64();
@@ -501,13 +514,14 @@ void InputWindow::HideImmediately()
 	shadowWindow_.Hide();
 }
 
-void InputWindow::ReleaseFocus()
+void InputWindow::ReleaseFocus(bool restorePreviousFocus)
 {
 	if (hwnd_ == nullptr) return;
 	const auto inputOwnedFocus = GetForegroundWindow() == hwnd_
 		|| GetFocus() == hwnd_;
 	EnableWindow(hwnd_, FALSE);
-	if (inputOwnedFocus
+	if (restorePreviousFocus
+		&& inputOwnedFocus
 		&& peerHwnd_ != nullptr
 		&& IsWindowVisible(peerHwnd_)
 		&& IsWindowEnabled(peerHwnd_))
@@ -515,7 +529,8 @@ void InputWindow::ReleaseFocus()
 		SetForegroundWindow(peerHwnd_);
 		SetFocus(peerHwnd_);
 	}
-	else if (inputOwnedFocus
+	else if (restorePreviousFocus
+		&& inputOwnedFocus
 		&& previousForegroundHwnd_ != nullptr
 		&& previousForegroundHwnd_ != hwnd_
 		&& previousForegroundHwnd_ != peerHwnd_
@@ -1827,12 +1842,11 @@ bool InputWindow::HandleKeyDown(WPARAM wParam, LPARAM keyData)
 		}
 		return true;
 	}
-	if (wParam == VK_RETURN && !controlDown && !hasSystemModifier
-		&& (modifiers == 0 || modifiers == ShiftModifier)
+	LuvLetterCandidateAction enterAction{};
+	if (wParam == VK_RETURN
 		&& activateCandidate_
-		&& activateCandidate_(shiftDown
-			? static_cast<int32_t>(LuvLetterCandidateActionReveal)
-			: static_cast<int32_t>(LuvLetterCandidateActionOpen)))
+		&& ArkheideSystem::TryResolveEnterAction(modifiers, enterAction)
+		&& activateCandidate_(static_cast<int32_t>(enterAction)))
 	{
 		return true;
 	}
@@ -1876,12 +1890,14 @@ LRESULT InputWindow::HandleMessage(HWND window, UINT message, WPARAM wParam, LPA
 	{
 	case WM_ERASEBKGND: return 1;
 	case WM_SETFOCUS:
+		if (updateCandidateModifiers_) updateCandidateModifiers_(GetCurrentHotkeyModifiers());
 		RefreshCaretState(true);
 		UpdateImeCompositionWindow();
 		Render();
 		return 0;
 	case WM_KILLFOCUS:
 		spaceModeSwitchKeyDown_ = false;
+		if (updateCandidateModifiers_) updateCandidateModifiers_(0);
 		RefreshCaretState(false, true);
 		Render();
 		return 0;
@@ -1916,10 +1932,13 @@ LRESULT InputWindow::HandleMessage(HWND window, UINT message, WPARAM wParam, LPA
 	case WM_KEYDOWN:
 	case WM_SYSKEYDOWN:
 		if (!HasKeyboardFocus()) return 0;
+		if (updateCandidateModifiers_) updateCandidateModifiers_(GetCurrentHotkeyModifiers());
 		if (HandleKeyDown(wParam, lParam)) return 0;
 		break;
 	case WM_KEYUP:
+	case WM_SYSKEYUP:
 		if (wParam == VK_SPACE) spaceModeSwitchKeyDown_ = false;
+		if (updateCandidateModifiers_) updateCandidateModifiers_(GetCurrentHotkeyModifiers());
 		break;
 	case WM_CHAR:
 		if (!HasKeyboardFocus()) return 0;

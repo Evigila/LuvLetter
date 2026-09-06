@@ -1,5 +1,6 @@
 using LuvLetter.Core.Commands;
 using LuvLetter.Core.Modules.QuickActions;
+using ArkheideSystem;
 
 namespace LuvLetter.Core.Plugins;
 
@@ -20,7 +21,8 @@ public sealed class PluginRegistrationContext
         string commandDomain,
         string commandPath,
         Action<CommandInvocation> handler,
-        CommandRegistrationMode mode = CommandRegistrationMode.RejectDuplicate)
+        CommandRegistrationMode mode = CommandRegistrationMode.RejectDuplicate,
+        IReadOnlyList<CommandOption>? options = null)
     {
         ThrowIfCompleted();
         var normalizedDomain = CommandDispatcher.NormalizeDomain(
@@ -29,6 +31,16 @@ public sealed class PluginRegistrationContext
         var normalizedPath = CommandDispatcher.NormalizePath(commandPath, nameof(commandPath));
         ArgumentNullException.ThrowIfNull(handler);
         ValidateMode(mode);
+        var registeredOptions = options?.ToArray() ?? [];
+        if (registeredOptions.Any(static option => option is null))
+        {
+            throw new ArgumentException("Command options cannot contain null entries.", nameof(options));
+        }
+        var optionNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (registeredOptions.SelectMany(static option => option.Names).Any(name => !optionNames.Add(name)))
+        {
+            throw new ArgumentException("Command option names must be unique.", nameof(options));
+        }
 
         var existingIndex = commands.FindIndex(
             registration => string.Equals(
@@ -47,12 +59,17 @@ public sealed class PluginRegistrationContext
                     $"Command '{normalizedDomain} {normalizedPath}' is already registered by this plugin.");
             }
 
-            commands[existingIndex] = new(normalizedDomain, normalizedPath, handler, mode);
+            commands[existingIndex] = new(
+                normalizedDomain,
+                normalizedPath,
+                handler,
+                mode,
+                registeredOptions);
             return;
         }
 
         EnsureRouteAvailable(normalizedDomain, normalizedPath);
-        commands.Add(new(normalizedDomain, normalizedPath, handler, mode));
+        commands.Add(new(normalizedDomain, normalizedPath, handler, mode, registeredOptions));
     }
 
     public void RegisterCommandAlias(
@@ -201,7 +218,8 @@ public sealed class PluginRegistrationContext
         string Domain,
         string Path,
         Action<CommandInvocation> Handler,
-        CommandRegistrationMode Mode);
+        CommandRegistrationMode Mode,
+        IReadOnlyList<CommandOption> Options);
 
     internal readonly record struct PendingCommandAlias(
         string Domain,

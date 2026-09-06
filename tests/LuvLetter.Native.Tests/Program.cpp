@@ -3,6 +3,7 @@
 #include "rendering/InputBoxAnimator.h"
 #include "rendering/SurfaceStyleDefaults.h"
 #include "windows/InputCandidateState.h"
+#include "windows/CandidateActionPresentation.h"
 #include "windows/InputModeBehavior.h"
 #include "windows/MessageQueueEntry.h"
 
@@ -110,7 +111,7 @@ namespace
 			"All native popup surfaces must use the shared Microsoft YaHei UI family.");
 		AssertNear(20.0f, LuvLetterNative::SurfaceLineHeightDip,
 			"Shared line height must leave Microsoft YaHei UI glyphs unclipped.");
-		Assert(LUVLETTER_NATIVE_ABI_VERSION == 10, "Native ABI must expose candidate completion actions.");
+		Assert(LUVLETTER_NATIVE_ABI_VERSION == 12, "Native ABI must expose focus-safe input dismissal.");
 		Assert(LUVLETTER_NATIVE_MAX_INPUT_TEXT_LENGTH == 32768,
 			"Native ABI must retain the input text limit.");
 		Assert(LUVLETTER_NATIVE_MAX_INPUT_CANDIDATES == 32,
@@ -136,6 +137,8 @@ namespace
 		Assert(LuvLetterCandidateActionOpen == 0, "Open candidate action changed unexpectedly.");
 		Assert(LuvLetterCandidateActionReveal == 1, "Reveal candidate action changed unexpectedly.");
 		Assert(LuvLetterCandidateActionComplete == 2, "Complete candidate action changed unexpectedly.");
+		Assert(LuvLetterCandidateActionCopyPath == 3, "Copy-path candidate action changed unexpectedly.");
+		Assert(LuvLetterCandidateActionsCopyPath == (1 << 3), "Copy-path capability changed unexpectedly.");
 		Assert(LuvLetterCandidateIconKindGenericFile == 1, "Generic file icon kind changed unexpectedly.");
 		Assert(LuvLetterCandidateIconKindFolder == 2, "Folder icon kind changed unexpectedly.");
 		Assert(LuvLetterCandidateIconKindImage == 3, "Image icon kind changed unexpectedly.");
@@ -223,12 +226,13 @@ namespace
 		return {
 			InputCandidateItem{
 				11, LuvLetterCandidateKindFile, LuvLetterCandidateIconKindDocument,
-				LuvLetterCandidateActionsOpen | LuvLetterCandidateActionsReveal,
-				L"bbb.md", L"C:\\aaa", L"C:\\aaa\\bbb.md" },
+				LuvLetterCandidateActionsOpen | LuvLetterCandidateActionsReveal
+					| LuvLetterCandidateActionsCopyPath,
+				L"bbb.md", L"文件 · C:\\aaa", L"C:\\aaa\\bbb.md" },
 			InputCandidateItem{
 				22, LuvLetterCandidateKindCommand, LuvLetterCandidateIconKindCommand,
 				LuvLetterCandidateActionsOpen | LuvLetterCandidateActionsComplete,
-				L"build", L"Command" },
+				L"build", L"" },
 		};
 	}
 
@@ -280,6 +284,10 @@ namespace
 			"Shift+Enter must activate a selected candidate.");
 		Assert(activation.token == 11 && activation.action == LuvLetterCandidateActionReveal,
 			"Shift+Enter must route the selected token with the Reveal action.");
+		Assert(state.TryActivate(LuvLetterCandidateActionCopyPath, activation),
+			"Ctrl+Enter must activate path copying for a file candidate.");
+		Assert(activation.token == 11 && activation.action == LuvLetterCandidateActionCopyPath,
+			"Ctrl+Enter must route the selected token with the CopyPath action.");
 
 		Assert(state.MoveSelection(-1), "Up at the first candidate must remain navigable.");
 		Assert(state.SelectedIndex() == 1, "Up at the first candidate must wrap to the last.");
@@ -290,6 +298,36 @@ namespace
 		Assert(state.IsEmpty(), "An empty result must leave no candidates.");
 		Assert(!state.SelectedIndex().has_value(), "An empty result must clear the default selection.");
 		Assert(!state.MoveSelection(1), "Direction keys must not be consumed by an empty candidate list.");
+	}
+
+	void TestCandidateActionPresentation()
+	{
+		using namespace ArkheideSystem;
+		LuvLetterCandidateAction action{};
+		Assert(TryResolveEnterAction(0, action) && action == LuvLetterCandidateActionOpen,
+			"Unmodified Enter must open the selected candidate.");
+		Assert(TryResolveEnterAction(CandidateShiftModifier, action)
+			&& action == LuvLetterCandidateActionReveal,
+			"Shift+Enter must reveal the selected candidate.");
+		Assert(TryResolveEnterAction(CandidateControlModifier, action)
+			&& action == LuvLetterCandidateActionCopyPath,
+			"Ctrl+Enter must copy the selected candidate path.");
+		Assert(TryResolveEnterAction(CandidateControlModifier | CandidateShiftModifier, action)
+			&& action == LuvLetterCandidateActionCopyPath,
+			"Control must take precedence when both candidate modifiers are held.");
+		Assert(!TryResolveEnterAction(CandidateAltModifier, action),
+			"Alt+Enter must remain available to system input handling.");
+
+		const auto fileActions = LuvLetterCandidateActionsOpen
+			| LuvLetterCandidateActionsReveal | LuvLetterCandidateActionsCopyPath;
+		Assert(std::wstring{ CandidateActionLabel(fileActions, 0) } == L"\u6253\u5f00",
+			"The selected file hint must describe the default action.");
+		Assert(std::wstring{ CandidateActionLabel(fileActions, CandidateShiftModifier) }
+			== L"\u6253\u5f00\u5230\u6587\u4ef6\u5939", "The selected file hint must track Shift.");
+		Assert(std::wstring{ CandidateActionLabel(fileActions, CandidateControlModifier) }
+			== L"\u590d\u5236\u8def\u5f84", "The selected file hint must track Control.");
+		Assert(CandidateActionLabel(LuvLetterCandidateActionsComplete, 0) == nullptr,
+			"Command candidates must not display the file action hint.");
 	}
 
 	void TestCandidateSelectionSurvivesSameRevisionRefresh()
@@ -533,6 +571,7 @@ int main()
 		{ "Message activity timeline", TestMessageActivityTimeline },
 		{ "Candidate revision and default selection", TestCandidateRevisionAndDefaultSelection },
 		{ "Candidate keyboard selection and actions", TestCandidateKeyboardSelectionAndActions },
+		{ "Candidate action presentation", TestCandidateActionPresentation },
 		{ "Candidate selection survives same-revision refresh", TestCandidateSelectionSurvivesSameRevisionRefresh },
 		{ "Initial hidden state", TestInitialState },
 		{ "Show/hide endpoints and repeated direction", TestShowHideEndpointsAndRepeatedDirection },

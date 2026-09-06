@@ -1,3 +1,5 @@
+using ArkheideSystem;
+
 namespace LuvLetter.Core.Commands;
 
 /// <summary>
@@ -9,7 +11,8 @@ public interface ICommandRegistrar
         string commandDomain,
         string commandPath,
         Action<CommandInvocation> handler,
-        CommandRegistrationMode mode = CommandRegistrationMode.RejectDuplicate);
+        CommandRegistrationMode mode = CommandRegistrationMode.RejectDuplicate,
+        IReadOnlyList<CommandOption>? options = null);
 
     bool RegisterAlias(
         string aliasDomain,

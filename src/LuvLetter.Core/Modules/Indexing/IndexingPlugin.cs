@@ -1,4 +1,5 @@
 using LuvLetter.Core.Plugins;
+using ArkheideSystem;
 
 namespace LuvLetter.Core.Modules.Indexing;
 
@@ -20,11 +21,18 @@ public sealed class IndexingPlugin(IIndexRefreshRequester refreshRequester) : IL
     public void Register(PluginRegistrationContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
-        context.RegisterCommand("luv", "index refresh", invocation =>
-        {
-            var mode = ParseMode(invocation.Arguments);
-            refreshRequester.RequestRefresh(mode);
-        });
+        context.RegisterCommand(
+            "luv",
+            "index refresh",
+            invocation =>
+            {
+                var mode = ParseMode(invocation.Arguments);
+                refreshRequester.RequestRefresh(mode);
+            },
+            options:
+            [
+                new CommandOption(["-f", "--force"], "强制全量刷新"),
+            ]);
         context.RegisterCommandLink("luv", "refreshindex", "luv", "index refresh");
     }
 

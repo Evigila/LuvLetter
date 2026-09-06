@@ -12,7 +12,7 @@ namespace LuvLetter.Core.Tests;
 
 internal sealed class FakeNativeShellApi : INativeShellApi
 {
-    public uint AbiVersion => 10;
+    public uint AbiVersion => 12;
 
     public int CompatibilityChecks { get; private set; }
 
@@ -70,6 +70,8 @@ internal sealed class FakeNativeShellApi : INativeShellApi
 
     public int HideInputBoxCalls { get; private set; }
 
+    public int DismissInputBoxCalls { get; private set; }
+
     public int ToggleQuickActionsCalls { get; private set; }
 
     public int HideQuickActionsCalls { get; private set; }
@@ -118,6 +120,12 @@ internal sealed class FakeNativeShellApi : INativeShellApi
     public int HideInputBox()
     {
         HideInputBoxCalls++;
+        return 0;
+    }
+
+    public int DismissInputBox()
+    {
+        DismissInputBoxCalls++;
         return 0;
     }
 
@@ -415,6 +423,8 @@ internal sealed class FakeNativeShell : INativeShell
 
     public int HideCommandInputCalls { get; private set; }
 
+    public int DismissCommandInputCalls { get; private set; }
+
     public int ToggleQuickActionsCalls { get; private set; }
 
     public int HideQuickActionsCalls { get; private set; }
@@ -465,6 +475,8 @@ internal sealed class FakeNativeShell : INativeShell
     public void ToggleCommandInput() => ToggleCommandInputCalls++;
 
     public void HideCommandInput() => HideCommandInputCalls++;
+
+    public void DismissCommandInput() => DismissCommandInputCalls++;
 
     public void ToggleQuickActions() => ToggleQuickActionsCalls++;
 
@@ -658,6 +670,19 @@ internal sealed class FakeFileCandidateLauncher : IFileCandidateLauncher
         Revealed.Add(fullPath);
         RevealedKinds.Add(entryKind);
         return RevealResult;
+    }
+}
+
+internal sealed class FakeClipboard : IClipboard
+{
+    public bool Result { get; set; } = true;
+
+    public List<string> Values { get; } = [];
+
+    public bool TrySetText(string text)
+    {
+        Values.Add(text);
+        return Result;
     }
 }
 
